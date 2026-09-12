@@ -1,0 +1,18 @@
+# Binaries
+bot
+tg-agent-bot
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Environment variables
+.env
+.env.*
+
+# Temporary / backup files
+*.bak
+*_bac
+*_[0-9]*
+*.tmp

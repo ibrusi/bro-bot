@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +21,43 @@ import (
 	"github.com/creack/pty"
 	tele "gopkg.in/telebot.v3"
 )
+
+type AgyQuotaResponse struct {
+	Status   string `json:"status"`
+	Response string `json:"response"`
+	Command  struct {
+		Name string `json:"name"`
+		Data struct {
+			Description string           `json:"description"`
+			Groups      []AgyQuotaGroup  `json:"groups"`
+		} `json:"data"`
+	} `json:"command"`
+}
+
+type AgyQuotaGroup struct {
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	Buckets     []AgyQuotaBucket `json:"buckets"`
+}
+
+type AgyQuotaBucket struct {
+	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	Description       string   `json:"description"`
+	Window            string   `json:"window"`
+	RemainingFraction *float64 `json:"remaining_fraction"`
+	ResetTime         string   `json:"reset_time"`
+}
+
+type AgyCreditsResponse struct {
+	Command struct {
+		Name string `json:"name"`
+		Data struct {
+			RemainingCredits float64 `json:"remaining_credits"`
+			UpgradeURI       string  `json:"upgrade_uri"`
+		} `json:"data"`
+	} `json:"command"`
+}
 
 type AgentSession struct {
 	sync.Mutex
@@ -258,12 +298,52 @@ func main() {
 	})
 
 	b.Handle("/limits", func(c tele.Context) error {
-		out, err := exec.Command("agy", "quota").CombinedOutput()
-		cliQuotaOutput := ""
-		if err == nil && len(out) > 0 {
+		_ = c.Notify(tele.Typing)
+		statusMsg, _ := b.Send(c.Recipient(), "⏳ <i>Запрашиваю актуальные лимиты и квоты из agy...</i>", tele.ModeHTML)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		var (
+			quotaResp   AgyQuotaResponse
+			creditsResp AgyCreditsResponse
+			quotaRaw    string
+			quotaErr    error
+			creditsErr  error
+			wg          sync.WaitGroup
+		)
+
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			out, err := exec.CommandContext(ctx, "agy", "-p", "/quota", "--output-format", "json").CombinedOutput()
 			cleanOut := ansiRegex.ReplaceAllString(string(out), "")
-			cliQuotaOutput = strings.TrimSpace(cleanOut)
-		}
+			quotaRaw = strings.TrimSpace(cleanOut)
+			if err != nil {
+				textOut, textErr := exec.CommandContext(ctx, "agy", "-p", "/quota").CombinedOutput()
+				if textErr == nil && len(textOut) > 0 {
+					quotaRaw = strings.TrimSpace(ansiRegex.ReplaceAllString(string(textOut), ""))
+				}
+				quotaErr = err
+				return
+			}
+			if err := json.Unmarshal([]byte(cleanOut), &quotaResp); err != nil {
+				quotaErr = err
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+			out, err := exec.CommandContext(ctx, "agy", "-p", "/credits", "--output-format", "json").CombinedOutput()
+			cleanOut := ansiRegex.ReplaceAllString(string(out), "")
+			if err != nil {
+				creditsErr = err
+				return
+			}
+			_ = json.Unmarshal([]byte(cleanOut), &creditsResp)
+		}()
+
+		wg.Wait()
 
 		session.Lock()
 		lastModel := session.lastModelUsed
@@ -282,25 +362,59 @@ func main() {
 		}
 
 		var bldr strings.Builder
-		bldr.WriteString("📊 <b>Лимиты и квоты аккаунта</b>\n\n")
+		bldr.WriteString("📊 <b>Лимиты и квоты аккаунта (Google Antigravity)</b>\n\n")
 
-		if cliQuotaOutput != "" {
-			bldr.WriteString("<b>Ответ CLI:</b>\n<pre>")
-			bldr.WriteString(html.EscapeString(cliQuotaOutput))
+		if quotaErr == nil && len(quotaResp.Command.Data.Groups) > 0 {
+			for _, g := range quotaResp.Command.Data.Groups {
+				bldr.WriteString(fmt.Sprintf("🔹 <b>%s</b>\n", html.EscapeString(g.Name)))
+				if g.Description != "" {
+					bldr.WriteString(fmt.Sprintf("<i>%s</i>\n", html.EscapeString(g.Description)))
+				}
+				for _, b := range g.Buckets {
+					bucketLabel := formatBucketName(b.Name, b.Window)
+					if b.RemainingFraction != nil {
+						frac := *b.RemainingFraction
+						pct := frac * 100
+						bar := renderProgressBar(frac, 10)
+						emoji := quotaStatusEmoji(frac)
+						bldr.WriteString(fmt.Sprintf("• <b>%s:</b> %.1f%% %s\n", html.EscapeString(bucketLabel), pct, emoji))
+						bldr.WriteString(fmt.Sprintf("  <code>[%s]</code> %.1f%%\n", bar, pct))
+					} else {
+						bldr.WriteString(fmt.Sprintf("• <b>%s:</b> <i>доступно</i>\n", html.EscapeString(bucketLabel)))
+					}
+					if b.ResetTime != "" {
+						resetInfo := formatResetDuration(b.ResetTime)
+						bldr.WriteString(fmt.Sprintf("  ⏳ <i>Сброс: %s</i>\n", html.EscapeString(resetInfo)))
+					}
+				}
+				bldr.WriteString("\n")
+			}
+		} else if quotaRaw != "" {
+			bldr.WriteString("<b>Ответ agy:</b>\n<pre>")
+			bldr.WriteString(html.EscapeString(quotaRaw))
 			bldr.WriteString("</pre>\n\n")
+		} else if quotaErr != nil {
+			bldr.WriteString(fmt.Sprintf("⚠️ <i>Не удалось получить актуальные лимиты из agy: %s</i>\n\n", html.EscapeString(quotaErr.Error())))
 		}
 
-		bldr.WriteString("📈 <b>Статистика последней операции:</b>\n")
+		if creditsErr == nil && creditsResp.Command.Name == "credits" {
+			bldr.WriteString(fmt.Sprintf("💳 <b>Дополнительные кредиты:</b> <code>%.0f</code>\n\n", creditsResp.Command.Data.RemainingCredits))
+		}
+
+		bldr.WriteString("⚙️ <b>Сессия и модель:</b>\n")
 		bldr.WriteString(fmt.Sprintf("• Выбранная модель: <code>%s</code>\n", html.EscapeString(activeModel)))
 		bldr.WriteString(fmt.Sprintf("• Модель в сессии: <code>%s</code>\n", html.EscapeString(lastModel)))
 		bldr.WriteString(fmt.Sprintf("• Использовано токенов: <code>%s</code>\n\n", html.EscapeString(lastTokens)))
 
-		bldr.WriteString("📋 <b>Справочная информация по квотам:</b>\n")
-		bldr.WriteString("• <b>Gemini Flash (3.8/3.7):</b> высокая скорость, высокий дневной лимит запросов\n")
-		bldr.WriteString("• <b>Gemini Pro (3.1):</b> окно контекста 2M токенов, скользящий лимит запросов\n")
-		bldr.WriteString("• <b>Claude Thinking (Sonnet/Opus):</b> расширенное рассуждение, расход квот сложного инференса\n")
+		bldr.WriteString("💡 <i>Лимиты 5-часового окна и недели сглаживают общую нагрузку и обновляются автоматически.</i>")
 
-		return c.Send(bldr.String(), tele.ModeHTML)
+		resultMsg := bldr.String()
+		if statusMsg != nil {
+			if _, editErr := b.Edit(statusMsg, resultMsg, tele.ModeHTML); editErr == nil {
+				return nil
+			}
+		}
+		return c.Send(resultMsg, tele.ModeHTML)
 	})
 
 	b.Handle("/projects", func(c tele.Context) error {
@@ -508,6 +622,10 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, prompt, modelName string) {
 	statusMsg, _ := b.Send(recipient, fmt.Sprintf("🚀 <b>Шаг в работе:</b> <code>%s</code> [<code>%s</code>]\n<i>Инициализация сессии агента...</i>", html.EscapeString(projectName), html.EscapeString(modelName)), tele.ModeHTML)
 
+	session.Lock()
+	session.lastModelUsed = modelName
+	session.Unlock()
+
 	args := []string{
 	    "--dangerously-skip-permissions",
 	    "--print-timeout", "30m",
@@ -685,4 +803,77 @@ func truncateString(s string, maxLen int) string {
 		return s[:maxLen] + "..."
 	}
 	return s
+}
+
+func renderProgressBar(fraction float64, totalBlocks int) string {
+	if fraction < 0 {
+		fraction = 0
+	}
+	if fraction > 1 {
+		fraction = 1
+	}
+	filled := int(math.Round(fraction * float64(totalBlocks)))
+	if filled > totalBlocks {
+		filled = totalBlocks
+	}
+	empty := totalBlocks - filled
+	return strings.Repeat("█", filled) + strings.Repeat("░", empty)
+}
+
+func quotaStatusEmoji(fraction float64) string {
+	switch {
+	case fraction >= 0.5:
+		return "🟢"
+	case fraction >= 0.2:
+		return "🟡"
+	default:
+		return "🔴"
+	}
+}
+
+func formatBucketName(name, window string) string {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "week") || window == "weekly":
+		return "Недельный лимит"
+	case strings.Contains(lower, "five hour") || strings.Contains(lower, "5 hour") || window == "5h":
+		return "5-часовой лимит"
+	default:
+		return name
+	}
+}
+
+func formatResetDuration(resetTimeStr string) string {
+	if resetTimeStr == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, resetTimeStr)
+	if err != nil {
+		return resetTimeStr
+	}
+	remaining := time.Until(t)
+	formattedTime := t.UTC().Format("02.01 15:04 UTC")
+	if remaining <= 0 {
+		return fmt.Sprintf("сейчас (%s)", formattedTime)
+	}
+
+	var parts []string
+	days := int(remaining.Hours()) / 24
+	hours := int(remaining.Hours()) % 24
+	mins := int(remaining.Minutes()) % 60
+
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%d д.", days))
+	}
+	if hours > 0 || (days > 0 && mins > 0) {
+		parts = append(parts, fmt.Sprintf("%d ч.", hours))
+	}
+	if days == 0 && mins > 0 {
+		parts = append(parts, fmt.Sprintf("%d мин.", mins))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "< 1 мин.")
+	}
+
+	return fmt.Sprintf("через %s (%s)", strings.Join(parts, " "), formattedTime)
 }
