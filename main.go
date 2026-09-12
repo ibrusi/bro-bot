@@ -160,6 +160,7 @@ func main() {
 				"🧠 Активная модель: <code>%s</code>\n\n"+
 				"<b>Команды:</b>\n"+
 				"• /status — статус, лог и очередь уточнений\n"+
+				"• /top (или /ps) — потребление CPU и памяти бота и agy\n"+
 				"• /tokens — статистика токенов, скорости и кэша\n"+
 				"• /limits — статистика токенов и лимиты\n"+
 				"• /models — список моделей и переключение\n"+
@@ -193,7 +194,12 @@ func main() {
 			if lastSnippet != "" {
 				idleMsg += "\n\n" + lastSnippet
 			}
-			idleMsg += "\n\n💡 <i>Отправьте задачу сообщением в чат или используйте /tokens для детальной статистики.</i>"
+			report := CollectResourceReport(false)
+			resSnippet := FormatCompactResourceSnippet(report)
+			if resSnippet != "" {
+				idleMsg += "\n\n" + resSnippet
+			}
+			idleMsg += "\n\n💡 <i>Отправьте задачу сообщением в чат, /top для мониторинга или /tokens для статистики.</i>"
 			return c.Send(idleMsg, tele.ModeHTML)
 		}
 
@@ -225,18 +231,26 @@ func main() {
 			tokenSection = "\n\n" + tokenBlock
 		}
 
+		report := CollectResourceReport(false)
+		resSnippet := FormatCompactResourceSnippet(report)
+		var resSection string
+		if resSnippet != "" {
+			resSection = "\n\n" + resSnippet
+		}
+
 		msg := fmt.Sprintf(
 			"📊 <b>Статус задачи:</b>\n"+
 				"• Проект: <code>%s</code>\n"+
 				"• Состояние: <b>%s</b>\n"+
 				"• Время текущего шага: <code>%s</code>\n"+
-				"• Задача: <i>%s</i>%s%s\n\n"+
+				"• Задача: <i>%s</i>%s%s%s\n\n"+
 				"📜 <b>Лог выполнения:</b>\n<pre>%s</pre>",
 			html.EscapeString(project),
 			html.EscapeString(stateStr),
 			duration,
 			html.EscapeString(prompt),
 			followupsSection,
+			resSection,
 			tokenSection,
 			html.EscapeString(rawTail),
 		)
@@ -502,6 +516,18 @@ func main() {
 	b.Handle("/build", func(c tele.Context) error {
 		return handleRebuild(b, c)
 	})
+
+	handleResources := func(c tele.Context) error {
+		_ = c.Notify(tele.Typing)
+		report := CollectResourceReport(true)
+		msg := FormatResourcesMessage(report)
+		return c.Send(msg, tele.ModeHTML)
+	}
+
+	b.Handle("/top", handleResources)
+	b.Handle("/ps", handleResources)
+	b.Handle("/resources", handleResources)
+	b.Handle("/res", handleResources)
 
 	b.Handle(tele.OnText, func(c tele.Context) error {
 		userText := strings.TrimSpace(c.Text())
