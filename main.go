@@ -91,15 +91,6 @@ var (
 	tokensRegexp = regexp.MustCompile(`(?i)tokens?:\s*([0-9,kKmM\s/]+)`)
 	modelRegexp  = regexp.MustCompile(`(?i)model:\s*([a-zA-Z0-9.\-_]+)`)
 
-	availableModels = map[string]string{
-		"gemini-3.8-flash":  "⚡ По умолчанию: максимальная скорость и свежая база",
-		"gemini-3.7-flash":  "⚡ Предыдущая быстрая версия",
-		"gemini-3.6-flash":  "⚡ Базовая быстрая модель",
-		"gemini-3.1-pro":    "🧠 Флагман: глубокий рефакторинг, архитектура, сложные алгоритмы",
-		"claude-sonnet-4.6": "🎯 Claude Sonnet 4.6 (Thinking): сильный агентный кодинг с пошаговым рассуждением",
-		"claude-opus-4.6":   "👑 Claude Opus 4.6 (Thinking): максимальный уровень рассуждений для сложных багов",
-		"gpt-oss-120b":      "🌐 GPT-OSS 120B (Medium): открытая весовая архитектура",
-	}
 )
 
 func main() {
@@ -116,9 +107,11 @@ func main() {
 		log.Fatal("Некорректный или отсутствующий TELEGRAM_ADMIN_ID")
 	}
 
+	modelRegistry = NewModelRegistry(10 * time.Minute)
+
 	initDefaultProject(projectsRoot)
 	projectState.Lock()
-	projectState.currentModel = "gemini-3.8-flash"
+	projectState.currentModel = "gemini-3.8-flash-medium"
 	projectState.Unlock()
 
 	b, err := tele.NewBot(tele.Settings{
@@ -233,29 +226,21 @@ func main() {
 	})
 
 	b.Handle("/models", func(c tele.Context) error {
+		args := c.Args()
+		forceRefresh := len(args) > 0 && (args[0] == "refresh" || args[0] == "update")
+		if forceRefresh {
+			_ = c.Notify(tele.Typing)
+			if _, err := modelRegistry.RefreshModels(true); err != nil {
+				return c.Send(fmt.Sprintf("⚠️ Ошибка синхронизации с agy: %v\nПоказан кэшированный список.", err))
+			}
+		}
+
 		projectState.RLock()
 		curModel := projectState.currentModel
 		projectState.RUnlock()
 
-		var bldr strings.Builder
-		bldr.WriteString("🤖 <b>Доступные модели:</b>\n\n")
-
-		for m, desc := range availableModels {
-			if m == curModel {
-				bldr.WriteString(fmt.Sprintf("👉 <b>%s</b> <i>(активна)</i>\n%s\n\n", m, desc))
-			} else {
-				bldr.WriteString(fmt.Sprintf("• <code>%s</code>\n%s\n<i>Переключить:</i> <code>/model %s</code>\n\n", m, desc, m))
-			}
-		}
-
-		bldr.WriteString("💡 <i>Короткие алиасы:</i>\n")
-		bldr.WriteString("• <code>/model flash</code> — Gemini 3.8 Flash\n")
-		bldr.WriteString("• <code>/model pro</code> — Gemini 3.1 Pro\n")
-		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 4.6 Thinking\n")
-		bldr.WriteString("• <code>/model opus</code> — Claude Opus 4.6 Thinking\n")
-		bldr.WriteString("• <code>/model oss</code> — GPT-OSS 120B")
-
-		return c.Send(bldr.String(), tele.ModeHTML)
+		msg := modelRegistry.FormatModelsMessage(curModel)
+		return c.Send(msg, tele.ModeHTML)
 	})
 
 	b.Handle("/model", func(c tele.Context) error {
@@ -264,37 +249,20 @@ func main() {
 			projectState.RLock()
 			cur := projectState.currentModel
 			projectState.RUnlock()
-			return c.Send(fmt.Sprintf("Текущая модель: <code>%s</code>\nИспользование: <code>/model &lt;имя&gt;</code> (например, <code>/model sonnet</code>)", cur), tele.ModeHTML)
+			return c.Send(fmt.Sprintf("Текущая модель: <code>%s</code>\nИспользование: <code>/model &lt;имя&gt;</code> (например, <code>/model sonnet</code>)", html.EscapeString(cur)), tele.ModeHTML)
 		}
 
-		target := strings.ToLower(strings.TrimSpace(args[0]))
-
-		switch target {
-		case "flash", "3.8", "3.8-flash":
-			target = "gemini-3.8-flash"
-		case "3.7", "3.7-flash":
-			target = "gemini-3.7-flash"
-		case "3.6", "3.6-flash":
-			target = "gemini-3.6-flash"
-		case "pro", "3.1", "3.1-pro":
-			target = "gemini-3.1-pro"
-		case "sonnet", "claude-sonnet", "sonnet-thinking":
-			target = "claude-sonnet-4.6"
-		case "opus", "claude-opus", "opus-thinking":
-			target = "claude-opus-4.6"
-		case "oss", "gpt-oss", "120b":
-			target = "gpt-oss-120b"
-		}
-
-		if _, exists := availableModels[target]; !exists {
+		target := strings.TrimSpace(args[0])
+		resolved, ok := modelRegistry.ResolveModel(target)
+		if !ok {
 			return c.Send(fmt.Sprintf("❌ Неизвестная модель: <code>%s</code>. Список: /models", html.EscapeString(target)), tele.ModeHTML)
 		}
 
 		projectState.Lock()
-		projectState.currentModel = target
+		projectState.currentModel = resolved
 		projectState.Unlock()
 
-		return c.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", target), tele.ModeHTML)
+		return c.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", html.EscapeString(resolved)), tele.ModeHTML)
 	})
 
 	b.Handle("/limits", func(c tele.Context) error {
@@ -627,16 +595,10 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 	session.Unlock()
 
 	args := []string{
-	    "--dangerously-skip-permissions",
-	    "--print-timeout", "30m",
-	    "--model", modelName,
+		"--dangerously-skip-permissions",
+		"--print-timeout", "30m",
 	}
-	// Модели reasoning требуют флаг --effort
-	if strings.Contains(modelName, "claude") {
-	    args = append(args, "--effort", "high")
-	} else if strings.Contains(modelName, "gemini-3") {
-		args = append(args, "--effort", "medium")
-	}
+	args = append(args, buildAgyModelArgs(modelName)...)
 	args = append(args, "-p", prompt)
 	cmd := exec.Command("agy", args...)
 	cmd.Dir = workDir
