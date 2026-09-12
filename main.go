@@ -31,6 +31,7 @@ type AgentSession struct {
 	recentLogs       []string
 	pendingFollowups []string
 	lastPRURL        string
+	fullOutput       strings.Builder
 }
 
 type ProjectState struct {
@@ -70,7 +71,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Регистрация меню команд в интерфейсе Telegram
 	commands := []tele.Command{
 		{Text: "status", Description: "Статус задачи, лог и очередь"},
 		{Text: "projects", Description: "Список доступных проектов"},
@@ -82,7 +82,7 @@ func main() {
 		log.Printf("Предупреждение: не удалось зарегистрировать команды: %v", err)
 	}
 
-	// Фильтр: пускать только владельца по ID
+	// Фильтр: только админ
 	b.Use(func(next tele.HandlerFunc) tele.HandlerFunc {
 		return func(c tele.Context) error {
 			if c.Sender().ID != adminID {
@@ -105,7 +105,7 @@ func main() {
 				"• /projects — список проектов\n"+
 				"• /use &lt;имя&gt; — переключить проект\n"+
 				"• /cancel — остановить задачу и сбросить очередь\n\n"+
-				"Отправьте задачу сообщением в чат. Дополнения можно присылать прямо во время выполнения.",
+				"Отправьте задачу сообщением в чат. Дополнения можно отправлять прямо в процессе выполнения.",
 			html.EscapeString(cur),
 		)
 		return c.Send(msg, tele.ModeHTML)
@@ -230,6 +230,7 @@ func main() {
 			session.isRunning = false
 			session.waiting = false
 			session.pendingFollowups = nil
+			session.fullOutput.Reset()
 			return c.Send("🛑 Процесс остановлен. Очередь задач очищена.")
 		}
 		return c.Send("Сейчас нет активных задач.")
@@ -242,7 +243,7 @@ func main() {
 		}
 
 		session.Lock()
-		// Ответ на уточняющий вопрос агента
+		// Сценарий 1: Ответ на вопрос агента
 		if session.isRunning && session.waiting {
 			session.waiting = false
 			_, err := io.WriteString(session.stdin, userText+"\n")
@@ -254,7 +255,7 @@ func main() {
 			return c.Send("💬 Ответ передан агенту...")
 		}
 
-		// Агент занят — добавляем сообщение в очередь доработок
+		// Сценарий 2: Добавление в очередь доработок
 		if session.isRunning {
 			session.pendingFollowups = append(session.pendingFollowups, userText)
 			count := len(session.pendingFollowups)
@@ -269,7 +270,7 @@ func main() {
 			return c.Send(msg, tele.ModeHTML)
 		}
 
-		// Запуск новой задачи
+		// Сценарий 3: Запуск новой задачи
 		projectState.RLock()
 		cur := projectState.currentProject
 		projectState.RUnlock()
@@ -287,6 +288,7 @@ func main() {
 		session.recentLogs = nil
 		session.pendingFollowups = nil
 		session.lastPRURL = ""
+		session.fullOutput.Reset()
 		session.Unlock()
 
 		workDir := filepath.Join(projectsRoot, cur)
@@ -326,25 +328,27 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 			return
 		}
 
+		// Если дополнений нет — завершаем пайплайн
 		if len(session.pendingFollowups) == 0 {
 			prURL := session.lastPRURL
+			finalReport := session.fullOutput.String()
 			session.isRunning = false
 			session.Unlock()
 
 			if prURL != "" {
-				b.Send(recipient, fmt.Sprintf("🎉 <b>Все задачи и дополнения выполнены!</b> (<code>%s</code>)\n\n🔗 <b>Pull Request:</b>\n%s", html.EscapeString(projectName), prURL), tele.ModeHTML)
+				b.Send(recipient, fmt.Sprintf("🎉 *Задача выполнена!*\n📁 Проект: `%s`\n🔗 [Открыть Pull Request](%s)", projectName, prURL), tele.ModeMarkdown)
 			} else {
-				session.Lock()
-				recentTail := strings.Join(session.recentLogs, "\n")
-				if len(recentTail) > 1800 {
-					recentTail = recentTail[len(recentTail)-1800:]
-				}
-				session.Unlock()
-				b.Send(recipient, fmt.Sprintf("✅ Все задачи завершены (<code>%s</code>).\n\nИтоговый лог:\n<pre>%s</pre>", html.EscapeString(projectName), html.EscapeString(recentTail)), tele.ModeHTML)
+				b.Send(recipient, fmt.Sprintf("✅ *Задача завершена!* (`%s`)", projectName), tele.ModeMarkdown)
+			}
+
+			// Выводим полный отчет агента в нативном Markdown с разбивкой по частям
+			if strings.TrimSpace(finalReport) != "" {
+				sendLongMarkdown(b, recipient, finalReport)
 			}
 			return
 		}
 
+		// Формируем комбинированный промпт для следующего шага
 		followups := session.pendingFollowups
 		session.pendingFollowups = nil
 
@@ -369,7 +373,6 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, prompt string) {
 	statusMsg, _ := b.Send(recipient, fmt.Sprintf("🚀 <b>Шаг в работе:</b> <code>%s</code>\n<i>Инициализация сессии агента...</i>", html.EscapeString(projectName)), tele.ModeHTML)
 
-	// Запуск с авто-одобрением системных команд и стримингом без TUI
 	cmd := exec.Command("agy", "--dangerously-skip-permissions", "-p", prompt)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
@@ -451,6 +454,8 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 			if len(session.recentLogs) > 20 {
 				session.recentLogs = session.recentLogs[1:]
 			}
+			session.fullOutput.WriteString(cleanLine + "\n")
+
 			if matches := prUrlRegexp.FindStringSubmatch(cleanLine); len(matches) > 1 {
 				session.lastPRURL = matches[1]
 			}
@@ -485,6 +490,40 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 	}
 	session.waiting = false
 	session.Unlock()
+}
+
+func sendLongMarkdown(b *tele.Bot, recipient tele.Recipient, text string) {
+	const maxChunkSize = 3900
+	text = strings.TrimSpace(text)
+
+	if len(text) <= maxChunkSize {
+		_, err := b.Send(recipient, text, tele.ModeMarkdown)
+		if err != nil {
+			b.Send(recipient, text)
+		}
+		return
+	}
+
+	for len(text) > 0 {
+		chunkSize := maxChunkSize
+		if len(text) < chunkSize {
+			chunkSize = len(text)
+		} else {
+			if lastNL := strings.LastIndex(text[:chunkSize], "\n"); lastNL > 1000 {
+				chunkSize = lastNL
+			}
+		}
+
+		chunk := strings.TrimSpace(text[:chunkSize])
+		text = strings.TrimSpace(text[chunkSize:])
+
+		if chunk != "" {
+			_, err := b.Send(recipient, chunk, tele.ModeMarkdown)
+			if err != nil {
+				b.Send(recipient, chunk)
+			}
+		}
+	}
 }
 
 func truncateString(s string, maxLen int) string {
