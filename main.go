@@ -131,6 +131,8 @@ func main() {
 		{Text: "projects", Description: "Список доступных проектов"},
 		{Text: "use", Description: "Переключить проект: /use <имя>"},
 		{Text: "cancel", Description: "Принудительно остановить процесс"},
+		{Text: "restart", Description: "Перезапустить бота"},
+		{Text: "rebuild", Description: "Собрать билд и перезапустить"},
 		{Text: "start", Description: "Справка и активный проект"},
 	}
 	if err := b.SetCommands(commands); err != nil {
@@ -164,7 +166,9 @@ func main() {
 				"• /model &lt;имя&gt; — переключить модель\n"+
 				"• /projects — список проектов\n"+
 				"• /use &lt;имя&gt; — переключить проект\n"+
-				"• /cancel — остановить задачу и сбросить очередь\n\n"+
+				"• /cancel — остановить задачу и сбросить очередь\n"+
+				"• /restart — перезапустить бота\n"+
+				"• /rebuild [pull] [force] — пересобрать билд и перезапустить\n\n"+
 				"Отправьте задачу сообщением в чат. Дополнения можно отправлять прямо в процессе выполнения.",
 			html.EscapeString(curProj),
 			html.EscapeString(curMod),
@@ -487,6 +491,18 @@ func main() {
 		return c.Send("Сейчас нет активных задач.")
 	})
 
+	b.Handle("/restart", func(c tele.Context) error {
+		return handleRestart(b, c)
+	})
+
+	b.Handle("/rebuild", func(c tele.Context) error {
+		return handleRebuild(b, c)
+	})
+
+	b.Handle("/build", func(c tele.Context) error {
+		return handleRebuild(b, c)
+	})
+
 	b.Handle(tele.OnText, func(c tele.Context) error {
 		userText := strings.TrimSpace(c.Text())
 		if strings.HasPrefix(userText, "/") {
@@ -547,6 +563,8 @@ func main() {
 
 		return nil
 	})
+
+	go checkAndNotifyRestart(b, adminID)
 
 	log.Println("Мультипроектный агент-бот запущен...")
 	b.Start()

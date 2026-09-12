@@ -16,3 +16,5 @@ tg-agent-bot
 *_bac
 *_[0-9]*
 *.tmp
+bac/
+.restart_notify.json
