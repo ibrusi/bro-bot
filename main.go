@@ -32,29 +32,14 @@ type AgentSession struct {
 	pendingFollowups []string
 	lastPRURL        string
 	fullOutput       strings.Builder
+	// Новые поля для метрик
+	lastModelUsed    string
+	lastTokensUsed   string
 }
 
 type ProjectState struct {
 	sync.RWMutex
 	currentProject string
-}
-
-type AgentSession struct {
-	sync.Mutex
-	cmd              *exec.Cmd
-	stdin            io.WriteCloser
-	isRunning        bool
-	waiting          bool
-	startedAt        time.Time
-	currentPrompt    string
-	currentProject   string
-	recentLogs       []string
-	pendingFollowups []string
-	lastPRURL        string
-	fullOutput       strings.Builder
-	// Новые поля для метрик
-	lastModelUsed    string
-	lastTokensUsed   string
 }
 
 var (
