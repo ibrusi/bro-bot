@@ -39,12 +39,32 @@ type ProjectState struct {
 	currentProject string
 }
 
+type AgentSession struct {
+	sync.Mutex
+	cmd              *exec.Cmd
+	stdin            io.WriteCloser
+	isRunning        bool
+	waiting          bool
+	startedAt        time.Time
+	currentPrompt    string
+	currentProject   string
+	recentLogs       []string
+	pendingFollowups []string
+	lastPRURL        string
+	fullOutput       strings.Builder
+	// Новые поля для метрик
+	lastModelUsed    string
+	lastTokensUsed   string
+}
+
 var (
 	session      AgentSession
 	projectState ProjectState
 	adminID      int64
 	prUrlRegexp  = regexp.MustCompile(`PR_URL:\s*(https?://[^\s]+)`)
 	ansiRegex    = regexp.MustCompile(`\x1b(\[[0-9;?><=$]*[a-zA-Z~]|\][0-9;]*\x07|\([B0-9])|\r`)
+	tokensRegexp = regexp.MustCompile(`(?i)tokens?:\s*([0-9,kKmM\s/]+)`)
+	modelRegexp  = regexp.MustCompile(`(?i)model:\s*([a-zA-Z0-9.\-_]+)`)
 )
 
 func main() {
@@ -73,6 +93,7 @@ func main() {
 
 	commands := []tele.Command{
 		{Text: "status", Description: "Статус задачи, лог и очередь"},
+		{Text: "limits", Description: "Остаток квот и лимиты моделей"},
 		{Text: "projects", Description: "Список доступных проектов"},
 		{Text: "use", Description: "Переключить проект: /use <имя>"},
 		{Text: "cancel", Description: "Принудительно остановить процесс"},
@@ -164,6 +185,52 @@ func main() {
 		)
 
 		return c.Send(msg, tele.ModeHTML)
+	})
+
+	b.Handle("/limits", func(c tele.Context) error {
+		// 1. Пробуем получить живой статус от самого agy CLI
+		out, err := exec.Command("agy", "quota").CombinedOutput()
+		cliQuotaOutput := ""
+		if err == nil && len(out) > 0 {
+			cleanOut := ansiRegex.ReplaceAllString(string(out), "")
+			cliQuotaOutput = strings.TrimSpace(cleanOut)
+		}
+
+		session.Lock()
+		lastModel := session.lastModelUsed
+		lastTokens := session.lastTokensUsed
+		session.Unlock()
+
+		if lastModel == "" {
+			lastModel = "gemini-1.5-pro (по умолчанию)"
+		}
+		if lastTokens == "" {
+			lastTokens = "нет данных (запустите хотя бы одну задачу)"
+		}
+
+		var bldr strings.Builder
+		bldr.WriteString("📊 <b>Лимиты и квоты аккаунта</b>\n\n")
+
+		if cliQuotaOutput != "" {
+			bldr.WriteString("<b>Ответ CLI:</b>\n<pre>")
+			bldr.WriteString(html.EscapeString(cliQuotaOutput))
+			bldr.WriteString("</pre>\n\n")
+		}
+
+		bldr.WriteString("📈 <b>Статистика последней операции:</b>\n")
+		bldr.WriteString(fmt.Sprintf("• Модель: <code>%s</code>\n", html.EscapeString(lastModel)))
+		bldr.WriteString(fmt.Sprintf("• Использовано токенов: <code>%s</code>\n\n", html.EscapeString(lastTokens)))
+
+		bldr.WriteString("📋 <b>Справочные лимиты Google AI Pro:</b>\n")
+		bldr.WriteString("• <b>Gemini 1.5 Pro:</b>\n")
+		bldr.WriteString("  — Контекст: <code>2,000,000 токенов</code>\n")
+		bldr.WriteString("  — Скользящий лимит: <code>~50 запросов / 3 часа</code>\n")
+		bldr.WriteString("• <b>Gemini 1.5 Flash:</b>\n")
+		bldr.WriteString("  — Контекст: <code>1,000,000 токенов</code>\n")
+		bldr.WriteString("  — Скользящий лимит: <code>~1500 запросов / день</code>\n\n")
+		bldr.WriteString("<i>💡 При исчерпании лимита Pro агент автоматически переключается на Flash.</i>")
+
+		return c.Send(bldr.String(), tele.ModeHTML)
 	})
 
 	b.Handle("/projects", func(c tele.Context) error {
@@ -456,9 +523,21 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 			}
 			session.fullOutput.WriteString(cleanLine + "\n")
 
+			// 1. Перехват ссылки на Pull Request
 			if matches := prUrlRegexp.FindStringSubmatch(cleanLine); len(matches) > 1 {
 				session.lastPRURL = matches[1]
 			}
+
+			// 2. ВОТ ЗДЕСЬ ДОБАВЛЯЕМ: Перехват названия модели
+			if m := modelRegexp.FindStringSubmatch(cleanLine); len(m) > 1 {
+				session.lastModelUsed = strings.TrimSpace(m[1])
+			}
+
+			// 3. И ЗДЕСЬ: Перехват использованных токенов
+			if t := tokensRegexp.FindStringSubmatch(cleanLine); len(t) > 1 {
+				session.lastTokensUsed = strings.TrimSpace(t[1])
+			}
+
 			session.Unlock()
 
 			lower := strings.ToLower(cleanLine)
