@@ -124,6 +124,7 @@ func main() {
 
 	commands := []tele.Command{
 		{Text: "status", Description: "Статус задачи, лог и очередь"},
+		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},
 		{Text: "limits", Description: "Остаток квот и лимиты моделей"},
 		{Text: "models", Description: "Список доступных моделей"},
 		{Text: "model", Description: "Выбрать модель: /model <имя>"},
@@ -157,6 +158,7 @@ func main() {
 				"🧠 Активная модель: <code>%s</code>\n\n"+
 				"<b>Команды:</b>\n"+
 				"• /status — статус, лог и очередь уточнений\n"+
+				"• /tokens — статистика токенов, скорости и кэша\n"+
 				"• /limits — статистика токенов и лимиты\n"+
 				"• /models — список моделей и переключение\n"+
 				"• /model &lt;имя&gt; — переключить модель\n"+
@@ -182,7 +184,13 @@ func main() {
 		session.Unlock()
 
 		if !running {
-			return c.Send("💤 Сейчас нет активных задач. Агент простаивает.")
+			idleMsg := "💤 <b>Сейчас нет активных задач. Агент простаивает.</b>"
+			lastSnippet := tokenTracker.GetLastTaskStatusBlock()
+			if lastSnippet != "" {
+				idleMsg += "\n\n" + lastSnippet
+			}
+			idleMsg += "\n\n💡 <i>Отправьте задачу сообщением в чат или используйте /tokens для детальной статистики.</i>"
+			return c.Send(idleMsg, tele.ModeHTML)
 		}
 
 		duration := time.Since(started).Round(time.Second)
@@ -207,21 +215,38 @@ func main() {
 			}
 		}
 
+		tokenBlock := tokenTracker.GetCurrentTaskStatusBlock()
+		var tokenSection string
+		if tokenBlock != "" {
+			tokenSection = "\n\n" + tokenBlock
+		}
+
 		msg := fmt.Sprintf(
 			"📊 <b>Статус задачи:</b>\n"+
 				"• Проект: <code>%s</code>\n"+
 				"• Состояние: <b>%s</b>\n"+
 				"• Время текущего шага: <code>%s</code>\n"+
-				"• Задача: <i>%s</i>%s\n\n"+
+				"• Задача: <i>%s</i>%s%s\n\n"+
 				"📜 <b>Лог выполнения:</b>\n<pre>%s</pre>",
 			html.EscapeString(project),
 			html.EscapeString(stateStr),
 			duration,
 			html.EscapeString(prompt),
 			followupsSection,
+			tokenSection,
 			html.EscapeString(rawTail),
 		)
 
+		return c.Send(msg, tele.ModeHTML)
+	})
+
+	b.Handle("/tokens", func(c tele.Context) error {
+		msg := tokenTracker.GetTokensCommandMessage()
+		return c.Send(msg, tele.ModeHTML)
+	})
+
+	b.Handle("/stats", func(c tele.Context) error {
+		msg := tokenTracker.GetTokensCommandMessage()
 		return c.Send(msg, tele.ModeHTML)
 	})
 
@@ -315,7 +340,6 @@ func main() {
 
 		session.Lock()
 		lastModel := session.lastModelUsed
-		lastTokens := session.lastTokensUsed
 		session.Unlock()
 
 		projectState.RLock()
@@ -325,8 +349,15 @@ func main() {
 		if lastModel == "" {
 			lastModel = activeModel
 		}
+
+		lastTokens := tokenTracker.FormatShortLastTask()
 		if lastTokens == "" {
-			lastTokens = "нет данных (запустите хотя бы одну задачу)"
+			session.Lock()
+			lastTokens = session.lastTokensUsed
+			session.Unlock()
+			if lastTokens == "" {
+				lastTokens = "нет данных (запустите хотя бы одну задачу)"
+			}
 		}
 
 		var bldr strings.Builder
@@ -450,6 +481,7 @@ func main() {
 			session.waiting = false
 			session.pendingFollowups = nil
 			session.fullOutput.Reset()
+			tokenTracker.CancelTask()
 			return c.Send("🛑 Процесс остановлен. Очередь задач очищена.")
 		}
 		return c.Send("Сейчас нет активных задач.")
@@ -489,6 +521,7 @@ func main() {
 
 		projectState.RLock()
 		cur := projectState.currentProject
+		curMod := projectState.currentModel
 		projectState.RUnlock()
 
 		if cur == "" {
@@ -506,6 +539,8 @@ func main() {
 		session.lastPRURL = ""
 		session.fullOutput.Reset()
 		session.Unlock()
+
+		tokenTracker.StartTask(cur, curMod, userText)
 
 		workDir := filepath.Join(projectsRoot, cur)
 		go runAgentPipeline(b, c.Recipient(), workDir, cur, userText)
@@ -554,10 +589,13 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 			session.isRunning = false
 			session.Unlock()
 
+			metrics := tokenTracker.FinishTask(prURL)
+			statsSummary := metrics.FormatCompletionSummary()
+
 			if prURL != "" {
-				b.Send(recipient, fmt.Sprintf("🎉 *Задача выполнена!*\n📁 Проект: `%s`\n🔗 [Открыть Pull Request](%s)", projectName, prURL), tele.ModeMarkdown)
+				b.Send(recipient, fmt.Sprintf("🎉 <b>Задача выполнена!</b>\n📁 Проект: <code>%s</code>\n🔗 <a href=\"%s\">Открыть Pull Request</a>\n\n%s", html.EscapeString(projectName), html.EscapeString(prURL), statsSummary), tele.ModeHTML)
 			} else {
-				b.Send(recipient, fmt.Sprintf("✅ *Задача завершена!* (`%s`)", projectName), tele.ModeMarkdown)
+				b.Send(recipient, fmt.Sprintf("✅ <b>Задача завершена!</b> (<code>%s</code>)\n\n%s", html.EscapeString(projectName), statsSummary), tele.ModeHTML)
 			}
 
 			if strings.TrimSpace(finalReport) != "" {
@@ -583,6 +621,8 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 		session.recentLogs = nil
 		session.Unlock()
 
+		tokenTracker.StartNextStep(activeModel)
+
 		b.Send(recipient, fmt.Sprintf("🔄 <b>Беру в работу дополнения (%d шт.)...</b>", len(followups)), tele.ModeHTML)
 	}
 }
@@ -597,6 +637,7 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 	args := []string{
 		"--dangerously-skip-permissions",
 		"--print-timeout", "30m",
+		"--output-format", "stream-json",
 	}
 	args = append(args, buildAgyModelArgs(modelName)...)
 	args = append(args, "-p", prompt)
@@ -624,6 +665,8 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 	session.Unlock()
 
 	scanner := bufio.NewScanner(ptmx)
+	scanBuf := make([]byte, 64*1024)
+	scanner.Buffer(scanBuf, 10*1024*1024)
 	done := make(chan struct{})
 
 	stopLiveUpdate := make(chan struct{})
@@ -649,20 +692,30 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 				followupsCount := len(session.pendingFollowups)
 				session.Unlock()
 
-				if statusMsg != nil && lastLine != "" {
+				tokenSnippet := tokenTracker.GetLiveStatusSnippet()
+
+				if statusMsg != nil && (lastLine != "" || tokenSnippet != "") {
 					queueInfo := ""
 					if followupsCount > 0 {
 						queueInfo = fmt.Sprintf(" | Очередь: %d", followupsCount)
 					}
-					text := fmt.Sprintf(
-						"⏳ <b>В работе:</b> <code>%s</code> [<code>%s</code>] (<code>%s</code>%s)\n\n📍 <b>Действие:</b>\n<code>%s</code>\n\n<i>(Логи: /status | Стоп: /cancel)</i>",
+					var bldr strings.Builder
+					bldr.WriteString(fmt.Sprintf(
+						"⏳ <b>В работе:</b> <code>%s</code> [<code>%s</code>] (<code>%s</code>%s)\n\n",
 						html.EscapeString(projectName),
 						html.EscapeString(modelName),
 						dur,
 						queueInfo,
-						html.EscapeString(truncateString(lastLine, 80)),
-					)
-					_, _ = b.Edit(statusMsg, text, tele.ModeHTML)
+					))
+					if lastLine != "" {
+						bldr.WriteString(fmt.Sprintf("📍 <b>Действие:</b>\n<code>%s</code>\n\n", html.EscapeString(truncateString(lastLine, 80))))
+					}
+					if tokenSnippet != "" {
+						bldr.WriteString(tokenSnippet + "\n\n")
+					}
+					bldr.WriteString("<i>(Логи: /status | Токены: /tokens | Стоп: /cancel)</i>")
+
+					_, _ = b.Edit(statusMsg, bldr.String(), tele.ModeHTML)
 				}
 			}
 		}
@@ -677,6 +730,70 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 				continue
 			}
 
+			evt, err := ParseStreamEvent(cleanLine)
+			if err == nil && evt != nil {
+				if evt.StepUpdate != nil {
+					u := evt.StepUpdate
+					if u.Usage != nil {
+						tokenTracker.RecordStepUsage(u.StepIndex, *u.Usage)
+					}
+					if u.StepType == "tool" && u.State == "ACTIVE" {
+						desc := formatToolAction(u.ToolName, u.ToolInfo)
+						session.Lock()
+						session.recentLogs = append(session.recentLogs, desc)
+						if len(session.recentLogs) > 20 {
+							session.recentLogs = session.recentLogs[1:]
+						}
+						session.Unlock()
+					} else if u.StepType == "agent_response" && u.TextDelta != "" {
+						session.Lock()
+						session.fullOutput.WriteString(u.TextDelta)
+						session.Unlock()
+
+						if matches := prUrlRegexp.FindStringSubmatch(u.TextDelta); len(matches) > 1 {
+							session.Lock()
+							session.lastPRURL = matches[1]
+							session.Unlock()
+						}
+					}
+
+					// Проверка на вопрос пользователю
+					if u.ToolName == "ask_question" ||
+						(u.StepType == "agent_response" && u.State == "DONE" && isQuestionText(u.TextDelta)) {
+						session.Lock()
+						session.waiting = true
+						session.Unlock()
+
+						questionText := u.TextDelta
+						if u.ToolName == "ask_question" && u.ToolInfo != nil && u.ToolInfo.Parameters != nil {
+							questionText = fmt.Sprintf("%v", u.ToolInfo.Parameters)
+						}
+						msg := fmt.Sprintf("❓ <b>Вопрос по проекту <code>%s</code>:</b>\n\n%s\n\n<i>Ответьте сообщением в чат.</i>",
+							html.EscapeString(projectName), html.EscapeString(questionText))
+						b.Send(recipient, msg, tele.ModeHTML)
+					}
+				}
+
+				if evt.Result != nil {
+					res := evt.Result
+					if res.Usage != nil {
+						tokenTracker.RecordResultUsage(*res.Usage, res.DurationSeconds, res.NumTurns)
+					}
+					if res.Response != "" {
+						session.Lock()
+						if session.fullOutput.Len() == 0 {
+							session.fullOutput.WriteString(res.Response)
+						}
+						if matches := prUrlRegexp.FindStringSubmatch(res.Response); len(matches) > 1 {
+							session.lastPRURL = matches[1]
+						}
+						session.Unlock()
+					}
+				}
+				continue
+			}
+
+			// Fallback для текстового вывода или не-JSON строк
 			session.Lock()
 			session.recentLogs = append(session.recentLogs, cleanLine)
 			if len(session.recentLogs) > 20 {
@@ -695,18 +812,13 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 			}
 			session.Unlock()
 
-			lower := strings.ToLower(cleanLine)
-			isQuestion := strings.HasSuffix(cleanLine, "?") ||
-				strings.Contains(lower, "подтвердите") ||
-				strings.Contains(lower, "как поступить") ||
-				strings.Contains(lower, "do you want to")
-
-			if isQuestion {
+			if isQuestionText(cleanLine) {
 				session.Lock()
 				session.waiting = true
 				session.Unlock()
 
-				msg := fmt.Sprintf("❓ <b>Вопрос по проекту <code>%s</code>:</b>\n\n%s\n\n<i>Ответьте сообщением в чат.</i>", html.EscapeString(projectName), html.EscapeString(cleanLine))
+				msg := fmt.Sprintf("❓ <b>Вопрос по проекту <code>%s</code>:</b>\n\n%s\n\n<i>Ответьте сообщением в чат.</i>",
+					html.EscapeString(projectName), html.EscapeString(cleanLine))
 				b.Send(recipient, msg, tele.ModeHTML)
 			}
 		}
@@ -724,6 +836,18 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 	}
 	session.waiting = false
 	session.Unlock()
+}
+
+func isQuestionText(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	lower := strings.ToLower(s)
+	return strings.HasSuffix(s, "?") ||
+		strings.Contains(lower, "подтвердите") ||
+		strings.Contains(lower, "как поступить") ||
+		strings.Contains(lower, "do you want to")
 }
 
 func sendLongMarkdown(b *tele.Bot, recipient tele.Recipient, text string) {
