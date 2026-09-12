@@ -508,7 +508,11 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, prompt, modelName string) {
 	statusMsg, _ := b.Send(recipient, fmt.Sprintf("🚀 <b>Шаг в работе:</b> <code>%s</code> [<code>%s</code>]\n<i>Инициализация сессии агента...</i>", html.EscapeString(projectName), html.EscapeString(modelName)), tele.ModeHTML)
 
-	args := []string{"--dangerously-skip-permissions", "--model", modelName}
+	args := []string{
+	    "--dangerously-skip-permissions",
+	    "--timeout", "30m",
+	    "--model", modelName,
+	}
 	// Модели reasoning требуют флаг --effort
 	if strings.Contains(modelName, "claude") {
 	    args = append(args, "--effort", "high")
@@ -516,7 +520,6 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 		args = append(args, "--effort", "medium")
 	}
 	args = append(args, "-p", prompt)
-
 	cmd := exec.Command("agy", args...)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
