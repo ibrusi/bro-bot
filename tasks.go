@@ -17,18 +17,24 @@ import (
 type TaskStatus string
 
 const (
-	TaskStatusQueued       TaskStatus = "queued"
-	TaskStatusRunning      TaskStatus = "running"
-	TaskStatusWaitingInput TaskStatus = "waiting_input"
-	TaskStatusCompleted    TaskStatus = "completed"
-	TaskStatusCancelled    TaskStatus = "cancelled"
-	TaskStatusFailed       TaskStatus = "failed"
+	TaskStatusQueued          TaskStatus = "queued"
+	TaskStatusPlanning        TaskStatus = "planning"
+	TaskStatusWaitingApproval TaskStatus = "waiting_approval"
+	TaskStatusRunning         TaskStatus = "running"
+	TaskStatusWaitingInput    TaskStatus = "waiting_input"
+	TaskStatusCompleted       TaskStatus = "completed"
+	TaskStatusCancelled       TaskStatus = "cancelled"
+	TaskStatusFailed          TaskStatus = "failed"
 )
 
 func (s TaskStatus) RussianTitle() string {
 	switch s {
 	case TaskStatusQueued:
 		return "⏳ В очереди"
+	case TaskStatusPlanning:
+		return "📝 Составление плана"
+	case TaskStatusWaitingApproval:
+		return "📋 Ожидает утверждения плана"
 	case TaskStatusRunning:
 		return "⚙️ Выполняется"
 	case TaskStatusWaitingInput:
@@ -48,6 +54,10 @@ func (s TaskStatus) Emoji() string {
 	switch s {
 	case TaskStatusQueued:
 		return "⏳"
+	case TaskStatusPlanning:
+		return "📝"
+	case TaskStatusWaitingApproval:
+		return "📋"
 	case TaskStatusRunning:
 		return "⚙️"
 	case TaskStatusWaitingInput:
@@ -72,6 +82,9 @@ type TaskSession struct {
 	InitialPrompt    string
 	CurrentPrompt    string
 	Status           TaskStatus
+	RequiresPlan     bool
+	Plan             string
+	PlanApproved     bool
 	StartedAt        time.Time
 	FinishedAt       time.Time
 	RecentLogs       []string
@@ -103,7 +116,11 @@ func (t *TaskSession) Duration() time.Duration {
 func (t *TaskSession) IsActive() bool {
 	t.Lock()
 	defer t.Unlock()
-	return t.Status == TaskStatusRunning || t.Status == TaskStatusWaitingInput || t.Status == TaskStatusQueued
+	return t.Status == TaskStatusRunning ||
+		t.Status == TaskStatusWaitingInput ||
+		t.Status == TaskStatusQueued ||
+		t.Status == TaskStatusPlanning ||
+		t.Status == TaskStatusWaitingApproval
 }
 
 // AppendLog безопасно добавляет запись в лог с ограничением глубины.
@@ -138,8 +155,13 @@ func NewTaskManager() *TaskManager {
 	}
 }
 
-// CreateTask создаёт задачу и регистрирует её в менеджере.
+// CreateTask создаёт задачу без обязательного плана и регистрирует её в менеджере.
 func (tm *TaskManager) CreateTask(project, model, prompt string, recipient tele.Recipient) *TaskSession {
+	return tm.CreateTaskWithPlan(project, model, prompt, recipient, false)
+}
+
+// CreateTaskWithPlan создаёт задачу с возможностью требования предварительного плана.
+func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, recipient tele.Recipient, requiresPlan bool) *TaskSession {
 	tm.Lock()
 	defer tm.Unlock()
 
@@ -153,6 +175,7 @@ func (tm *TaskManager) CreateTask(project, model, prompt string, recipient tele.
 		InitialPrompt: prompt,
 		CurrentPrompt: prompt,
 		Status:        TaskStatusQueued,
+		RequiresPlan:  requiresPlan,
 		Recipient:     recipient,
 	}
 
@@ -244,7 +267,7 @@ func (tm *TaskManager) GetActiveOrQueuedTasks() []*TaskSession {
 	return result
 }
 
-// HasRunningTaskInProject проверяет, выполняется ли прямо сейчас задача в проекте.
+// HasRunningTaskInProject проверяет, выполняется ли прямо сейчас задача в проекте (или ожидает утверждения плана).
 func (tm *TaskManager) HasRunningTaskInProject(project string) bool {
 	tm.RLock()
 	defer tm.RUnlock()
@@ -252,7 +275,7 @@ func (tm *TaskManager) HasRunningTaskInProject(project string) bool {
 	for _, task := range tm.tasks {
 		task.Lock()
 		isRunning := (task.Project == project) &&
-			(task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput)
+			(task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput || task.Status == TaskStatusPlanning || task.Status == TaskStatusWaitingApproval)
 		task.Unlock()
 		if isRunning {
 			return true
@@ -377,7 +400,7 @@ func (tm *TaskManager) GetRunningWorkerPids() (int, []int) {
 		if task.Cmd != nil && task.Cmd.Process != nil {
 			pid = task.Cmd.Process.Pid
 		}
-		isRunning := task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput
+		isRunning := task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput || task.Status == TaskStatusPlanning
 		task.Unlock()
 
 		if isRunning && pid > 0 {
@@ -450,6 +473,10 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 			extraInfo := fmt.Sprintf("⏱ <code>%s</code>", durStr)
 			if status == TaskStatusQueued {
 				extraInfo = "⏳ <i>ожидает очереди проекта</i>"
+			} else if status == TaskStatusWaitingApproval {
+				extraInfo = fmt.Sprintf("📋 <i>ожидает утверждения плана (<code>/approve %d</code>)</i>", id)
+			} else if status == TaskStatusPlanning {
+				extraInfo = "📝 <i>составление плана...</i>"
 			}
 			if followupsCount > 0 {
 				extraInfo += fmt.Sprintf(" | 📥 правок: %d", followupsCount)
@@ -498,6 +525,8 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 	bldr.WriteString("• <code>/task &lt;id&gt;</code> — переключить активную задачу\n")
 	bldr.WriteString("• <code>/add &lt;id&gt; &lt;текст&gt;</code> — дополнить конкретную задачу\n")
 	bldr.WriteString("• <code>/new &lt;текст&gt;</code> — создать новую задачу\n")
+	bldr.WriteString("• <code>/plan &lt;текст&gt;</code> — составить план и утвердить перед реализацией\n")
+	bldr.WriteString("• <code>/approve &lt;id&gt;</code> — утвердить план задачи\n")
 	bldr.WriteString("• <code>/cancel &lt;id&gt;</code> — отменить задачу")
 
 	// Формируем инлайн-клавиатуру для активных задач
@@ -537,6 +566,9 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	proj := task.Project
 	model := task.Model
 	status := task.Status
+	requiresPlan := task.RequiresPlan
+	planApproved := task.PlanApproved
+	plan := task.Plan
 	initialPrompt := task.InitialPrompt
 	curPrompt := task.CurrentPrompt
 	followups := append([]string(nil), task.PendingFollowups...)
@@ -557,12 +589,30 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	bldr.WriteString(fmt.Sprintf("• <b>Время:</b> <code>%s</code>\n", durStr))
 	bldr.WriteString(fmt.Sprintf("• <b>Задача:</b> <i>«%s»</i>\n", html.EscapeString(initialPrompt)))
 
+	if requiresPlan {
+		if planApproved {
+			bldr.WriteString("• <b>План:</b> ✅ Утверждён\n")
+		} else if status == TaskStatusWaitingApproval {
+			bldr.WriteString(fmt.Sprintf("• <b>План:</b> 📋 Ожидает утверждения (<code>/approve %d</code>)\n", id))
+		} else if status == TaskStatusPlanning {
+			bldr.WriteString("• <b>План:</b> 📝 Составляется агентом...\n")
+		}
+	}
+
 	if curPrompt != initialPrompt && curPrompt != "" {
 		bldr.WriteString(fmt.Sprintf("• <b>Текущий шаг:</b> <i>«%s»</i>\n", html.EscapeString(truncateString(curPrompt, 80))))
 	}
 
 	if prURL != "" {
 		bldr.WriteString(fmt.Sprintf("• <b>PR:</b> 🔗 <a href=\"%s\">%s</a>\n", html.EscapeString(prURL), html.EscapeString(prURL)))
+	}
+
+	if plan != "" {
+		planSnippet := plan
+		if len(planSnippet) > 400 {
+			planSnippet = planSnippet[:400] + "..."
+		}
+		bldr.WriteString(fmt.Sprintf("\n📋 <b>План реализации:</b>\n<i>%s</i>\n", html.EscapeString(planSnippet)))
 	}
 
 	if len(followups) > 0 {
@@ -580,11 +630,15 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 		bldr.WriteString(fmt.Sprintf("\n📜 <b>Лог выполнения:</b>\n<pre>%s</pre>\n", html.EscapeString(rawTail)))
 	}
 
-	bldr.WriteString("\n💡 <i>Дополнить: <code>/add ")
-	bldr.WriteString(strconv.Itoa(id))
-	bldr.WriteString(" &lt;текст&gt;</code> | Отменить: <code>/cancel ")
-	bldr.WriteString(strconv.Itoa(id))
-	bldr.WriteString("</code></i>")
+	if status == TaskStatusWaitingApproval {
+		bldr.WriteString(fmt.Sprintf("\n💡 <i>Утвердить: <code>/approve %d</code> | Дополнить: <code>/add %d &lt;правки&gt;</code> | Отменить: <code>/cancel %d</code></i>", id, id, id))
+	} else {
+		bldr.WriteString("\n💡 <i>Дополнить: <code>/add ")
+		bldr.WriteString(strconv.Itoa(id))
+		bldr.WriteString(" &lt;текст&gt;</code> | Отменить: <code>/cancel ")
+		bldr.WriteString(strconv.Itoa(id))
+		bldr.WriteString("</code></i>")
+	}
 
 	return bldr.String()
 }

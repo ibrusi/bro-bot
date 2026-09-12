@@ -80,6 +80,7 @@ type ProjectState struct {
 	sync.RWMutex
 	currentProject string
 	currentModel   string
+	planMode       bool
 }
 
 var (
@@ -166,6 +167,9 @@ func main() {
 				"<b>Задачи:</b>\n"+
 				"• /tasks — список задач и быстрое переключение\n"+
 				"• /task &lt;id&gt; [текст] — переключить фокус на задачу или дополнить её\n"+
+				"• /plan &lt;текст&gt; — составить план и утвердить перед реализацией\n"+
+				"• /planmode [on|off] — включить обязательный план для всех задач\n"+
+				"• /approve [id] — утвердить план задачи и начать реализацию\n"+
 				"• /add &lt;id&gt; &lt;текст&gt; — отправить дополнение конкретной задаче\n"+
 				"• /new &lt;текст&gt; — создать новую задачу в текущем проекте\n"+
 				"• /status [id] — подробный статус, логи и очередь правок\n"+
@@ -177,7 +181,7 @@ func main() {
 				"• /models — список моделей и переключение (/model)\n"+
 				"• /projects — список проектов и переключение (/use)\n"+
 				"• /restart, /rebuild — управление процессом бота\n\n"+
-				"💡 <i>Отправьте задачу сообщением в чат. Дополнения можно отправлять через /add &lt;id&gt; &lt;текст&gt;, ответом (Reply) на сообщение задачи или обычным текстом.</i>",
+				"💡 <i>Отправьте задачу сообщением в чат. Для предварительного плана используйте /plan &lt;задача&gt;. Дополнения можно отправлять через /add &lt;id&gt; &lt;текст&gt; или ответом на сообщения бота.</i>",
 			html.EscapeString(curProj),
 			html.EscapeString(curMod),
 		)
@@ -524,6 +528,10 @@ func main() {
 				prompt := strings.Join(args[1:], " ")
 				return handleCreateNewTask(b, c, prompt)
 			}
+			if strings.ToLower(first) == "plan" && len(args) > 1 {
+				prompt := strings.Join(args[1:], " ")
+				return handleCreatePlanTask(b, c, prompt)
+			}
 			return c.Send("Использование:\n• <code>/task &lt;id&gt;</code> — переключить активную задачу\n• <code>/task &lt;id&gt; &lt;текст&gt;</code> — дополнить задачу", tele.ModeHTML)
 		}
 
@@ -570,6 +578,152 @@ func main() {
 		}
 		text := strings.TrimSpace(strings.Join(args, " "))
 		return handleCreateNewTask(b, c, text)
+	})
+
+	b.Handle("/plan", func(c tele.Context) error {
+		args := c.Args()
+		if len(args) == 0 {
+			projectState.RLock()
+			mode := projectState.planMode
+			projectState.RUnlock()
+
+			statusStr := "❌ выключен"
+			if mode {
+				statusStr = "✅ включен"
+			}
+
+			msg := fmt.Sprintf(
+				"📝 <b>Режим планирования задач:</b>\n\n"+
+					"В этом режиме агент сначала подробно исследует кодовую базу, формирует пошаговый план, отправляет его вам на утверждение, и <b>только после вашего одобрения</b> приступает к автономной реализации (создание ветки, код, тесты, PR).\n\n"+
+					"• Обязательный план для всех задач: <b>%s</b>\n\n"+
+					"<b>Команды:</b>\n"+
+					"• <code>/plan &lt;описание задачи&gt;</code> — создать задачу с обязательным планом\n"+
+					"• <code>/plan &lt;проект&gt; &lt;описание&gt;</code> — создать задачу с планом для проекта\n"+
+					"• <code>/planmode [on|off]</code> — включить/выключить обязательный план для всех задач\n"+
+					"• <code>/approve [id]</code> — утвердить план задачи и начать реализацию\n\n"+
+					"💡 <i>Вы можете переключить режим кнопкой ниже:</i>",
+				statusStr,
+			)
+
+			menu := &tele.ReplyMarkup{}
+			btnToggle := menu.Data("🔄 Переключить Plan Mode", "plan_mode_toggle")
+			menu.Inline(menu.Row(btnToggle))
+			return c.Send(msg, menu, tele.ModeHTML)
+		}
+		text := strings.TrimSpace(strings.Join(args, " "))
+		return handleCreatePlanTask(b, c, text)
+	})
+
+	b.Handle("/planmode", func(c tele.Context) error {
+		args := c.Args()
+		projectState.Lock()
+		if len(args) == 0 {
+			projectState.planMode = !projectState.planMode
+		} else {
+			arg := strings.ToLower(strings.TrimSpace(args[0]))
+			switch arg {
+			case "on", "enable", "true", "1", "вкл", "да":
+				projectState.planMode = true
+			case "off", "disable", "false", "0", "выкл", "нет":
+				projectState.planMode = false
+			case "toggle":
+				projectState.planMode = !projectState.planMode
+			default:
+				projectState.Unlock()
+				return c.Send("Использование: <code>/planmode [on|off|toggle]</code>", tele.ModeHTML)
+			}
+		}
+		newMode := projectState.planMode
+		projectState.Unlock()
+
+		if newMode {
+			return c.Send("✅ <b>Режим обязательного планирования ВКЛЮЧЕН.</b>\nВсе новые задачи будут сначала составлять план и ожидать вашего утверждения.", tele.ModeHTML)
+		}
+		return c.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nНовые задачи будут сразу приступать к реализации (для плана используйте <code>/plan &lt;задача&gt;</code>).", tele.ModeHTML)
+	})
+
+	b.Handle("/approve", func(c tele.Context) error {
+		args := c.Args()
+		var targetID int
+		if len(args) > 0 {
+			first := strings.TrimPrefix(args[0], "#")
+			var err error
+			targetID, err = strconv.Atoi(first)
+			if err != nil {
+				return c.Send("Укажите номер задачи. Пример: <code>/approve 1</code>", tele.ModeHTML)
+			}
+		} else {
+			active := taskManager.GetActiveTask()
+			if active == nil {
+				return c.Send("Нет активных задач для утверждения.")
+			}
+			targetID = active.ID
+		}
+		return handleApprovePlan(b, c.Recipient(), targetID)
+	})
+
+	b.Handle("/confirm", func(c tele.Context) error {
+		args := c.Args()
+		var targetID int
+		if len(args) > 0 {
+			first := strings.TrimPrefix(args[0], "#")
+			var err error
+			targetID, err = strconv.Atoi(first)
+			if err != nil {
+				return c.Send("Укажите номер задачи. Пример: <code>/confirm 1</code>", tele.ModeHTML)
+			}
+		} else {
+			active := taskManager.GetActiveTask()
+			if active == nil {
+				return c.Send("Нет активных задач для утверждения.")
+			}
+			targetID = active.ID
+		}
+		return handleApprovePlan(b, c.Recipient(), targetID)
+	})
+
+	btnPlanApprove := tele.Btn{Unique: "plan_approve"}
+	b.Handle(&btnPlanApprove, func(c tele.Context) error {
+		idStr := strings.TrimSpace(c.Data())
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+		}
+		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("План #%d утверждён", id)})
+		return handleApprovePlan(b, c.Recipient(), id)
+	})
+
+	btnPlanCancel := tele.Btn{Unique: "plan_cancel"}
+	b.Handle(&btnPlanCancel, func(c tele.Context) error {
+		idStr := strings.TrimSpace(c.Data())
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+		}
+		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Задача #%d отменена", id)})
+		task, err := taskManager.CancelTask(id)
+		if err != nil {
+			return c.Send(fmt.Sprintf("❌ %s", err.Error()), tele.ModeHTML)
+		}
+		syncLegacySession(taskManager.GetActiveTask())
+		tokenTracker.CancelTask()
+		checkAndStartQueuedTask(b, task.Project, projectsRoot)
+		return c.Send(fmt.Sprintf("🛑 <b>Задача #%d (<code>%s</code>) остановлена.</b>", id, html.EscapeString(task.Project)), tele.ModeHTML)
+	})
+
+	btnPlanModeToggle := tele.Btn{Unique: "plan_mode_toggle"}
+	b.Handle(&btnPlanModeToggle, func(c tele.Context) error {
+		projectState.Lock()
+		projectState.planMode = !projectState.planMode
+		newMode := projectState.planMode
+		projectState.Unlock()
+
+		if newMode {
+			_ = c.Respond(&tele.CallbackResponse{Text: "Режим планирования включен"})
+			return c.Send("✅ <b>Режим обязательного планирования ВКЛЮЧЕН.</b>\nВсе новые задачи будут сначала формировать план и ожидать вашего утверждения.", tele.ModeHTML)
+		}
+		_ = c.Respond(&tele.CallbackResponse{Text: "Режим планирования выключен"})
+		return c.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nДля создания задач с планом используйте <code>/plan &lt;задача&gt;</code>.", tele.ModeHTML)
 	})
 
 	b.Handle("/cancel", func(c tele.Context) error {
@@ -705,9 +859,91 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 }
 
 func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *TaskSession, workDir string) {
-	currentPrompt := task.InitialPrompt
 	projectName := task.Project
 	taskID := task.ID
+
+	// ЭТАП 1: Планирование (если требуется и ещё не утверждён)
+	task.Lock()
+	needsPlanning := task.RequiresPlan && !task.PlanApproved
+	task.Unlock()
+
+	if needsPlanning {
+		task.Lock()
+		if task.Status == TaskStatusCancelled {
+			task.Unlock()
+			return
+		}
+		task.Status = TaskStatusPlanning
+		activeModel := task.Model
+		existingPlan := task.Plan
+		curPrompt := task.CurrentPrompt
+		task.Unlock()
+
+		syncLegacySession(task)
+
+		var planningPrompt string
+		if existingPlan == "" {
+			planningPrompt = fmt.Sprintf(
+				"Задача пользователя: %s\n\n"+
+					"ВНИМАНИЕ: Сейчас выполняется ЭТАП ПЛАНИРОВАНИЯ.\n"+
+					"НЕ создавай git-ветку, НЕ модифицируй файлы проекта, НЕ делай git commit, НЕ делай git push и НЕ открывай PR.\n"+
+					"Твоя цель сейчас:\n"+
+					"1. Тщательно исследуй кодовую базу и архитектуру проекта.\n"+
+					"2. Сформируй чёткий, пошаговый и структурированный план реализации задачи.\n"+
+					"3. Опиши:\n"+
+					"   - Какие файлы и компоненты будут созданы или изменены.\n"+
+					"   - Ключевые архитектурные решения и интерфейсы.\n"+
+					"   - План тестирования и проверки работоспособности.\n"+
+					"   - Возможные риски, краевые случаи и пути их решения.\n"+
+					"4. Выведи итоговый план в понятном и структурированном виде для пользователя.",
+				task.InitialPrompt,
+			)
+		} else {
+			feedback := curPrompt
+			if feedback == "" {
+				feedback = task.InitialPrompt
+			}
+			planningPrompt = fmt.Sprintf(
+				"Задача пользователя: %s\n\n"+
+					"ПРЕДЫДУЩИЙ ПЛАН РЕАЛИЗАЦИИ:\n%s\n\n"+
+					"ЗАМЕЧАНИЯ И ДОПОЛНЕНИЯ ПОЛЬЗОВАТЕЛЯ К ПЛАНУ:\n%s\n\n"+
+					"ВНИМАНИЕ: Это этап планирования. НЕ вноси изменения в файлы проекта, НЕ делай commit и НЕ создавай PR.\n"+
+					"Обнови и скорректируй план реализации с учётом всех замечаний пользователя и выведи обновлённый план.",
+				task.InitialPrompt, existingPlan, feedback,
+			)
+		}
+
+		executeStepForTask(b, recipient, task, workDir, planningPrompt, activeModel)
+
+		task.Lock()
+		if task.Status == TaskStatusCancelled {
+			task.Unlock()
+			checkAndStartQueuedTask(b, projectName, projectsRoot)
+			return
+		}
+
+		planText := strings.TrimSpace(task.FullOutput.String())
+		if planText == "" {
+			planText = "Агент не сформировал подробный план. Вы можете дополнить задачу замечаниями или утвердить её."
+		}
+		task.Plan = planText
+		task.Status = TaskStatusWaitingApproval
+		task.FullOutput.Reset()
+		task.RecentLogs = nil
+		task.Unlock()
+
+		syncLegacySession(task)
+
+		sendPlanForApproval(b, recipient, task)
+		return
+	}
+
+	task.Lock()
+	currentPrompt := task.InitialPrompt
+	if task.CurrentPrompt != "" {
+		currentPrompt = task.CurrentPrompt
+	}
+	task.Unlock()
 
 	for {
 		task.Lock()
@@ -788,7 +1024,18 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 	projectName := task.Project
 	taskID := task.ID
 
-	statusMsg, _ := b.Send(recipient, fmt.Sprintf("🚀 <b>Шаг задачи #%d в работе:</b> <code>%s</code> [<code>%s</code>]\n<i>Инициализация сессии агента...</i>", taskID, html.EscapeString(projectName), html.EscapeString(modelName)), tele.ModeHTML)
+	task.Lock()
+	isPlanning := task.Status == TaskStatusPlanning
+	task.Unlock()
+
+	var statusMsgText string
+	if isPlanning {
+		statusMsgText = fmt.Sprintf("📝 <b>Составление плана задачи #%d:</b> <code>%s</code> [<code>%s</code>]\n<i>Исследование репозитория и формирование плана...</i>", taskID, html.EscapeString(projectName), html.EscapeString(modelName))
+	} else {
+		statusMsgText = fmt.Sprintf("🚀 <b>Шаг задачи #%d в работе:</b> <code>%s</code> [<code>%s</code>]\n<i>Инициализация сессии агента...</i>", taskID, html.EscapeString(projectName), html.EscapeString(modelName))
+	}
+
+	statusMsg, _ := b.Send(recipient, statusMsgText, tele.ModeHTML)
 	if statusMsg != nil {
 		taskManager.RegisterMessageTask(statusMsg.ID, taskID)
 	}
@@ -848,7 +1095,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 				return
 			case <-ticker.C:
 				task.Lock()
-				if task.Status != TaskStatusRunning && task.Status != TaskStatusWaitingInput {
+				if task.Status != TaskStatusRunning && task.Status != TaskStatusWaitingInput && task.Status != TaskStatusPlanning {
 					task.Unlock()
 					return
 				}
@@ -858,6 +1105,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 				}
 				dur := task.Duration()
 				followupsCount := len(task.PendingFollowups)
+				taskStatus := task.Status
 				task.Unlock()
 
 				tokenSnippet := tokenTracker.GetLiveStatusSnippet()
@@ -867,9 +1115,14 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 					if followupsCount > 0 {
 						queueInfo = fmt.Sprintf(" | Правок в очереди: %d", followupsCount)
 					}
+					statusPrefix := "⏳ <b>Задача"
+					if taskStatus == TaskStatusPlanning {
+						statusPrefix = "📝 <b>Планирование задачи"
+					}
 					var bldr strings.Builder
 					bldr.WriteString(fmt.Sprintf(
-						"⏳ <b>Задача #%d:</b> <code>%s</code> [<code>%s</code>] (<code>%s</code>%s)\n\n",
+						"%s #%d:</b> <code>%s</code> [<code>%s</code>] (<code>%s</code>%s)\n\n",
+						statusPrefix,
 						taskID,
 						html.EscapeString(projectName),
 						html.EscapeString(modelName),
@@ -1006,6 +1259,17 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 
 func handleCreateNewTask(b *tele.Bot, c tele.Context, text string) error {
 	projectState.RLock()
+	requiresPlan := projectState.planMode
+	projectState.RUnlock()
+	return handleCreateNewTaskWithOptions(b, c, text, requiresPlan)
+}
+
+func handleCreatePlanTask(b *tele.Bot, c tele.Context, text string) error {
+	return handleCreateNewTaskWithOptions(b, c, text, true)
+}
+
+func handleCreateNewTaskWithOptions(b *tele.Bot, c tele.Context, text string, requiresPlan bool) error {
+	projectState.RLock()
 	curProj := projectState.currentProject
 	curMod := projectState.currentModel
 	projectState.RUnlock()
@@ -1024,21 +1288,29 @@ func handleCreateNewTask(b *tele.Bot, c tele.Context, text string) error {
 		return c.Send("❌ Сначала выберите проект: /projects")
 	}
 
-	task := taskManager.CreateTask(curProj, curMod, text, c.Recipient())
+	task := taskManager.CreateTaskWithPlan(curProj, curMod, text, c.Recipient(), requiresPlan)
 	syncLegacySession(task)
 
 	if taskManager.HasRunningTaskInProject(curProj) {
+		planNote := ""
+		if requiresPlan {
+			planNote = " Сначала будет составлен подробный план."
+		}
 		msg := fmt.Sprintf(
 			"⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>:\n\n"+
 				"<i>«%s»</i>\n\n"+
-				"💡 В этом проекте уже выполняется задача. Задача #%d начнется автоматически после ее завершения.",
-			task.ID, html.EscapeString(curProj), html.EscapeString(text), task.ID,
+				"💡 В этом проекте уже выполняется задача. Задача #%d начнется автоматически после ее завершения.%s",
+			task.ID, html.EscapeString(curProj), html.EscapeString(text), task.ID, planNote,
 		)
 		return c.Send(msg, tele.ModeHTML)
 	}
 
 	task.Lock()
-	task.Status = TaskStatusRunning
+	if requiresPlan {
+		task.Status = TaskStatusPlanning
+	} else {
+		task.Status = TaskStatusRunning
+	}
 	task.StartedAt = time.Now()
 	task.Unlock()
 	syncLegacySession(task)
@@ -1052,6 +1324,22 @@ func handleCreateNewTask(b *tele.Bot, c tele.Context, text string) error {
 }
 
 func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text string) error {
+	task := taskManager.GetTask(taskID)
+	if task == nil {
+		return c.Send(fmt.Sprintf("❌ Задача #%d не найдена.", taskID), tele.ModeHTML)
+	}
+
+	task.Lock()
+	status := task.Status
+	task.Unlock()
+
+	if status == TaskStatusWaitingApproval {
+		if isConfirmationText(text) {
+			return handleApprovePlan(b, c.Recipient(), taskID)
+		}
+		return handleRevisePlan(b, c.Recipient(), taskID, text)
+	}
+
 	task, qLen, isAnswer, err := taskManager.AddFollowup(taskID, text)
 	if err != nil {
 		return c.Send(fmt.Sprintf("❌ Не удалось отправить дополнение к задаче #%d: %s", taskID, err.Error()), tele.ModeHTML)
@@ -1072,6 +1360,128 @@ func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text strin
 	return c.Send(msg, tele.ModeHTML)
 }
 
+func isConfirmationText(s string) bool {
+	s = strings.TrimSpace(strings.ToLower(s))
+	switch s {
+	case "утверждаю", "утвердить", "подтверждаю", "согласовано", "ок", "ok", "approve", "lgtm", "+", "да", "yes", "погнали", "делай", "start":
+		return true
+	default:
+		return false
+	}
+}
+
+func handleApprovePlan(b *tele.Bot, recipient tele.Recipient, taskID int) error {
+	task := taskManager.GetTask(taskID)
+	if task == nil {
+		_, err := b.Send(recipient, fmt.Sprintf("❌ Задача #%d не найдена.", taskID))
+		return err
+	}
+
+	task.Lock()
+	if task.Status != TaskStatusWaitingApproval {
+		statusTitle := task.Status.RussianTitle()
+		task.Unlock()
+		_, err := b.Send(recipient, fmt.Sprintf("ℹ️ Задача #%d не ожидает утверждения плана (текущий статус: %s).", taskID, statusTitle))
+		return err
+	}
+
+	task.PlanApproved = true
+	task.Status = TaskStatusRunning
+	task.StartedAt = time.Now()
+	task.RecentLogs = nil
+	task.PendingFollowups = nil
+
+	projectName := task.Project
+	modelName := task.Model
+	initialPrompt := task.InitialPrompt
+	planText := task.Plan
+
+	implPrompt := fmt.Sprintf(
+		"Задача пользователя: %s\n\n"+
+			"УТВЕРЖДЁННЫЙ ПЛАН РЕАЛИЗАЦИИ:\n%s\n\n"+
+			"Приступай к полной автономной реализации задачи в точности по утверждённому плану и инструкциям в AGENT.md:\n"+
+			"1. Создай ветку от актуального main: feat/... или fix/...\n"+
+			"2. Реализуй все пункты плана.\n"+
+			"3. Проверь код тестами и линтерами.\n"+
+			"4. Закоммить изменения (Conventional Commits) и запушь ветку.\n"+
+			"5. Открой Pull Request через GitHub CLI (gh pr create --fill).\n"+
+			"6. В самом конце ответа обязательно выведи строчку строго в формате:\n"+
+			"PR_URL: <полная web-ссылка на созданный PR>",
+		initialPrompt,
+		planText,
+	)
+
+	task.CurrentPrompt = implPrompt
+	task.Unlock()
+
+	syncLegacySession(task)
+
+	b.Send(recipient, fmt.Sprintf("🚀 <b>План задачи #%d утверждён!</b>\nПриступаю к автономной реализации в <code>%s</code>...", taskID, html.EscapeString(projectName)), tele.ModeHTML)
+
+	tokenTracker.StartTask(projectName, modelName, initialPrompt)
+	workDir := filepath.Join(projectsRoot, projectName)
+	go runAgentTaskPipeline(b, recipient, task, workDir)
+
+	return nil
+}
+
+func handleRevisePlan(b *tele.Bot, recipient tele.Recipient, taskID int, feedback string) error {
+	task := taskManager.GetTask(taskID)
+	if task == nil {
+		return fmt.Errorf("задача #%d не найдена", taskID)
+	}
+
+	task.Lock()
+	task.Status = TaskStatusPlanning
+	task.CurrentPrompt = feedback
+	task.StartedAt = time.Now()
+	task.RecentLogs = nil
+	projectName := task.Project
+	task.Unlock()
+
+	syncLegacySession(task)
+
+	b.Send(recipient, fmt.Sprintf("📝 <b>Задача #%d: Обновляю план с учётом замечаний...</b>\n<i>«%s»</i>", taskID, html.EscapeString(truncateString(feedback, 100))), tele.ModeHTML)
+
+	workDir := filepath.Join(projectsRoot, projectName)
+	go runAgentTaskPipeline(b, recipient, task, workDir)
+
+	return nil
+}
+
+func sendPlanForApproval(b *tele.Bot, recipient tele.Recipient, task *TaskSession) {
+	task.Lock()
+	taskID := task.ID
+	projectName := task.Project
+	planText := task.Plan
+	task.Unlock()
+
+	header := fmt.Sprintf("📋 <b>План реализации задачи #%d</b> (<code>%s</code>):\n", taskID, html.EscapeString(projectName))
+	b.Send(recipient, header, tele.ModeHTML)
+
+	if strings.TrimSpace(planText) != "" {
+		sendLongMarkdown(b, recipient, planText)
+	}
+
+	planMenu := &tele.ReplyMarkup{}
+	btnApprove := planMenu.Data("✅ Утвердить и начать", "plan_approve", strconv.Itoa(taskID))
+	btnCancel := planMenu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(taskID))
+	planMenu.Inline(planMenu.Row(btnApprove, btnCancel))
+
+	footer := fmt.Sprintf(
+		"👆 <b>План задачи #%d ожидает вашего утверждения:</b>\n\n"+
+			"• Нажмите <b>«✅ Утвердить и начать»</b> или введите <code>/approve %d</code>, чтобы начать автономную реализацию.\n"+
+			"• Чтобы внести правки, ответьте (Reply) на это сообщение или введите <code>/add %d &lt;замечания&gt;</code>.\n"+
+			"• Для отмены нажмите <b>«❌ Отменить»</b> или <code>/cancel %d</code>.",
+		taskID, taskID, taskID, taskID,
+	)
+
+	ctlMsg, _ := b.Send(recipient, footer, planMenu, tele.ModeHTML)
+	if ctlMsg != nil {
+		taskManager.RegisterMessageTask(ctlMsg.ID, taskID)
+	}
+}
+
 func checkAndStartQueuedTask(b *tele.Bot, project, root string) {
 	nextTask := taskManager.GetNextQueuedTaskForProject(project)
 	if nextTask == nil {
@@ -1079,7 +1489,12 @@ func checkAndStartQueuedTask(b *tele.Bot, project, root string) {
 	}
 
 	nextTask.Lock()
-	nextTask.Status = TaskStatusRunning
+	isPlanning := nextTask.RequiresPlan && !nextTask.PlanApproved
+	if isPlanning {
+		nextTask.Status = TaskStatusPlanning
+	} else {
+		nextTask.Status = TaskStatusRunning
+	}
 	nextTask.StartedAt = time.Now()
 	recipient := nextTask.Recipient
 	nextID := nextTask.ID
@@ -1089,8 +1504,13 @@ func checkAndStartQueuedTask(b *tele.Bot, project, root string) {
 
 	syncLegacySession(nextTask)
 
-	b.Send(recipient, fmt.Sprintf("🚀 <b>Запуск задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",
-		nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), tele.ModeHTML)
+	if isPlanning {
+		b.Send(recipient, fmt.Sprintf("📝 <b>Запуск планирования задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",
+			nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), tele.ModeHTML)
+	} else {
+		b.Send(recipient, fmt.Sprintf("🚀 <b>Запуск задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",
+			nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), tele.ModeHTML)
+	}
 
 	tokenTracker.StartTask(project, model, prompt)
 	workDir := filepath.Join(root, project)
@@ -1114,8 +1534,8 @@ func syncLegacySession(task *TaskSession) {
 	session.Lock()
 	defer session.Unlock()
 
-	session.isRunning = (task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput)
-	session.waiting = (task.Status == TaskStatusWaitingInput)
+	session.isRunning = (task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput || task.Status == TaskStatusPlanning)
+	session.waiting = (task.Status == TaskStatusWaitingInput || task.Status == TaskStatusWaitingApproval)
 	session.startedAt = task.StartedAt
 	session.currentPrompt = task.InitialPrompt
 	session.currentProject = task.Project

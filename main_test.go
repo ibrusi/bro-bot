@@ -57,3 +57,62 @@ func TestInitDefaultProject(t *testing.T) {
 		t.Errorf("expected zzz-fallback, got %s", cur)
 	}
 }
+
+func TestIsConfirmationText(t *testing.T) {
+	positives := []string{
+		"утверждаю",
+		"УТВЕРДИТЬ",
+		"подтверждаю",
+		"согласовано",
+		"ок",
+		"OK",
+		"approve",
+		"APPROVE",
+		"lgtm",
+		"+",
+		"да",
+		"yes",
+		"погнали",
+		"делай",
+		"start",
+	}
+
+	for _, p := range positives {
+		if !isConfirmationText(p) {
+			t.Errorf("expected '%s' to be recognized as confirmation", p)
+		}
+	}
+
+	negatives := []string{
+		"добавь тесты",
+		"нет",
+		"перепиши на rust",
+		"не утверждаю",
+		"измени шаг 2",
+		"",
+	}
+
+	for _, n := range negatives {
+		if isConfirmationText(n) {
+			t.Errorf("expected '%s' to NOT be recognized as confirmation", n)
+		}
+	}
+}
+
+func TestPlanModeState(t *testing.T) {
+	projectState.Lock()
+	origMode := projectState.planMode
+	projectState.planMode = true
+	isPlan := projectState.planMode
+	projectState.planMode = false
+	isPlanFalse := projectState.planMode
+	projectState.planMode = origMode
+	projectState.Unlock()
+
+	if !isPlan {
+		t.Errorf("expected planMode to be true")
+	}
+	if isPlanFalse {
+		t.Errorf("expected planMode to be false")
+	}
+}
