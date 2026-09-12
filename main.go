@@ -510,7 +510,7 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 
 	args := []string{
 	    "--dangerously-skip-permissions",
-	    "--timeout", "30m",
+	    "--print-timeout", "30m",
 	    "--model", modelName,
 	}
 	// Модели reasoning требуют флаг --effort
