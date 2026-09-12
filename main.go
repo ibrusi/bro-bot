@@ -40,6 +40,7 @@ type AgentSession struct {
 type ProjectState struct {
 	sync.RWMutex
 	currentProject string
+	currentModel   string
 }
 
 var (
@@ -67,6 +68,9 @@ func main() {
 	}
 
 	initDefaultProject(projectsRoot)
+	projectState.Lock()
+	projectState.currentModel = "gemini-1.5-pro"
+	projectState.Unlock()
 
 	b, err := tele.NewBot(tele.Settings{
 		Token:  botToken,
@@ -77,12 +81,14 @@ func main() {
 	}
 
 	commands := []tele.Command{
-		{Text: "status", Description: "Статус задачи, лог и очередь"},
-		{Text: "limits", Description: "Остаток квот и лимиты моделей"},
+		{Text: "start", Description: "Справка и текущий активный проект"},
 		{Text: "projects", Description: "Список доступных проектов"},
 		{Text: "use", Description: "Переключить проект: /use <имя>"},
+		{Text: "status", Description: "Статус задачи, лог и очередь"},
 		{Text: "cancel", Description: "Принудительно остановить процесс"},
-		{Text: "start", Description: "Справка и текущий активный проект"},
+		{Text: "limits", Description: "Остаток квот и лимиты моделей"},
+		{Text: "models", Description: "Список доступных моделей"},
+		{Text: "model", Description: "Выбрать модель: /model <имя>"},
 	}
 	if err := b.SetCommands(commands); err != nil {
 		log.Printf("Предупреждение: не удалось зарегистрировать команды: %v", err)
@@ -254,6 +260,65 @@ func main() {
 		return c.Send(bldr.String(), tele.ModeHTML)
 	})
 
+	// Допустимые модели и их описания
+	availableModels := map[string]string{
+		"gemini-1.5-pro":   "🧠 Флагман: рассуждения, сложный рефакторинг, архитектура (окно 2M)",
+		"gemini-1.5-flash": "⚡ Быстрая: утилитарные задачи, тесты, документация (окно 1M)",
+		"gemini-2.0-flash": "🚀 Новейшая быстрая модель: ультра-низкая задержка и кодинг",
+	}
+
+	b.Handle("/models", func(c tele.Context) error {
+		projectState.RLock()
+		curModel := projectState.currentModel
+		projectState.RUnlock()
+
+		var bldr strings.Builder
+		bldr.WriteString("🤖 <b>Доступные модели:</b>\n\n")
+
+		for m, desc := range availableModels {
+			if m == curModel {
+				bldr.WriteString(fmt.Sprintf("👉 <b>%s</b> <i>(активна)</i>\n%s\n\n", m, desc))
+			} else {
+				bldr.WriteString(fmt.Sprintf("• <code>%s</code>\n%s\n<i>Переключить:</i> <code>/model %s</code>\n\n", m, desc, m))
+			}
+		}
+
+		bldr.WriteString("<i>Поддерживаются алиасы:</i> <code>/model pro</code>, <code>/model flash</code>")
+		return c.Send(bldr.String(), tele.ModeHTML)
+	})
+
+	b.Handle("/model", func(c tele.Context) error {
+		args := c.Args()
+		if len(args) == 0 {
+			projectState.RLock()
+			cur := projectState.currentModel
+			projectState.RUnlock()
+			return c.Send(fmt.Sprintf("Текущая модель: <code>%s</code>\nИспользование: <code>/model &lt;имя&gt;</code> (например, <code>/model flash</code>)", cur), tele.ModeHTML)
+		}
+
+		target := strings.ToLower(strings.TrimSpace(args[0]))
+		
+		// Обработка удобных коротких алиасов
+		switch target {
+		case "pro", "1.5-pro":
+			target = "gemini-1.5-pro"
+		case "flash", "1.5-flash":
+			target = "gemini-1.5-flash"
+		case "2.0-flash", "flash-2":
+			target = "gemini-2.0-flash"
+		}
+
+		if _, exists := availableModels[target]; !exists {
+			return c.Send(fmt.Sprintf("❌ Неизвестная модель: <code>%s</code>. Список: /models", html.EscapeString(target)), tele.ModeHTML)
+		}
+
+		projectState.Lock()
+		projectState.currentModel = target
+		projectState.Unlock()
+
+		return c.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", target), tele.ModeHTML)
+	})
+
 	b.Handle("/use", func(c tele.Context) error {
 		args := c.Args()
 		if len(args) == 0 {
@@ -372,6 +437,11 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 	currentPrompt := initialPrompt
 
 	for {
+		// Получаем актуальную модель перед запуском шага
+		projectState.RLock()
+		activeModel := projectState.currentModel
+		projectState.RUnlock()
+
 		executeStep(b, recipient, workDir, projectName, currentPrompt)
 
 		session.Lock()
@@ -422,10 +492,10 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 	}
 }
 
-func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, prompt string) {
-	statusMsg, _ := b.Send(recipient, fmt.Sprintf("🚀 <b>Шаг в работе:</b> <code>%s</code>\n<i>Инициализация сессии агента...</i>", html.EscapeString(projectName)), tele.ModeHTML)
+func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, prompt, modelName string) {
+	statusMsg, _ := b.Send(recipient, fmt.Sprintf("🚀 <b>Шаг в работе:</b> <code>%s</code> [<code>%s</code>]\n<i>Инициализация сессии агента...</i>", html.EscapeString(projectName), html.EscapeString(modelName)), tele.ModeHTML)
 
-	cmd := exec.Command("agy", "--dangerously-skip-permissions", "-p", prompt)
+	cmd := exec.Command("agy", "--dangerously-skip-permissions", "--model", modelName, "-p", prompt)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
 		"TERM=dumb",
