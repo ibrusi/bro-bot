@@ -571,8 +571,23 @@ func main() {
 }
 
 func initDefaultProject(root string) {
+	defaultProject := os.Getenv("DEFAULT_PROJECT")
+	if defaultProject == "" {
+		defaultProject = "tg-bot-agent"
+	}
+
+	targetDir := filepath.Join(root, defaultProject)
+	if info, err := os.Stat(targetDir); err == nil && info.IsDir() {
+		projectState.Lock()
+		projectState.currentProject = defaultProject
+		projectState.Unlock()
+		log.Printf("Инициализирован проект по умолчанию: %s", defaultProject)
+		return
+	}
+
 	entries, err := os.ReadDir(root)
 	if err != nil {
+		log.Printf("Предупреждение: не удалось прочитать директорию проектов %s: %v", root, err)
 		return
 	}
 	for _, e := range entries {
@@ -580,10 +595,12 @@ func initDefaultProject(root string) {
 			projectState.Lock()
 			projectState.currentProject = e.Name()
 			projectState.Unlock()
+			log.Printf("Инициализирован первый найденный проект: %s", e.Name())
 			break
 		}
 	}
 }
+
 
 func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectName, initialPrompt string) {
 	currentPrompt := initialPrompt
