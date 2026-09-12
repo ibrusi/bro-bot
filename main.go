@@ -626,7 +626,11 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 	session.lastModelUsed = modelName
 	session.Unlock()
 
-	args := []string{"--dangerously-skip-permissions", "--model", modelName}
+	args := []string{
+	    "--dangerously-skip-permissions",
+	    "--print-timeout", "30m",
+	    "--model", modelName,
+	}
 	// Модели reasoning требуют флаг --effort
 	if strings.Contains(modelName, "claude") {
 	    args = append(args, "--effort", "high")
@@ -634,7 +638,6 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 		args = append(args, "--effort", "medium")
 	}
 	args = append(args, "-p", prompt)
-
 	cmd := exec.Command("agy", args...)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
