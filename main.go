@@ -86,19 +86,19 @@ var (
 	session      AgentSession
 	projectState ProjectState
 	adminID      int64
+	projectsRoot = "/home/deploy/projects"
 	prUrlRegexp  = regexp.MustCompile(`PR_URL:\s*(https?://[^\s]+)`)
 	ansiRegex    = regexp.MustCompile(`\x1b(\[[0-9;?><=$]*[a-zA-Z~]|\][0-9;]*\x07|\([B0-9])|\r`)
 	tokensRegexp = regexp.MustCompile(`(?i)tokens?:\s*([0-9,kKmM\s/]+)`)
 	modelRegexp  = regexp.MustCompile(`(?i)model:\s*([a-zA-Z0-9.\-_]+)`)
-
 )
 
 func main() {
 	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	adminIDStr := os.Getenv("TELEGRAM_ADMIN_ID")
-	projectsRoot := os.Getenv("PROJECTS_ROOT")
-	if projectsRoot == "" {
-		projectsRoot = "/home/deploy/projects"
+	envProjectsRoot := os.Getenv("PROJECTS_ROOT")
+	if envProjectsRoot != "" {
+		projectsRoot = envProjectsRoot
 	}
 
 	var err error
@@ -123,14 +123,19 @@ func main() {
 	}
 
 	commands := []tele.Command{
-		{Text: "status", Description: "Статус задачи, лог и очередь"},
+		{Text: "status", Description: "Статус текущей задачи, лог и очередь"},
+		{Text: "tasks", Description: "Список всех задач и переключение"},
+		{Text: "task", Description: "Переключить задачу: /task <id> [текст]"},
+		{Text: "add", Description: "Дополнить задачу: /add <id> <текст>"},
+		{Text: "new", Description: "Создать новую задачу: /new <текст>"},
+		{Text: "cancel", Description: "Остановить задачу: /cancel [id]"},
 		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},
+		{Text: "top", Description: "CPU и память бота и agy"},
 		{Text: "limits", Description: "Остаток квот и лимиты моделей"},
 		{Text: "models", Description: "Список доступных моделей"},
 		{Text: "model", Description: "Выбрать модель: /model <имя>"},
 		{Text: "projects", Description: "Список доступных проектов"},
 		{Text: "use", Description: "Переключить проект: /use <имя>"},
-		{Text: "cancel", Description: "Принудительно остановить процесс"},
 		{Text: "restart", Description: "Перезапустить бота"},
 		{Text: "rebuild", Description: "Собрать билд и перезапустить"},
 		{Text: "start", Description: "Справка и активный проект"},
@@ -156,39 +161,73 @@ func main() {
 
 		msg := fmt.Sprintf(
 			"🤖 <b>Агент-воркер готов к работе!</b>\n\n"+
-				"📁 Текущий проект: <code>%s</code>\n"+
+				"📁 Выбранный проект: <code>%s</code>\n"+
 				"🧠 Активная модель: <code>%s</code>\n\n"+
-				"<b>Команды:</b>\n"+
-				"• /status — статус, лог и очередь уточнений\n"+
+				"<b>Задачи:</b>\n"+
+				"• /tasks — список задач и быстрое переключение\n"+
+				"• /task &lt;id&gt; [текст] — переключить фокус на задачу или дополнить её\n"+
+				"• /add &lt;id&gt; &lt;текст&gt; — отправить дополнение конкретной задаче\n"+
+				"• /new &lt;текст&gt; — создать новую задачу в текущем проекте\n"+
+				"• /status [id] — подробный статус, логи и очередь правок\n"+
+				"• /cancel [id] — остановить задачу\n\n"+
+				"<b>Система и мониторинг:</b>\n"+
 				"• /top (или /ps) — потребление CPU и памяти бота и agy\n"+
 				"• /tokens — статистика токенов, скорости и кэша\n"+
 				"• /limits — статистика токенов и лимиты\n"+
-				"• /models — список моделей и переключение\n"+
-				"• /model &lt;имя&gt; — переключить модель\n"+
-				"• /projects — список проектов\n"+
-				"• /use &lt;имя&gt; — переключить проект\n"+
-				"• /cancel — остановить задачу и сбросить очередь\n"+
-				"• /restart — перезапустить бота\n"+
-				"• /rebuild [pull] [force] — пересобрать билд и перезапустить\n\n"+
-				"Отправьте задачу сообщением в чат. Дополнения можно отправлять прямо в процессе выполнения.",
+				"• /models — список моделей и переключение (/model)\n"+
+				"• /projects — список проектов и переключение (/use)\n"+
+				"• /restart, /rebuild — управление процессом бота\n\n"+
+				"💡 <i>Отправьте задачу сообщением в чат. Дополнения можно отправлять через /add &lt;id&gt; &lt;текст&gt;, ответом (Reply) на сообщение задачи или обычным текстом.</i>",
 			html.EscapeString(curProj),
 			html.EscapeString(curMod),
 		)
 		return c.Send(msg, tele.ModeHTML)
 	})
 
-	b.Handle("/status", func(c tele.Context) error {
-		session.Lock()
-		running := session.isRunning
-		waiting := session.waiting
-		prompt := session.currentPrompt
-		project := session.currentProject
-		started := session.startedAt
-		logs := append([]string(nil), session.recentLogs...)
-		followups := append([]string(nil), session.pendingFollowups...)
-		session.Unlock()
+	b.Handle("/tasks", func(c tele.Context) error {
+		msg, menu := FormatTasksList(taskManager)
+		if menu != nil {
+			return c.Send(msg, menu, tele.ModeHTML)
+		}
+		return c.Send(msg, tele.ModeHTML)
+	})
 
-		if !running {
+	btnTaskSel := tele.Btn{Unique: "task_sel"}
+	b.Handle(&btnTaskSel, func(c tele.Context) error {
+		idStr := strings.TrimSpace(c.Data())
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+		}
+		task, err := taskManager.SetActiveTask(id)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: err.Error()})
+		}
+		syncLegacySession(task)
+		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Выбрана задача #%d", id)})
+
+		details := FormatTaskDetails(task, true)
+		return c.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), tele.ModeHTML)
+	})
+
+	b.Handle("/status", func(c tele.Context) error {
+		args := c.Args()
+		var target *TaskSession
+		if len(args) > 0 {
+			first := strings.TrimPrefix(args[0], "#")
+			if id, err := strconv.Atoi(first); err == nil {
+				target = taskManager.GetTask(id)
+				if target == nil {
+					return c.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), tele.ModeHTML)
+				}
+			}
+		}
+
+		if target == nil {
+			target = taskManager.GetActiveTask()
+		}
+
+		if target == nil || (!target.IsActive() && len(args) == 0) {
 			idleMsg := "💤 <b>Сейчас нет активных задач. Агент простаивает.</b>"
 			lastSnippet := tokenTracker.GetLastTaskStatusBlock()
 			if lastSnippet != "" {
@@ -199,61 +238,38 @@ func main() {
 			if resSnippet != "" {
 				idleMsg += "\n\n" + resSnippet
 			}
-			idleMsg += "\n\n💡 <i>Отправьте задачу сообщением в чат, /top для мониторинга или /tokens для статистики.</i>"
+			idleMsg += "\n\n💡 <i>Отправьте задачу сообщением в чат, /tasks для списка или /new для новой задачи.</i>"
 			return c.Send(idleMsg, tele.ModeHTML)
 		}
 
-		duration := time.Since(started).Round(time.Second)
-		stateStr := "⚙️ Выполняется"
-		if waiting {
-			stateStr = "❓ Ждёт вашего ответа"
-		}
-
-		rawTail := strings.Join(logs, "\n")
-		if len(rawTail) > 1800 {
-			rawTail = rawTail[len(rawTail)-1800:]
-		}
-		if strings.TrimSpace(rawTail) == "" {
-			rawTail = "Инициализация шага или вывод пока формируется..."
-		}
-
-		var followupsSection string
-		if len(followups) > 0 {
-			followupsSection = fmt.Sprintf("\n📥 <b>В очереди доработок (%d):</b>\n", len(followups))
-			for i, item := range followups {
-				followupsSection += fmt.Sprintf("%d. <i>«%s»</i>\n", i+1, html.EscapeString(item))
-			}
-		}
+		activeTask := taskManager.GetActiveTask()
+		isActiveFocus := (activeTask != nil && activeTask.ID == target.ID)
+		msg := FormatTaskDetails(target, isActiveFocus)
 
 		tokenBlock := tokenTracker.GetCurrentTaskStatusBlock()
-		var tokenSection string
 		if tokenBlock != "" {
-			tokenSection = "\n\n" + tokenBlock
+			msg += "\n\n" + tokenBlock
 		}
-
 		report := CollectResourceReport(false)
 		resSnippet := FormatCompactResourceSnippet(report)
-		var resSection string
 		if resSnippet != "" {
-			resSection = "\n\n" + resSnippet
+			msg += "\n\n" + resSnippet
 		}
 
-		msg := fmt.Sprintf(
-			"📊 <b>Статус задачи:</b>\n"+
-				"• Проект: <code>%s</code>\n"+
-				"• Состояние: <b>%s</b>\n"+
-				"• Время текущего шага: <code>%s</code>\n"+
-				"• Задача: <i>%s</i>%s%s%s\n\n"+
-				"📜 <b>Лог выполнения:</b>\n<pre>%s</pre>",
-			html.EscapeString(project),
-			html.EscapeString(stateStr),
-			duration,
-			html.EscapeString(prompt),
-			followupsSection,
-			resSection,
-			tokenSection,
-			html.EscapeString(rawTail),
-		)
+		otherTasks := taskManager.GetActiveOrQueuedTasks()
+		if len(otherTasks) > 1 {
+			var otherParts []string
+			for _, ot := range otherTasks {
+				if ot.ID != target.ID {
+					ot.Lock()
+					otherParts = append(otherParts, fmt.Sprintf("<b>#%d</b> (%s <code>%s</code>)", ot.ID, ot.Status.Emoji(), html.EscapeString(ot.Project)))
+					ot.Unlock()
+				}
+			}
+			if len(otherParts) > 0 {
+				msg += fmt.Sprintf("\n\n📌 <b>Другие задачи:</b> %s\n<i>(Переключить: /task &lt;id&gt; или /tasks)</i>", strings.Join(otherParts, " | "))
+			}
+		}
 
 		return c.Send(msg, tele.ModeHTML)
 	})
@@ -490,19 +506,101 @@ func main() {
 		return c.Send(fmt.Sprintf("✅ Проект переключен на: <code>%s</code>", html.EscapeString(target)), tele.ModeHTML)
 	})
 
-	b.Handle("/cancel", func(c tele.Context) error {
-		session.Lock()
-		defer session.Unlock()
-		if session.isRunning && session.cmd != nil && session.cmd.Process != nil {
-			_ = session.cmd.Process.Kill()
-			session.isRunning = false
-			session.waiting = false
-			session.pendingFollowups = nil
-			session.fullOutput.Reset()
-			tokenTracker.CancelTask()
-			return c.Send("🛑 Процесс остановлен. Очередь задач очищена.")
+	b.Handle("/task", func(c tele.Context) error {
+		args := c.Args()
+		if len(args) == 0 {
+			active := taskManager.GetActiveTask()
+			if active == nil {
+				return c.Send("💤 Нет активных задач. Создать: <code>/new &lt;текст&gt;</code>", tele.ModeHTML)
+			}
+			details := FormatTaskDetails(active, true)
+			return c.Send(details, tele.ModeHTML)
 		}
-		return c.Send("Сейчас нет активных задач.")
+
+		first := strings.TrimPrefix(args[0], "#")
+		id, err := strconv.Atoi(first)
+		if err != nil {
+			if strings.ToLower(first) == "new" && len(args) > 1 {
+				prompt := strings.Join(args[1:], " ")
+				return handleCreateNewTask(b, c, prompt)
+			}
+			return c.Send("Использование:\n• <code>/task &lt;id&gt;</code> — переключить активную задачу\n• <code>/task &lt;id&gt; &lt;текст&gt;</code> — дополнить задачу", tele.ModeHTML)
+		}
+
+		// Если передан текст дополнения: /task 2 сделай ещё это
+		if len(args) > 1 {
+			followupText := strings.TrimSpace(strings.Join(args[1:], " "))
+			return handleAddFollowupToTask(b, c, id, followupText)
+		}
+
+		task, err := taskManager.SetActiveTask(id)
+		if err != nil {
+			return c.Send(fmt.Sprintf("❌ %s", err.Error()), tele.ModeHTML)
+		}
+		syncLegacySession(task)
+
+		details := FormatTaskDetails(task, true)
+		return c.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), tele.ModeHTML)
+	})
+
+	b.Handle("/add", func(c tele.Context) error {
+		args := c.Args()
+		if len(args) == 0 {
+			return c.Send("Использование:\n• <code>/add &lt;id&gt; &lt;текст&gt;</code> — дополнить задачу #id\n• <code>/add &lt;текст&gt;</code> — дополнить активную задачу", tele.ModeHTML)
+		}
+
+		first := strings.TrimPrefix(args[0], "#")
+		if id, err := strconv.Atoi(first); err == nil && len(args) > 1 {
+			followupText := strings.TrimSpace(strings.Join(args[1:], " "))
+			return handleAddFollowupToTask(b, c, id, followupText)
+		}
+
+		active := taskManager.GetActiveTask()
+		if active == nil {
+			return c.Send("❌ Нет активной задачи. Укажите ID: <code>/add &lt;id&gt; &lt;текст&gt;</code>", tele.ModeHTML)
+		}
+		followupText := strings.TrimSpace(strings.Join(args, " "))
+		return handleAddFollowupToTask(b, c, active.ID, followupText)
+	})
+
+	b.Handle("/new", func(c tele.Context) error {
+		args := c.Args()
+		if len(args) == 0 {
+			return c.Send("Использование: <code>/new &lt;описание задачи&gt;</code>\n(или <code>/new &lt;проект&gt; &lt;описание&gt;</code>)", tele.ModeHTML)
+		}
+		text := strings.TrimSpace(strings.Join(args, " "))
+		return handleCreateNewTask(b, c, text)
+	})
+
+	b.Handle("/cancel", func(c tele.Context) error {
+		args := c.Args()
+		var targetID int
+		if len(args) > 0 {
+			idStr := strings.TrimPrefix(args[0], "#")
+			var err error
+			targetID, err = strconv.Atoi(idStr)
+			if err != nil {
+				return c.Send("Укажите номер задачи. Пример: <code>/cancel 2</code>", tele.ModeHTML)
+			}
+		} else {
+			active := taskManager.GetActiveTask()
+			if active == nil || !active.IsActive() {
+				return c.Send("Сейчас нет активных задач.")
+			}
+			targetID = active.ID
+		}
+
+		task, err := taskManager.CancelTask(targetID)
+		if err != nil {
+			return c.Send(fmt.Sprintf("❌ %s", err.Error()), tele.ModeHTML)
+		}
+
+		syncLegacySession(taskManager.GetActiveTask())
+		tokenTracker.CancelTask()
+
+		checkAndStartQueuedTask(b, task.Project, projectsRoot)
+
+		return c.Send(fmt.Sprintf("🛑 Задача <b>#%d</b> (<code>%s</code>) остановлена.", task.ID, html.EscapeString(task.Project)), tele.ModeHTML)
 	})
 
 	b.Handle("/restart", func(c tele.Context) error {
@@ -535,59 +633,22 @@ func main() {
 			return nil
 		}
 
-		session.Lock()
-		if session.isRunning && session.waiting {
-			session.waiting = false
-			_, err := io.WriteString(session.stdin, userText+"\n")
-			session.Unlock()
-
-			if err != nil {
-				return c.Send(fmt.Sprintf("❌ Ошибка отправки ответа: %v", err))
+		// 1. Проверяем, является ли сообщение ответом (Reply) на статус/вопрос конкретной задачи
+		if c.Message().ReplyTo != nil {
+			repliedMsgID := c.Message().ReplyTo.ID
+			if task := taskManager.GetTaskByMessageID(repliedMsgID); task != nil {
+				return handleAddFollowupToTask(b, c, task.ID, userText)
 			}
-			return c.Send("💬 Ответ передан агенту...")
 		}
 
-		if session.isRunning {
-			session.pendingFollowups = append(session.pendingFollowups, userText)
-			count := len(session.pendingFollowups)
-			session.Unlock()
-
-			msg := fmt.Sprintf(
-				"📥 <b>Дополнение сохранено в очередь (#%d)</b>\n\n"+
-					"<i>«%s»</i>\n\n"+
-					"Агент завершит текущий шаг и сразу применит эти правки в текущую ветку.",
-				count, html.EscapeString(userText),
-			)
-			return c.Send(msg, tele.ModeHTML)
+		// 2. Проверяем активную задачу в фокусе
+		active := taskManager.GetActiveTask()
+		if active != nil && active.IsActive() {
+			return handleAddFollowupToTask(b, c, active.ID, userText)
 		}
 
-		projectState.RLock()
-		cur := projectState.currentProject
-		curMod := projectState.currentModel
-		projectState.RUnlock()
-
-		if cur == "" {
-			session.Unlock()
-			return c.Send("❌ Сначала выберите проект: /projects")
-		}
-
-		session.isRunning = true
-		session.waiting = false
-		session.startedAt = time.Now()
-		session.currentPrompt = userText
-		session.currentProject = cur
-		session.recentLogs = nil
-		session.pendingFollowups = nil
-		session.lastPRURL = ""
-		session.fullOutput.Reset()
-		session.Unlock()
-
-		tokenTracker.StartTask(cur, curMod, userText)
-
-		workDir := filepath.Join(projectsRoot, cur)
-		go runAgentPipeline(b, c.Recipient(), workDir, cur, userText)
-
-		return nil
+		// 3. Нет активных задач — запускаем новую задачу
+		return handleCreateNewTask(b, c, userText)
 	})
 
 	go checkAndNotifyRestart(b, adminID)
@@ -629,44 +690,79 @@ func initDefaultProject(root string) {
 
 
 func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectName, initialPrompt string) {
-	currentPrompt := initialPrompt
+	projectState.RLock()
+	modelName := projectState.currentModel
+	projectState.RUnlock()
+
+	task := taskManager.CreateTask(projectName, modelName, initialPrompt, recipient)
+	task.Lock()
+	task.Status = TaskStatusRunning
+	task.StartedAt = time.Now()
+	task.Unlock()
+
+	syncLegacySession(task)
+	runAgentTaskPipeline(b, recipient, task, workDir)
+}
+
+func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *TaskSession, workDir string) {
+	currentPrompt := task.InitialPrompt
+	projectName := task.Project
+	taskID := task.ID
 
 	for {
-		projectState.RLock()
-		activeModel := projectState.currentModel
-		projectState.RUnlock()
+		task.Lock()
+		if task.Status == TaskStatusCancelled {
+			task.Unlock()
+			return
+		}
+		activeModel := task.Model
+		task.CurrentPrompt = currentPrompt
+		task.Unlock()
 
-		executeStep(b, recipient, workDir, projectName, currentPrompt, activeModel)
+		syncLegacySession(task)
 
-		session.Lock()
-		if !session.isRunning {
-			session.Unlock()
+		executeStepForTask(b, recipient, task, workDir, currentPrompt, activeModel)
+
+		task.Lock()
+		if task.Status == TaskStatusCancelled {
+			task.Unlock()
+			checkAndStartQueuedTask(b, projectName, projectsRoot)
 			return
 		}
 
-		if len(session.pendingFollowups) == 0 {
-			prURL := session.lastPRURL
-			finalReport := session.fullOutput.String()
-			session.isRunning = false
-			session.Unlock()
+		if len(task.PendingFollowups) == 0 {
+			prURL := task.LastPRURL
+			finalReport := task.FullOutput.String()
+			task.Status = TaskStatusCompleted
+			task.FinishedAt = time.Now()
+			task.Unlock()
+
+			syncLegacySession(task)
 
 			metrics := tokenTracker.FinishTask(prURL)
 			statsSummary := metrics.FormatCompletionSummary()
 
+			var compMsg *tele.Message
 			if prURL != "" {
-				b.Send(recipient, fmt.Sprintf("🎉 <b>Задача выполнена!</b>\n📁 Проект: <code>%s</code>\n🔗 <a href=\"%s\">Открыть Pull Request</a>\n\n%s", html.EscapeString(projectName), html.EscapeString(prURL), statsSummary), tele.ModeHTML)
+				compMsg, _ = b.Send(recipient, fmt.Sprintf("🎉 <b>Задача #%d выполнена!</b>\n📁 Проект: <code>%s</code>\n🔗 <a href=\"%s\">Открыть Pull Request</a>\n\n%s", taskID, html.EscapeString(projectName), html.EscapeString(prURL), statsSummary), tele.ModeHTML)
 			} else {
-				b.Send(recipient, fmt.Sprintf("✅ <b>Задача завершена!</b> (<code>%s</code>)\n\n%s", html.EscapeString(projectName), statsSummary), tele.ModeHTML)
+				compMsg, _ = b.Send(recipient, fmt.Sprintf("✅ <b>Задача #%d завершена!</b> (<code>%s</code>)\n\n%s", taskID, html.EscapeString(projectName), statsSummary), tele.ModeHTML)
+			}
+			if compMsg != nil {
+				taskManager.RegisterMessageTask(compMsg.ID, taskID)
 			}
 
 			if strings.TrimSpace(finalReport) != "" {
 				sendLongMarkdown(b, recipient, finalReport)
 			}
+
+			// Запускаем следующую задачу из очереди для этого проекта, если есть
+			checkAndStartQueuedTask(b, projectName, projectsRoot)
 			return
 		}
 
-		followups := session.pendingFollowups
-		session.pendingFollowups = nil
+		followups := task.PendingFollowups
+		task.PendingFollowups = nil
 
 		var bldr strings.Builder
 		bldr.WriteString("ВНИМАНИЕ: Продолжай работу в ТЕКУЩЕЙ ветке git (НЕ создавай новую ветку, НЕ делай checkout в main). ")
@@ -677,23 +773,32 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 		bldr.WriteString("Внеси необходимые изменения, запусти тесты/линтеры, закоммить изменения и запушь в текущую ветку. Если PR уже открыт, обнови его.")
 
 		currentPrompt = bldr.String()
-		session.currentPrompt = strings.Join(followups, "; ")
-		session.startedAt = time.Now()
-		session.recentLogs = nil
-		session.Unlock()
+		task.CurrentPrompt = strings.Join(followups, "; ")
+		task.StartedAt = time.Now()
+		task.RecentLogs = nil
+		task.Unlock()
 
 		tokenTracker.StartNextStep(activeModel)
 
-		b.Send(recipient, fmt.Sprintf("🔄 <b>Беру в работу дополнения (%d шт.)...</b>", len(followups)), tele.ModeHTML)
+		b.Send(recipient, fmt.Sprintf("🔄 <b>Задача #%d: Беру в работу дополнения (%d шт.)...</b>", taskID, len(followups)), tele.ModeHTML)
 	}
 }
 
-func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, prompt, modelName string) {
-	statusMsg, _ := b.Send(recipient, fmt.Sprintf("🚀 <b>Шаг в работе:</b> <code>%s</code> [<code>%s</code>]\n<i>Инициализация сессии агента...</i>", html.EscapeString(projectName), html.EscapeString(modelName)), tele.ModeHTML)
+func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession, workDir, prompt, modelName string) {
+	projectName := task.Project
+	taskID := task.ID
 
-	session.Lock()
-	session.lastModelUsed = modelName
-	session.Unlock()
+	statusMsg, _ := b.Send(recipient, fmt.Sprintf("🚀 <b>Шаг задачи #%d в работе:</b> <code>%s</code> [<code>%s</code>]\n<i>Инициализация сессии агента...</i>", taskID, html.EscapeString(projectName), html.EscapeString(modelName)), tele.ModeHTML)
+	if statusMsg != nil {
+		taskManager.RegisterMessageTask(statusMsg.ID, taskID)
+	}
+
+	task.Lock()
+	task.LastModelUsed = modelName
+	task.LiveMsg = statusMsg
+	task.Unlock()
+
+	syncLegacySession(task)
 
 	args := []string{
 		"--dangerously-skip-permissions",
@@ -712,18 +817,20 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		b.Send(recipient, fmt.Sprintf("❌ Ошибка запуска PTY: %v", err))
-		session.Lock()
-		session.isRunning = false
-		session.Unlock()
+		b.Send(recipient, fmt.Sprintf("❌ Ошибка запуска PTY для задачи #%d: %v", taskID, err))
+		task.Lock()
+		task.Status = TaskStatusFailed
+		task.Unlock()
+		syncLegacySession(task)
 		return
 	}
 	defer func() { _ = ptmx.Close() }()
 
-	session.Lock()
-	session.cmd = cmd
-	session.stdin = ptmx
-	session.Unlock()
+	task.Lock()
+	task.Cmd = cmd
+	task.Stdin = ptmx
+	task.Unlock()
+	syncLegacySession(task)
 
 	scanner := bufio.NewScanner(ptmx)
 	scanBuf := make([]byte, 64*1024)
@@ -740,32 +847,33 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 			case <-stopLiveUpdate:
 				return
 			case <-ticker.C:
-				session.Lock()
-				if !session.isRunning {
-					session.Unlock()
+				task.Lock()
+				if task.Status != TaskStatusRunning && task.Status != TaskStatusWaitingInput {
+					task.Unlock()
 					return
 				}
 				var lastLine string
-				if len(session.recentLogs) > 0 {
-					lastLine = session.recentLogs[len(session.recentLogs)-1]
+				if len(task.RecentLogs) > 0 {
+					lastLine = task.RecentLogs[len(task.RecentLogs)-1]
 				}
-				dur := time.Since(session.startedAt).Round(time.Second)
-				followupsCount := len(session.pendingFollowups)
-				session.Unlock()
+				dur := task.Duration()
+				followupsCount := len(task.PendingFollowups)
+				task.Unlock()
 
 				tokenSnippet := tokenTracker.GetLiveStatusSnippet()
 
 				if statusMsg != nil && (lastLine != "" || tokenSnippet != "") {
 					queueInfo := ""
 					if followupsCount > 0 {
-						queueInfo = fmt.Sprintf(" | Очередь: %d", followupsCount)
+						queueInfo = fmt.Sprintf(" | Правок в очереди: %d", followupsCount)
 					}
 					var bldr strings.Builder
 					bldr.WriteString(fmt.Sprintf(
-						"⏳ <b>В работе:</b> <code>%s</code> [<code>%s</code>] (<code>%s</code>%s)\n\n",
+						"⏳ <b>Задача #%d:</b> <code>%s</code> [<code>%s</code>] (<code>%s</code>%s)\n\n",
+						taskID,
 						html.EscapeString(projectName),
 						html.EscapeString(modelName),
-						dur,
+						formatDurationHuman(dur),
 						queueInfo,
 					))
 					if lastLine != "" {
@@ -774,7 +882,7 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 					if tokenSnippet != "" {
 						bldr.WriteString(tokenSnippet + "\n\n")
 					}
-					bldr.WriteString("<i>(Логи: /status | Токены: /tokens | Стоп: /cancel)</i>")
+					bldr.WriteString(fmt.Sprintf("<i>(Лог: /status %d | Дополнить: /add %d | Стоп: /cancel %d)</i>", taskID, taskID, taskID))
 
 					_, _ = b.Edit(statusMsg, bldr.String(), tele.ModeHTML)
 				}
@@ -800,38 +908,33 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 					}
 					if u.StepType == "tool" && u.State == "ACTIVE" {
 						desc := formatToolAction(u.ToolName, u.ToolInfo)
-						session.Lock()
-						session.recentLogs = append(session.recentLogs, desc)
-						if len(session.recentLogs) > 20 {
-							session.recentLogs = session.recentLogs[1:]
-						}
-						session.Unlock()
+						task.AppendLog(desc)
 					} else if u.StepType == "agent_response" && u.TextDelta != "" {
-						session.Lock()
-						session.fullOutput.WriteString(u.TextDelta)
-						session.Unlock()
-
+						task.Lock()
+						task.FullOutput.WriteString(u.TextDelta)
 						if matches := prUrlRegexp.FindStringSubmatch(u.TextDelta); len(matches) > 1 {
-							session.Lock()
-							session.lastPRURL = matches[1]
-							session.Unlock()
+							task.LastPRURL = matches[1]
 						}
+						task.Unlock()
 					}
 
 					// Проверка на вопрос пользователю
 					if u.ToolName == "ask_question" ||
 						(u.StepType == "agent_response" && u.State == "DONE" && isQuestionText(u.TextDelta)) {
-						session.Lock()
-						session.waiting = true
-						session.Unlock()
+						task.Lock()
+						task.Status = TaskStatusWaitingInput
+						task.Unlock()
+						syncLegacySession(task)
 
 						questionText := u.TextDelta
 						if u.ToolName == "ask_question" && u.ToolInfo != nil && u.ToolInfo.Parameters != nil {
 							questionText = fmt.Sprintf("%v", u.ToolInfo.Parameters)
 						}
-						msg := fmt.Sprintf("❓ <b>Вопрос по проекту <code>%s</code>:</b>\n\n%s\n\n<i>Ответьте сообщением в чат.</i>",
-							html.EscapeString(projectName), html.EscapeString(questionText))
-						b.Send(recipient, msg, tele.ModeHTML)
+						qMsg, _ := b.Send(recipient, fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
+							taskID, html.EscapeString(projectName), html.EscapeString(questionText), taskID), tele.ModeHTML)
+						if qMsg != nil {
+							taskManager.RegisterMessageTask(qMsg.ID, taskID)
+						}
 					}
 				}
 
@@ -841,46 +944,45 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 						tokenTracker.RecordResultUsage(*res.Usage, res.DurationSeconds, res.NumTurns)
 					}
 					if res.Response != "" {
-						session.Lock()
-						if session.fullOutput.Len() == 0 {
-							session.fullOutput.WriteString(res.Response)
+						task.Lock()
+						if task.FullOutput.Len() == 0 {
+							task.FullOutput.WriteString(res.Response)
 						}
 						if matches := prUrlRegexp.FindStringSubmatch(res.Response); len(matches) > 1 {
-							session.lastPRURL = matches[1]
+							task.LastPRURL = matches[1]
 						}
-						session.Unlock()
+						task.Unlock()
 					}
 				}
 				continue
 			}
 
 			// Fallback для текстового вывода или не-JSON строк
-			session.Lock()
-			session.recentLogs = append(session.recentLogs, cleanLine)
-			if len(session.recentLogs) > 20 {
-				session.recentLogs = session.recentLogs[1:]
-			}
-			session.fullOutput.WriteString(cleanLine + "\n")
-
+			task.AppendLog(cleanLine)
+			task.Lock()
+			task.FullOutput.WriteString(cleanLine + "\n")
 			if matches := prUrlRegexp.FindStringSubmatch(cleanLine); len(matches) > 1 {
-				session.lastPRURL = matches[1]
+				task.LastPRURL = matches[1]
 			}
 			if m := modelRegexp.FindStringSubmatch(cleanLine); len(m) > 1 {
-				session.lastModelUsed = strings.TrimSpace(m[1])
+				task.LastModelUsed = strings.TrimSpace(m[1])
 			}
 			if t := tokensRegexp.FindStringSubmatch(cleanLine); len(t) > 1 {
-				session.lastTokensUsed = strings.TrimSpace(t[1])
+				task.LastTokensUsed = strings.TrimSpace(t[1])
 			}
-			session.Unlock()
+			task.Unlock()
 
 			if isQuestionText(cleanLine) {
-				session.Lock()
-				session.waiting = true
-				session.Unlock()
+				task.Lock()
+				task.Status = TaskStatusWaitingInput
+				task.Unlock()
+				syncLegacySession(task)
 
-				msg := fmt.Sprintf("❓ <b>Вопрос по проекту <code>%s</code>:</b>\n\n%s\n\n<i>Ответьте сообщением в чат.</i>",
-					html.EscapeString(projectName), html.EscapeString(cleanLine))
-				b.Send(recipient, msg, tele.ModeHTML)
+				qMsg, _ := b.Send(recipient, fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
+					taskID, html.EscapeString(projectName), html.EscapeString(cleanLine), taskID), tele.ModeHTML)
+				if qMsg != nil {
+					taskManager.RegisterMessageTask(qMsg.ID, taskID)
+				}
 			}
 		}
 		close(done)
@@ -890,13 +992,140 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 	close(stopLiveUpdate)
 	_ = cmd.Wait()
 
-	session.Lock()
-	if session.stdin != nil {
-		_ = session.stdin.Close()
-		session.stdin = nil
+	task.Lock()
+	if task.Stdin != nil {
+		_ = task.Stdin.Close()
+		task.Stdin = nil
 	}
-	session.waiting = false
-	session.Unlock()
+	if task.Status == TaskStatusWaitingInput {
+		task.Status = TaskStatusRunning
+	}
+	task.Unlock()
+	syncLegacySession(task)
+}
+
+func handleCreateNewTask(b *tele.Bot, c tele.Context, text string) error {
+	projectState.RLock()
+	curProj := projectState.currentProject
+	curMod := projectState.currentModel
+	projectState.RUnlock()
+
+	words := strings.Fields(text)
+	if len(words) > 1 {
+		possibleProj := words[0]
+		possiblePath := filepath.Join(projectsRoot, possibleProj)
+		if fi, err := os.Stat(possiblePath); err == nil && fi.IsDir() {
+			curProj = possibleProj
+			text = strings.TrimSpace(strings.TrimPrefix(text, possibleProj))
+		}
+	}
+
+	if curProj == "" {
+		return c.Send("❌ Сначала выберите проект: /projects")
+	}
+
+	task := taskManager.CreateTask(curProj, curMod, text, c.Recipient())
+	syncLegacySession(task)
+
+	if taskManager.HasRunningTaskInProject(curProj) {
+		msg := fmt.Sprintf(
+			"⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>:\n\n"+
+				"<i>«%s»</i>\n\n"+
+				"💡 В этом проекте уже выполняется задача. Задача #%d начнется автоматически после ее завершения.",
+			task.ID, html.EscapeString(curProj), html.EscapeString(text), task.ID,
+		)
+		return c.Send(msg, tele.ModeHTML)
+	}
+
+	task.Lock()
+	task.Status = TaskStatusRunning
+	task.StartedAt = time.Now()
+	task.Unlock()
+	syncLegacySession(task)
+
+	tokenTracker.StartTask(curProj, curMod, text)
+	workDir := filepath.Join(projectsRoot, curProj)
+
+	go runAgentTaskPipeline(b, c.Recipient(), task, workDir)
+
+	return nil
+}
+
+func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text string) error {
+	task, qLen, isAnswer, err := taskManager.AddFollowup(taskID, text)
+	if err != nil {
+		return c.Send(fmt.Sprintf("❌ Не удалось отправить дополнение к задаче #%d: %s", taskID, err.Error()), tele.ModeHTML)
+	}
+
+	syncLegacySession(task)
+
+	if isAnswer {
+		return c.Send(fmt.Sprintf("💬 <b>Ответ передан задаче #%d</b> (<code>%s</code>)...", taskID, html.EscapeString(task.Project)), tele.ModeHTML)
+	}
+
+	msg := fmt.Sprintf(
+		"📥 <b>Дополнение сохранено в задачу #%d</b> (<code>%s</code>) [#%d в очереди]:\n\n"+
+			"<i>«%s»</i>\n\n"+
+			"Агент завершит текущий шаг и применит эти правки в ветку задачи #%d.",
+		taskID, html.EscapeString(task.Project), qLen, html.EscapeString(text), taskID,
+	)
+	return c.Send(msg, tele.ModeHTML)
+}
+
+func checkAndStartQueuedTask(b *tele.Bot, project, root string) {
+	nextTask := taskManager.GetNextQueuedTaskForProject(project)
+	if nextTask == nil {
+		return
+	}
+
+	nextTask.Lock()
+	nextTask.Status = TaskStatusRunning
+	nextTask.StartedAt = time.Now()
+	recipient := nextTask.Recipient
+	nextID := nextTask.ID
+	prompt := nextTask.InitialPrompt
+	model := nextTask.Model
+	nextTask.Unlock()
+
+	syncLegacySession(nextTask)
+
+	b.Send(recipient, fmt.Sprintf("🚀 <b>Запуск задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",
+		nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), tele.ModeHTML)
+
+	tokenTracker.StartTask(project, model, prompt)
+	workDir := filepath.Join(root, project)
+	go runAgentTaskPipeline(b, recipient, nextTask, workDir)
+}
+
+func syncLegacySession(task *TaskSession) {
+	if task == nil {
+		session.Lock()
+		session.isRunning = false
+		session.waiting = false
+		session.cmd = nil
+		session.stdin = nil
+		session.Unlock()
+		return
+	}
+
+	task.Lock()
+	defer task.Unlock()
+
+	session.Lock()
+	defer session.Unlock()
+
+	session.isRunning = (task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput)
+	session.waiting = (task.Status == TaskStatusWaitingInput)
+	session.startedAt = task.StartedAt
+	session.currentPrompt = task.InitialPrompt
+	session.currentProject = task.Project
+	session.recentLogs = append([]string(nil), task.RecentLogs...)
+	session.pendingFollowups = append([]string(nil), task.PendingFollowups...)
+	session.lastPRURL = task.LastPRURL
+	session.lastModelUsed = task.LastModelUsed
+	session.lastTokensUsed = task.LastTokensUsed
+	session.cmd = task.Cmd
+	session.stdin = task.Stdin
 }
 
 func isQuestionText(s string) bool {

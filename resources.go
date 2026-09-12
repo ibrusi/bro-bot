@@ -498,6 +498,11 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 	}
 	session.Unlock()
 
+	activePid, otherPids := taskManager.GetRunningWorkerPids()
+	if activePid > 0 {
+		activeWorkerPid = activePid
+	}
+
 	allAgyPids := findSystemAgyPids()
 
 	// Compile unique PIDs to query
@@ -505,6 +510,9 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 	pidSet[botPid] = true
 	if activeWorkerPid > 0 {
 		pidSet[activeWorkerPid] = true
+	}
+	for _, p := range otherPids {
+		pidSet[p] = true
 	}
 	for _, p := range allAgyPids {
 		pidSet[p] = true
