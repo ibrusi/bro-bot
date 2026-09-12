@@ -1,0 +1,255 @@
+package main
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestFormatThousands(t *testing.T) {
+	tests := []struct {
+		input    int64
+		expected string
+	}{
+		{0, "0"},
+		{5, "5"},
+		{42, "42"},
+		{999, "999"},
+		{1000, "1 000"},
+		{14500, "14 500"},
+		{123456, "123 456"},
+		{1234567, "1 234 567"},
+		{-12345, "-12 345"},
+	}
+
+	for _, tc := range tests {
+		actual := formatThousands(tc.input)
+		if actual != tc.expected {
+			t.Errorf("formatThousands(%d) = %q, expected %q", tc.input, actual, tc.expected)
+		}
+	}
+}
+
+func TestFormatCompact(t *testing.T) {
+	tests := []struct {
+		input    int64
+		expected string
+	}{
+		{0, "0"},
+		{500, "500"},
+		{999, "999"},
+		{1000, "1.0k"},
+		{14200, "14k"},
+		{145000, "145k"},
+		{1500000, "1.5M"},
+	}
+
+	for _, tc := range tests {
+		actual := formatCompact(tc.input)
+		if actual != tc.expected {
+			t.Errorf("formatCompact(%d) = %q, expected %q", tc.input, actual, tc.expected)
+		}
+	}
+}
+
+func TestFormatDurationHuman(t *testing.T) {
+	tests := []struct {
+		input    time.Duration
+		expected string
+	}{
+		{0 * time.Second, "0с"},
+		{15 * time.Second, "15с"},
+		{59 * time.Second, "59с"},
+		{60 * time.Second, "1м"},
+		{65 * time.Second, "1м 05с"},
+		{3600 * time.Second, "1ч 00м"},
+		{3665 * time.Second, "1ч 01м"},
+	}
+
+	for _, tc := range tests {
+		actual := formatDurationHuman(tc.input)
+		if actual != tc.expected {
+			t.Errorf("formatDurationHuman(%v) = %q, expected %q", tc.input, actual, tc.expected)
+		}
+	}
+}
+
+func TestUsageStatsAddAndCache(t *testing.T) {
+	u1 := UsageStats{
+		InputTokens:     1000,
+		OutputTokens:    200,
+		ThinkingTokens:  150,
+		CacheReadTokens: 500,
+		TotalTokens:     1200,
+	}
+
+	u2 := UsageStats{
+		InputTokens:     2000,
+		OutputTokens:    300,
+		ThinkingTokens:  250,
+		CacheReadTokens: 1000,
+		TotalTokens:     2300,
+	}
+
+	u1.Add(u2)
+
+	if u1.InputTokens != 3000 {
+		t.Errorf("InputTokens = %d, expected 3000", u1.InputTokens)
+	}
+	if u1.OutputTokens != 500 {
+		t.Errorf("OutputTokens = %d, expected 500", u1.OutputTokens)
+	}
+	if u1.ThinkingTokens != 400 {
+		t.Errorf("ThinkingTokens = %d, expected 400", u1.ThinkingTokens)
+	}
+	if u1.CacheReadTokens != 1500 {
+		t.Errorf("CacheReadTokens = %d, expected 1500", u1.CacheReadTokens)
+	}
+	if u1.TotalTokens != 3500 {
+		t.Errorf("TotalTokens = %d, expected 3500", u1.TotalTokens)
+	}
+
+	// CacheHitRate: 1500 / (3000 + 1500) = 1500 / 4500 = 33.333%
+	rate := u1.CacheHitRate()
+	if rate < 33.3 || rate > 33.4 {
+		t.Errorf("CacheHitRate = %f, expected ~33.33", rate)
+	}
+}
+
+func TestTaskTokenMetricsTPS(t *testing.T) {
+	m := TaskTokenMetrics{
+		DurationSeconds: 10.0,
+		Usage: UsageStats{
+			InputTokens:  10000,
+			OutputTokens: 2000,
+			TotalTokens:  12000,
+		},
+	}
+
+	if m.TokensPerSecond() != 200.0 {
+		t.Errorf("TokensPerSecond = %f, expected 200.0", m.TokensPerSecond())
+	}
+	if m.TotalTokensPerSecond() != 1200.0 {
+		t.Errorf("TotalTokensPerSecond = %f, expected 1200.0", m.TotalTokensPerSecond())
+	}
+}
+
+func TestTokenTrackerLifecycle(t *testing.T) {
+	tracker := NewTokenTracker()
+
+	// 1. Initial state
+	msg := tracker.GetTokensCommandMessage()
+	if !strings.Contains(msg, "Задачи ещё не запускались") {
+		t.Errorf("Expected initial empty message, got %s", msg)
+	}
+
+	// 2. Start Task
+	tracker.StartTask("my-repo", "gemini-3.8-flash-medium", "create feature")
+
+	// 3. Step 1 update
+	tracker.RecordStepUsage(1, UsageStats{
+		InputTokens:     1000,
+		OutputTokens:    100,
+		ThinkingTokens:  50,
+		CacheReadTokens: 200,
+		TotalTokens:     1100,
+	})
+
+	snippet := tracker.GetLiveStatusSnippet()
+	if snippet == "" || !strings.Contains(snippet, "Токены:") {
+		t.Errorf("Expected live status snippet, got %q", snippet)
+	}
+
+	// 4. Result of Step 1
+	tracker.RecordResultUsage(UsageStats{
+		InputTokens:     1000,
+		OutputTokens:    100,
+		ThinkingTokens:  50,
+		CacheReadTokens: 200,
+		TotalTokens:     1100,
+	}, 2.0, 1)
+
+	// 5. Check active /tokens message
+	activeMsg := tracker.GetTokensCommandMessage()
+	if !strings.Contains(activeMsg, "Активная задача в работе") {
+		t.Errorf("Expected active task message, got %s", activeMsg)
+	}
+	if !strings.Contains(activeMsg, "gemini-3.8-flash-medium") {
+		t.Errorf("Expected model in active task message, got %s", activeMsg)
+	}
+
+	// 6. Finish Task
+	completed := tracker.FinishTask("https://github.com/org/repo/pull/1")
+	if completed.PRURL != "https://github.com/org/repo/pull/1" {
+		t.Errorf("PRURL not recorded properly")
+	}
+	if completed.Usage.TotalTokens != 1100 {
+		t.Errorf("Completed usage total tokens = %d, expected 1100", completed.Usage.TotalTokens)
+	}
+
+	// 7. Check idle /tokens message with history and session totals
+	idleMsg := tracker.GetTokensCommandMessage()
+	if !strings.Contains(idleMsg, "Статистика последней задачи:") {
+		t.Errorf("Expected last task stats, got %s", idleMsg)
+	}
+	if !strings.Contains(idleMsg, "Общая статистика сессии бота:") {
+		t.Errorf("Expected session stats, got %s", idleMsg)
+	}
+	if !strings.Contains(idleMsg, "Выполнено задач: <code>1</code>") {
+		t.Errorf("Expected 1 task run, got %s", idleMsg)
+	}
+
+	// 8. Short last task for /limits
+	shortLast := tracker.FormatShortLastTask()
+	if !strings.Contains(shortLast, "1 100") {
+		t.Errorf("Expected 1 100 in short last, got %q", shortLast)
+	}
+}
+
+func TestStreamEventParsing(t *testing.T) {
+	stepJSON := `{"event":"step_update","step_update":{"conversation_id":"abc-123","step_index":1,"state":"DONE","step_type":"agent_response","duration_seconds":1.5,"usage":{"input_tokens":14000,"output_tokens":500,"thinking_tokens":300,"cache_read_tokens":1000,"total_tokens":14500}}}`
+	var stepEvt StreamEvent
+	if err := json.Unmarshal([]byte(stepJSON), &stepEvt); err != nil {
+		t.Fatalf("Failed to parse step update JSON: %v", err)
+	}
+	if stepEvt.Event != "step_update" || stepEvt.StepUpdate == nil {
+		t.Fatalf("Malformed step update parsed")
+	}
+	if stepEvt.StepUpdate.Usage.OutputTokens != 500 {
+		t.Errorf("OutputTokens = %d, expected 500", stepEvt.StepUpdate.Usage.OutputTokens)
+	}
+
+	resultJSON := `{"event":"result","result":{"conversation_id":"abc-123","status":"SUCCESS","response":"Done! PR_URL: https://github.com/foo/bar/pull/5","duration_seconds":4.2,"num_turns":2,"usage":{"input_tokens":28000,"output_tokens":1000,"thinking_tokens":600,"cache_read_tokens":2000,"total_tokens":29000}}}`
+	var resEvt StreamEvent
+	if err := json.Unmarshal([]byte(resultJSON), &resEvt); err != nil {
+		t.Fatalf("Failed to parse result JSON: %v", err)
+	}
+	if resEvt.Result == nil || resEvt.Result.Usage.TotalTokens != 29000 {
+		t.Errorf("TotalTokens = %d, expected 29000", resEvt.Result.Usage.TotalTokens)
+	}
+}
+
+func TestFormatToolAction(t *testing.T) {
+	infoCmd := &StreamToolInfo{
+		Name: "run_command",
+		Parameters: map[string]interface{}{
+			"CommandLine": "git status",
+		},
+	}
+	resCmd := formatToolAction("run_command", infoCmd)
+	if !strings.Contains(resCmd, "git status") {
+		t.Errorf("Expected 'git status' in tool action, got %q", resCmd)
+	}
+
+	infoEdit := &StreamToolInfo{
+		Name: "replace_file_content",
+		Parameters: map[string]interface{}{
+			"TargetFile": "/path/to/main.go",
+		},
+	}
+	resEdit := formatToolAction("replace_file_content", infoEdit)
+	if !strings.Contains(resEdit, "main.go") {
+		t.Errorf("Expected 'main.go' in tool action, got %q", resEdit)
+	}
+}
