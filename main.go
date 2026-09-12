@@ -32,7 +32,6 @@ type AgentSession struct {
 	pendingFollowups []string
 	lastPRURL        string
 	fullOutput       strings.Builder
-	// Новые поля для метрик
 	lastModelUsed    string
 	lastTokensUsed   string
 }
@@ -51,6 +50,16 @@ var (
 	ansiRegex    = regexp.MustCompile(`\x1b(\[[0-9;?><=$]*[a-zA-Z~]|\][0-9;]*\x07|\([B0-9])|\r`)
 	tokensRegexp = regexp.MustCompile(`(?i)tokens?:\s*([0-9,kKmM\s/]+)`)
 	modelRegexp  = regexp.MustCompile(`(?i)model:\s*([a-zA-Z0-9.\-_]+)`)
+
+	availableModels = map[string]string{
+		"gemini-3.8-flash":  "⚡ По умолчанию: максимальная скорость и свежая база",
+		"gemini-3.7-flash":  "⚡ Предыдущая быстрая версия",
+		"gemini-3.6-flash":  "⚡ Базовая быстрая модель",
+		"gemini-3.1-pro":    "🧠 Флагман: глубокий рефакторинг, архитектура, сложные алгоритмы",
+		"claude-sonnet-4.6": "🎯 Claude Sonnet 4.6 (Thinking): сильный агентный кодинг с пошаговым рассуждением",
+		"claude-opus-4.6":   "👑 Claude Opus 4.6 (Thinking): максимальный уровень рассуждений для сложных багов",
+		"gpt-oss-120b":      "🌐 GPT-OSS 120B (Medium): открытая весовая архитектура",
+	}
 )
 
 func main() {
@@ -69,7 +78,7 @@ func main() {
 
 	initDefaultProject(projectsRoot)
 	projectState.Lock()
-	projectState.currentModel = "gemini-1.5-pro"
+	projectState.currentModel = "gemini-3.8-flash"
 	projectState.Unlock()
 
 	b, err := tele.NewBot(tele.Settings{
@@ -81,20 +90,19 @@ func main() {
 	}
 
 	commands := []tele.Command{
-		{Text: "start", Description: "Справка и текущий активный проект"},
-		{Text: "projects", Description: "Список доступных проектов"},
-		{Text: "use", Description: "Переключить проект: /use <имя>"},
 		{Text: "status", Description: "Статус задачи, лог и очередь"},
-		{Text: "cancel", Description: "Принудительно остановить процесс"},
 		{Text: "limits", Description: "Остаток квот и лимиты моделей"},
 		{Text: "models", Description: "Список доступных моделей"},
 		{Text: "model", Description: "Выбрать модель: /model <имя>"},
+		{Text: "projects", Description: "Список доступных проектов"},
+		{Text: "use", Description: "Переключить проект: /use <имя>"},
+		{Text: "cancel", Description: "Принудительно остановить процесс"},
+		{Text: "start", Description: "Справка и активный проект"},
 	}
 	if err := b.SetCommands(commands); err != nil {
 		log.Printf("Предупреждение: не удалось зарегистрировать команды: %v", err)
 	}
 
-	// Фильтр: только админ
 	b.Use(func(next tele.HandlerFunc) tele.HandlerFunc {
 		return func(c tele.Context) error {
 			if c.Sender().ID != adminID {
@@ -106,19 +114,25 @@ func main() {
 
 	b.Handle("/start", func(c tele.Context) error {
 		projectState.RLock()
-		cur := projectState.currentProject
+		curProj := projectState.currentProject
+		curMod := projectState.currentModel
 		projectState.RUnlock()
 
 		msg := fmt.Sprintf(
 			"🤖 <b>Агент-воркер готов к работе!</b>\n\n"+
-				"📁 Текущий проект: <code>%s</code>\n\n"+
+				"📁 Текущий проект: <code>%s</code>\n"+
+				"🧠 Активная модель: <code>%s</code>\n\n"+
 				"<b>Команды:</b>\n"+
 				"• /status — статус, лог и очередь уточнений\n"+
+				"• /limits — статистика токенов и лимиты\n"+
+				"• /models — список моделей и переключение\n"+
+				"• /model &lt;имя&gt; — переключить модель\n"+
 				"• /projects — список проектов\n"+
 				"• /use &lt;имя&gt; — переключить проект\n"+
 				"• /cancel — остановить задачу и сбросить очередь\n\n"+
 				"Отправьте задачу сообщением в чат. Дополнения можно отправлять прямо в процессе выполнения.",
-			html.EscapeString(cur),
+			html.EscapeString(curProj),
+			html.EscapeString(curMod),
 		)
 		return c.Send(msg, tele.ModeHTML)
 	})
@@ -178,8 +192,72 @@ func main() {
 		return c.Send(msg, tele.ModeHTML)
 	})
 
+	b.Handle("/models", func(c tele.Context) error {
+		projectState.RLock()
+		curModel := projectState.currentModel
+		projectState.RUnlock()
+
+		var bldr strings.Builder
+		bldr.WriteString("🤖 <b>Доступные модели:</b>\n\n")
+
+		for m, desc := range availableModels {
+			if m == curModel {
+				bldr.WriteString(fmt.Sprintf("👉 <b>%s</b> <i>(активна)</i>\n%s\n\n", m, desc))
+			} else {
+				bldr.WriteString(fmt.Sprintf("• <code>%s</code>\n%s\n<i>Переключить:</i> <code>/model %s</code>\n\n", m, desc, m))
+			}
+		}
+
+		bldr.WriteString("💡 <i>Короткие алиасы:</i>\n")
+		bldr.WriteString("• <code>/model flash</code> — Gemini 3.8 Flash\n")
+		bldr.WriteString("• <code>/model pro</code> — Gemini 3.1 Pro\n")
+		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model opus</code> — Claude Opus 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model oss</code> — GPT-OSS 120B")
+
+		return c.Send(bldr.String(), tele.ModeHTML)
+	})
+
+	b.Handle("/model", func(c tele.Context) error {
+		args := c.Args()
+		if len(args) == 0 {
+			projectState.RLock()
+			cur := projectState.currentModel
+			projectState.RUnlock()
+			return c.Send(fmt.Sprintf("Текущая модель: <code>%s</code>\nИспользование: <code>/model &lt;имя&gt;</code> (например, <code>/model sonnet</code>)", cur), tele.ModeHTML)
+		}
+
+		target := strings.ToLower(strings.TrimSpace(args[0]))
+
+		switch target {
+		case "flash", "3.8", "3.8-flash":
+			target = "gemini-3.8-flash"
+		case "3.7", "3.7-flash":
+			target = "gemini-3.7-flash"
+		case "3.6", "3.6-flash":
+			target = "gemini-3.6-flash"
+		case "pro", "3.1", "3.1-pro":
+			target = "gemini-3.1-pro"
+		case "sonnet", "claude-sonnet", "sonnet-thinking":
+			target = "claude-sonnet-4.6"
+		case "opus", "claude-opus", "opus-thinking":
+			target = "claude-opus-4.6"
+		case "oss", "gpt-oss", "120b":
+			target = "gpt-oss-120b"
+		}
+
+		if _, exists := availableModels[target]; !exists {
+			return c.Send(fmt.Sprintf("❌ Неизвестная модель: <code>%s</code>. Список: /models", html.EscapeString(target)), tele.ModeHTML)
+		}
+
+		projectState.Lock()
+		projectState.currentModel = target
+		projectState.Unlock()
+
+		return c.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", target), tele.ModeHTML)
+	})
+
 	b.Handle("/limits", func(c tele.Context) error {
-		// 1. Пробуем получить живой статус от самого agy CLI
 		out, err := exec.Command("agy", "quota").CombinedOutput()
 		cliQuotaOutput := ""
 		if err == nil && len(out) > 0 {
@@ -192,8 +270,12 @@ func main() {
 		lastTokens := session.lastTokensUsed
 		session.Unlock()
 
+		projectState.RLock()
+		activeModel := projectState.currentModel
+		projectState.RUnlock()
+
 		if lastModel == "" {
-			lastModel = "gemini-1.5-pro (по умолчанию)"
+			lastModel = activeModel
 		}
 		if lastTokens == "" {
 			lastTokens = "нет данных (запустите хотя бы одну задачу)"
@@ -209,17 +291,14 @@ func main() {
 		}
 
 		bldr.WriteString("📈 <b>Статистика последней операции:</b>\n")
-		bldr.WriteString(fmt.Sprintf("• Модель: <code>%s</code>\n", html.EscapeString(lastModel)))
+		bldr.WriteString(fmt.Sprintf("• Выбранная модель: <code>%s</code>\n", html.EscapeString(activeModel)))
+		bldr.WriteString(fmt.Sprintf("• Модель в сессии: <code>%s</code>\n", html.EscapeString(lastModel)))
 		bldr.WriteString(fmt.Sprintf("• Использовано токенов: <code>%s</code>\n\n", html.EscapeString(lastTokens)))
 
-		bldr.WriteString("📋 <b>Справочные лимиты Google AI Pro:</b>\n")
-		bldr.WriteString("• <b>Gemini 1.5 Pro:</b>\n")
-		bldr.WriteString("  — Контекст: <code>2,000,000 токенов</code>\n")
-		bldr.WriteString("  — Скользящий лимит: <code>~50 запросов / 3 часа</code>\n")
-		bldr.WriteString("• <b>Gemini 1.5 Flash:</b>\n")
-		bldr.WriteString("  — Контекст: <code>1,000,000 токенов</code>\n")
-		bldr.WriteString("  — Скользящий лимит: <code>~1500 запросов / день</code>\n\n")
-		bldr.WriteString("<i>💡 При исчерпании лимита Pro агент автоматически переключается на Flash.</i>")
+		bldr.WriteString("📋 <b>Справочная информация по квотам:</b>\n")
+		bldr.WriteString("• <b>Gemini Flash (3.8/3.7):</b> высокая скорость, высокий дневной лимит запросов\n")
+		bldr.WriteString("• <b>Gemini Pro (3.1):</b> окно контекста 2M токенов, скользящий лимит запросов\n")
+		bldr.WriteString("• <b>Claude Thinking (Sonnet/Opus):</b> расширенное рассуждение, расход квот сложного инференса\n")
 
 		return c.Send(bldr.String(), tele.ModeHTML)
 	})
@@ -258,65 +337,6 @@ func main() {
 		}
 
 		return c.Send(bldr.String(), tele.ModeHTML)
-	})
-
-	// Допустимые модели и их описания
-	availableModels := map[string]string{
-		"gemini-1.5-pro":   "🧠 Флагман: рассуждения, сложный рефакторинг, архитектура (окно 2M)",
-		"gemini-1.5-flash": "⚡ Быстрая: утилитарные задачи, тесты, документация (окно 1M)",
-		"gemini-2.0-flash": "🚀 Новейшая быстрая модель: ультра-низкая задержка и кодинг",
-	}
-
-	b.Handle("/models", func(c tele.Context) error {
-		projectState.RLock()
-		curModel := projectState.currentModel
-		projectState.RUnlock()
-
-		var bldr strings.Builder
-		bldr.WriteString("🤖 <b>Доступные модели:</b>\n\n")
-
-		for m, desc := range availableModels {
-			if m == curModel {
-				bldr.WriteString(fmt.Sprintf("👉 <b>%s</b> <i>(активна)</i>\n%s\n\n", m, desc))
-			} else {
-				bldr.WriteString(fmt.Sprintf("• <code>%s</code>\n%s\n<i>Переключить:</i> <code>/model %s</code>\n\n", m, desc, m))
-			}
-		}
-
-		bldr.WriteString("<i>Поддерживаются алиасы:</i> <code>/model pro</code>, <code>/model flash</code>")
-		return c.Send(bldr.String(), tele.ModeHTML)
-	})
-
-	b.Handle("/model", func(c tele.Context) error {
-		args := c.Args()
-		if len(args) == 0 {
-			projectState.RLock()
-			cur := projectState.currentModel
-			projectState.RUnlock()
-			return c.Send(fmt.Sprintf("Текущая модель: <code>%s</code>\nИспользование: <code>/model &lt;имя&gt;</code> (например, <code>/model flash</code>)", cur), tele.ModeHTML)
-		}
-
-		target := strings.ToLower(strings.TrimSpace(args[0]))
-		
-		// Обработка удобных коротких алиасов
-		switch target {
-		case "pro", "1.5-pro":
-			target = "gemini-1.5-pro"
-		case "flash", "1.5-flash":
-			target = "gemini-1.5-flash"
-		case "2.0-flash", "flash-2":
-			target = "gemini-2.0-flash"
-		}
-
-		if _, exists := availableModels[target]; !exists {
-			return c.Send(fmt.Sprintf("❌ Неизвестная модель: <code>%s</code>. Список: /models", html.EscapeString(target)), tele.ModeHTML)
-		}
-
-		projectState.Lock()
-		projectState.currentModel = target
-		projectState.Unlock()
-
-		return c.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", target), tele.ModeHTML)
 	})
 
 	b.Handle("/use", func(c tele.Context) error {
@@ -360,7 +380,6 @@ func main() {
 		}
 
 		session.Lock()
-		// Сценарий 1: Ответ на вопрос агента
 		if session.isRunning && session.waiting {
 			session.waiting = false
 			_, err := io.WriteString(session.stdin, userText+"\n")
@@ -372,7 +391,6 @@ func main() {
 			return c.Send("💬 Ответ передан агенту...")
 		}
 
-		// Сценарий 2: Добавление в очередь доработок
 		if session.isRunning {
 			session.pendingFollowups = append(session.pendingFollowups, userText)
 			count := len(session.pendingFollowups)
@@ -387,7 +405,6 @@ func main() {
 			return c.Send(msg, tele.ModeHTML)
 		}
 
-		// Сценарий 3: Запуск новой задачи
 		projectState.RLock()
 		cur := projectState.currentProject
 		projectState.RUnlock()
@@ -414,7 +431,7 @@ func main() {
 		return nil
 	})
 
-	log.Println("Мультипроектный агент-бот с поддержкой очереди запущен...")
+	log.Println("Мультипроектный агент-бот запущен...")
 	b.Start()
 }
 
@@ -437,7 +454,6 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 	currentPrompt := initialPrompt
 
 	for {
-		// Получаем актуальную модель перед запуском шага
 		projectState.RLock()
 		activeModel := projectState.currentModel
 		projectState.RUnlock()
@@ -450,7 +466,6 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 			return
 		}
 
-		// Если дополнений нет — завершаем пайплайн
 		if len(session.pendingFollowups) == 0 {
 			prURL := session.lastPRURL
 			finalReport := session.fullOutput.String()
@@ -463,14 +478,12 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 				b.Send(recipient, fmt.Sprintf("✅ *Задача завершена!* (`%s`)", projectName), tele.ModeMarkdown)
 			}
 
-			// Выводим полный отчет агента в нативном Markdown с разбивкой по частям
 			if strings.TrimSpace(finalReport) != "" {
 				sendLongMarkdown(b, recipient, finalReport)
 			}
 			return
 		}
 
-		// Формируем комбинированный промпт для следующего шага
 		followups := session.pendingFollowups
 		session.pendingFollowups = nil
 
@@ -550,8 +563,9 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 						queueInfo = fmt.Sprintf(" | Очередь: %d", followupsCount)
 					}
 					text := fmt.Sprintf(
-						"⏳ <b>В работе:</b> <code>%s</code> (<code>%s</code>%s)\n\n📍 <b>Действие:</b>\n<code>%s</code>\n\n<i>(Логи: /status | Стоп: /cancel)</i>",
+						"⏳ <b>В работе:</b> <code>%s</code> [<code>%s</code>] (<code>%s</code>%s)\n\n📍 <b>Действие:</b>\n<code>%s</code>\n\n<i>(Логи: /status | Стоп: /cancel)</i>",
 						html.EscapeString(projectName),
+						html.EscapeString(modelName),
 						dur,
 						queueInfo,
 						html.EscapeString(truncateString(lastLine, 80)),
@@ -578,21 +592,15 @@ func executeStep(b *tele.Bot, recipient tele.Recipient, workDir, projectName, pr
 			}
 			session.fullOutput.WriteString(cleanLine + "\n")
 
-			// 1. Перехват ссылки на Pull Request
 			if matches := prUrlRegexp.FindStringSubmatch(cleanLine); len(matches) > 1 {
 				session.lastPRURL = matches[1]
 			}
-
-			// 2. ВОТ ЗДЕСЬ ДОБАВЛЯЕМ: Перехват названия модели
 			if m := modelRegexp.FindStringSubmatch(cleanLine); len(m) > 1 {
 				session.lastModelUsed = strings.TrimSpace(m[1])
 			}
-
-			// 3. И ЗДЕСЬ: Перехват использованных токенов
 			if t := tokensRegexp.FindStringSubmatch(cleanLine); len(t) > 1 {
 				session.lastTokensUsed = strings.TrimSpace(t[1])
 			}
-
 			session.Unlock()
 
 			lower := strings.ToLower(cleanLine)
