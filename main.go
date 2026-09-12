@@ -442,7 +442,7 @@ func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectNam
 		activeModel := projectState.currentModel
 		projectState.RUnlock()
 
-		executeStep(b, recipient, workDir, projectName, currentPrompt)
+		executeStep(b, recipient, workDir, projectName, currentPrompt, activeModel)
 
 		session.Lock()
 		if !session.isRunning {
