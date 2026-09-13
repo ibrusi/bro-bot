@@ -1148,14 +1148,26 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *TaskSessi
 		task.Status = TaskStatusPlanning
 		existingPlan := task.Plan
 		curPrompt := task.CurrentPrompt
+		pendingFollowups := append([]string(nil), task.PendingFollowups...)
 		task.Unlock()
 
 		syncLegacySession(task)
 
+		pendingSection := ""
+		if len(pendingFollowups) > 0 {
+			var pbldr strings.Builder
+			pbldr.WriteString("\n\nДОПОЛНИТЕЛЬНЫЕ ТРЕБОВАНИЯ И ПРАВКИ ИЗ ОЧЕРЕДИ:\n")
+			for i, pf := range pendingFollowups {
+				pbldr.WriteString(fmt.Sprintf("%d. %s\n", i+1, pf))
+			}
+			pbldr.WriteString("Обязательно включи эти требования в план реализации.")
+			pendingSection = pbldr.String()
+		}
+
 		var planningPrompt string
 		if existingPlan == "" {
 			planningPrompt = fmt.Sprintf(
-				"Задача пользователя: %s\n\n"+
+				"Задача пользователя: %s%s\n\n"+
 					"ВНИМАНИЕ: Сейчас выполняется ЭТАП ПЛАНИРОВАНИЯ.\n"+
 					"НЕ создавай git-ветку, НЕ модифицируй файлы проекта, НЕ делай git commit, НЕ делай git push и НЕ открывай PR.\n"+
 					"Твоя цель сейчас:\n"+
@@ -1167,7 +1179,7 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *TaskSessi
 					"   - План тестирования и проверки работоспособности.\n"+
 					"   - Возможные риски, краевые случаи и пути их решения.\n"+
 					"4. Выведи итоговый план в понятном и структурированном виде для пользователя.",
-				task.InitialPrompt,
+				task.InitialPrompt, pendingSection,
 			)
 		} else {
 			feedback := curPrompt
@@ -1177,10 +1189,10 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *TaskSessi
 			planningPrompt = fmt.Sprintf(
 				"Задача пользователя: %s\n\n"+
 					"ПРЕДЫДУЩИЙ ПЛАН РЕАЛИЗАЦИИ:\n%s\n\n"+
-					"ЗАМЕЧАНИЯ И ДОПОЛНЕНИЯ ПОЛЬЗОВАТЕЛЯ К ПЛАНУ:\n%s\n\n"+
+					"ЗАМЕЧАНИЯ И ДОПОЛНЕНИЯ ПОЛЬЗОВАТЕЛЯ К ПЛАНУ:\n%s%s\n\n"+
 					"ВНИМАНИЕ: Это этап планирования. НЕ вноси изменения в файлы проекта, НЕ делай commit и НЕ создавай PR.\n"+
 					"Обнови и скорректируй план реализации с учётом всех замечаний пользователя и выведи обновлённый план.",
-				task.InitialPrompt, existingPlan, feedback,
+				task.InitialPrompt, existingPlan, feedback, pendingSection,
 			)
 		}
 
@@ -1674,6 +1686,7 @@ func handleCreateNewTaskWithOptions(b *tele.Bot, c tele.Context, text string, re
 	task.StartedAt = time.Now()
 	task.Unlock()
 	syncLegacySession(task)
+	_, _ = taskManager.SetActiveTask(task.ID)
 
 	tokenTracker.StartTask(curProj, curMod, text)
 	workDir := filepath.Join(projectsRoot, curProj)
@@ -1769,7 +1782,6 @@ func handleApprovePlanWithVariant(b *tele.Bot, recipient tele.Recipient, taskID 
 	task.Status = TaskStatusRunning
 	task.StartedAt = time.Now()
 	task.RecentLogs = nil
-	task.PendingFollowups = nil
 
 	projectName := task.Project
 	modelName := task.Model
@@ -1801,6 +1813,7 @@ func handleApprovePlanWithVariant(b *tele.Bot, recipient tele.Recipient, taskID 
 	task.Unlock()
 
 	syncLegacySession(task)
+	_, _ = taskManager.SetActiveTask(taskID)
 
 	b.Send(recipient, fmt.Sprintf("🚀 <b>План задачи #%d утверждён!</b>\nПриступаю к автономной реализации в <code>%s</code>...", taskID, html.EscapeString(projectName)), tele.ModeHTML)
 
@@ -1826,6 +1839,7 @@ func handleRevisePlan(b *tele.Bot, recipient tele.Recipient, taskID int, feedbac
 	task.Unlock()
 
 	syncLegacySession(task)
+	_, _ = taskManager.SetActiveTask(taskID)
 
 	b.Send(recipient, fmt.Sprintf("📝 <b>Задача #%d: Обновляю план с учётом замечаний...</b>\n<i>«%s»</i>", taskID, html.EscapeString(truncateString(feedback, 100))), tele.ModeHTML)
 
@@ -1951,7 +1965,11 @@ func waitForTaskInput(b *tele.Bot, recipient tele.Recipient, task *TaskSession, 
 	select {
 	case answer := <-task.AnswerChan:
 		task.Lock()
-		task.Status = TaskStatusRunning
+		if task.RequiresPlan && !task.PlanApproved {
+			task.Status = TaskStatusPlanning
+		} else {
+			task.Status = TaskStatusRunning
+		}
 		task.CurrentPrompt = answer
 		task.LastQuestion = ""
 		task.QuestionOptions = nil
@@ -2022,6 +2040,7 @@ func checkAndStartQueuedTask(b *tele.Bot, project, root string) {
 	nextTask.Unlock()
 
 	syncLegacySession(nextTask)
+	_, _ = taskManager.SetActiveTask(nextID)
 
 	if isPlanning {
 		b.Send(recipient, fmt.Sprintf("📝 <b>Запуск планирования задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",

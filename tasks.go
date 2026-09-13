@@ -266,11 +266,12 @@ func (tm *TaskManager) GetActiveTask() *TaskSession {
 	tm.RLock()
 	defer tm.RUnlock()
 
-	if task, ok := tm.tasks[tm.activeTaskID]; ok {
+	// 1. Если задача в активном фокусе существует и активна, возвращаем её
+	if task, ok := tm.tasks[tm.activeTaskID]; ok && task.IsActive() {
 		return task
 	}
 
-	// Фолбэк: ищем первую активную задачу
+	// 2. Иначе ищем первую активную задачу
 	for _, id := range tm.taskOrder {
 		task := tm.tasks[id]
 		if task != nil && task.IsActive() {
@@ -278,7 +279,12 @@ func (tm *TaskManager) GetActiveTask() *TaskSession {
 		}
 	}
 
-	// Фолбэк: последняя созданная задача
+	// 3. Фолбэк: если нет активных задач, возвращаем задачу по activeTaskID
+	if task, ok := tm.tasks[tm.activeTaskID]; ok {
+		return task
+	}
+
+	// 4. Фолбэк: последняя созданная задача
 	if len(tm.taskOrder) > 0 {
 		lastID := tm.taskOrder[len(tm.taskOrder)-1]
 		return tm.tasks[lastID]
