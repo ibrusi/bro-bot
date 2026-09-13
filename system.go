@@ -188,6 +188,12 @@ func parseSystemFlags(args []string) SystemFlags {
 	return f
 }
 
+func performGitCheckout(ctx context.Context, dir, branch string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", branch)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 func performGitPull(ctx context.Context, dir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "pull")
 	out, err := cmd.CombinedOutput()
@@ -257,6 +263,147 @@ func executeRestart(b *tele.Bot, recipient tele.Recipient) {
 	os.Exit(0)
 }
 
+func getGitRemoteURL(dir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err == nil {
+		return strings.TrimSpace(string(out))
+	}
+	return ""
+}
+
+func isBotProject(projectName, botDir, projectsRoot string) bool {
+	cleanProj := strings.TrimSpace(projectName)
+	if cleanProj == "" {
+		return false
+	}
+	// Прямое совпадение с известными именами репозитория бота
+	if cleanProj == "tg-bot-agent" || cleanProj == "tg-agent-bot" {
+		return true
+	}
+	if botDir != "" && strings.EqualFold(cleanProj, filepath.Base(botDir)) {
+		return true
+	}
+	if projectsRoot != "" && botDir != "" {
+		projDir := filepath.Join(projectsRoot, cleanProj)
+		botRemote := getGitRemoteURL(botDir)
+		projRemote := getGitRemoteURL(projDir)
+		if botRemote != "" && projRemote != "" && botRemote == projRemote {
+			return true
+		}
+	}
+	return false
+}
+
+func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, projectsRoot string) (string, bool) {
+	activeTasks := taskManager.GetActiveOrQueuedTasks()
+
+	// 1. Ищем активную задачу на проекте самого бота
+	var botTask *TaskSession
+	for _, t := range activeTasks {
+		if isBotProject(t.Project, botDir, projectsRoot) {
+			botTask = t
+			break
+		}
+	}
+
+	// 2. Если есть задача на проекте бота и нет флага Force
+	if botTask != nil && !flags.Force {
+		botTask.Lock()
+		tID := botTask.ID
+		tProj := botTask.Project
+		tPrompt := botTask.CurrentPrompt
+		tStatus := botTask.Status.RussianTitle()
+		botTask.Unlock()
+
+		return fmt.Sprintf(
+			"⚠️ <b>На проекте бота выполняется активная задача!</b>\n\n"+
+				"• Проект: <code>%s</code>\n"+
+				"• Задача #%d: <i>%s</i>\n"+
+				"• Статус: %s\n\n"+
+				"Смена ветки, git pull и сборка могут повлиять на рабочий репозиторий и прервут выполнение.\n"+
+				"Чтобы принудительно остановить задачу и выполнить команду:\n"+
+				"<code>%s force</code>\n\n"+
+				"Или отмените текущую задачу командой: <code>/cancel %d</code>.",
+			html.EscapeString(tProj),
+			tID,
+			html.EscapeString(truncateString(tPrompt, 100)),
+			html.EscapeString(tStatus),
+			cmdName,
+			tID,
+		), true
+	}
+
+	// 3. Если есть любые другие активные задачи в боте и нет флага Force
+	if len(activeTasks) > 0 && !flags.Force {
+		firstTask := activeTasks[0]
+		firstTask.Lock()
+		tID := firstTask.ID
+		tProj := firstTask.Project
+		tPrompt := firstTask.CurrentPrompt
+		tStatus := firstTask.Status.RussianTitle()
+		firstTask.Unlock()
+
+		return fmt.Sprintf(
+			"⚠️ <b>Выполняются активные задачи (%d шт.)!</b>\n\n"+
+				"• Задача #%d (проект: <code>%s</code>): <i>%s</i> [%s]\n\n"+
+				"Перезапуск бота прервёт выполнение активных процессов.\n"+
+				"Чтобы принудительно остановить задачи и выполнить операцию:\n"+
+				"<code>%s force</code>\n\n"+
+				"Или дождитесь их завершения.",
+			len(activeTasks),
+			tID,
+			html.EscapeString(tProj),
+			html.EscapeString(truncateString(tPrompt, 100)),
+			html.EscapeString(tStatus),
+			cmdName,
+		), true
+	}
+
+	// 4. Проверка устаревшей сессии (session) на случай фоллбэка
+	session.Lock()
+	legacyRunning := session.isRunning
+	legacyPrompt := session.currentPrompt
+	legacyProj := session.currentProject
+	session.Unlock()
+
+	if legacyRunning && !flags.Force {
+		return fmt.Sprintf(
+			"⚠️ <b>Выполняется активная задача!</b>\n\n"+
+				"• Проект: <code>%s</code>\n"+
+				"• Задача: <i>%s</i>\n\n"+
+				"Сборка и перезапуск прервут её выполнение.\n"+
+				"Чтобы принудительно перезапустить:\n"+
+				"<code>%s force</code>\n\n"+
+				"Или отмените текущую задачу командой /cancel.",
+			html.EscapeString(legacyProj),
+			html.EscapeString(truncateString(legacyPrompt, 100)),
+			cmdName,
+		), true
+	}
+
+	// 5. Если передан флаг Force — останавливаем все задачи
+	if flags.Force {
+		for _, t := range activeTasks {
+			_, _ = taskManager.CancelTask(t.ID)
+		}
+
+		session.Lock()
+		if session.cmd != nil && session.cmd.Process != nil {
+			_ = session.cmd.Process.Kill()
+		}
+		session.isRunning = false
+		session.waiting = false
+		session.pendingFollowups = nil
+		session.fullOutput.Reset()
+		tokenTracker.CancelTask()
+		session.Unlock()
+	}
+
+	return "", false
+}
+
 func handleRebuild(b *tele.Bot, c tele.Context) error {
 	systemActionLock.Lock()
 	if isSystemAction {
@@ -273,38 +420,16 @@ func handleRebuild(b *tele.Bot, c tele.Context) error {
 	}()
 
 	flags := parseSystemFlags(c.Args())
+	botDir := getBotDir()
 
-	// Проверка на активную задачу
-	session.Lock()
-	running := session.isRunning
-	prompt := session.currentPrompt
-	proj := session.currentProject
-	if running && !flags.Force {
-		session.Unlock()
-		return c.Send(fmt.Sprintf(
-			"⚠️ <b>Выполняется активная задача!</b>\n\n"+
-				"• Проект: <code>%s</code>\n"+
-				"• Задача: <i>%s</i>\n\n"+
-				"Сборка и перезапуск прервут выполнение.\n"+
-				"Чтобы остановить задачу и выполнить сборку:\n"+
-				"<code>/rebuild force</code>\n\n"+
-				"Или отмените текущую задачу командой /cancel.",
-			html.EscapeString(proj),
-			html.EscapeString(truncateString(prompt, 100)),
-		), tele.ModeHTML)
+	cmdName := "/rebuild"
+	if flags.Pull {
+		cmdName = "/rebuild pull"
 	}
 
-	if running && flags.Force {
-		if session.cmd != nil && session.cmd.Process != nil {
-			_ = session.cmd.Process.Kill()
-		}
-		session.isRunning = false
-		session.waiting = false
-		session.pendingFollowups = nil
-		session.fullOutput.Reset()
-		tokenTracker.CancelTask()
+	if warnMsg, blocked := checkActiveTasksForSystemAction(cmdName, flags, botDir, projectsRoot); blocked {
+		return c.Send(warnMsg, tele.ModeHTML)
 	}
-	session.Unlock()
 
 	statusMsg, _ := b.Send(c.Recipient(), "🔨 <b>Инициализация сборки бота...</b>", tele.ModeHTML)
 
@@ -317,18 +442,36 @@ func handleRebuild(b *tele.Bot, c tele.Context) error {
 		statusMsg, _ = b.Send(c.Recipient(), text, tele.ModeHTML)
 	}
 
-	botDir := getBotDir()
-
-	// Опциональный git pull
+	// Опциональный git checkout main и git pull
 	if flags.Pull {
+		updateStatus("🌿 <b>Переключаюсь на ветку main...</b>")
+		ctxCheckout, cancelCheckout := context.WithTimeout(context.Background(), 30*time.Second)
+		checkoutOut, checkoutErr := performGitCheckout(ctxCheckout, botDir, "main")
+		cancelCheckout()
+		if checkoutErr != nil {
+			errMsg := checkoutOut
+			if errMsg == "" {
+				errMsg = checkoutErr.Error()
+			}
+			updateStatus(fmt.Sprintf(
+				"❌ <b>Ошибка при переключении на ветку main:</b>\n<pre>%s</pre>\n<i>Сборка отменена, бот продолжает работу на текущей ветке.</i>",
+				html.EscapeString(errMsg),
+			))
+			return nil
+		}
+
 		updateStatus("📥 <b>Выполняю git pull origin...</b>")
 		ctxPull, cancelPull := context.WithTimeout(context.Background(), 30*time.Second)
 		pullOut, pullErr := performGitPull(ctxPull, botDir)
 		cancelPull()
 		if pullErr != nil {
+			errMsg := pullOut
+			if errMsg == "" {
+				errMsg = pullErr.Error()
+			}
 			updateStatus(fmt.Sprintf(
 				"❌ <b>Ошибка при git pull:</b>\n<pre>%s</pre>\n<i>Сборка отменена, бот продолжает работу.</i>",
-				html.EscapeString(pullOut),
+				html.EscapeString(errMsg),
 			))
 			return nil
 		}
@@ -405,39 +548,12 @@ func handleRestart(b *tele.Bot, c tele.Context) error {
 	}()
 
 	flags := parseSystemFlags(c.Args())
-
-	session.Lock()
-	running := session.isRunning
-	prompt := session.currentPrompt
-	proj := session.currentProject
-	if running && !flags.Force {
-		session.Unlock()
-		return c.Send(fmt.Sprintf(
-			"⚠️ <b>Выполняется активная задача!</b>\n\n"+
-				"• Проект: <code>%s</code>\n"+
-				"• Задача: <i>%s</i>\n\n"+
-				"Перезапуск прервёт её выполнение.\n"+
-				"Чтобы принудительно перезапустить:\n"+
-				"<code>/restart force</code>\n\n"+
-				"Или отмените текущую задачу командой /cancel.",
-			html.EscapeString(proj),
-			html.EscapeString(truncateString(prompt, 100)),
-		), tele.ModeHTML)
-	}
-
-	if running && flags.Force {
-		if session.cmd != nil && session.cmd.Process != nil {
-			_ = session.cmd.Process.Kill()
-		}
-		session.isRunning = false
-		session.waiting = false
-		session.pendingFollowups = nil
-		session.fullOutput.Reset()
-		tokenTracker.CancelTask()
-	}
-	session.Unlock()
-
 	botDir := getBotDir()
+
+	if warnMsg, blocked := checkActiveTasksForSystemAction("/restart", flags, botDir, projectsRoot); blocked {
+		return c.Send(warnMsg, tele.ModeHTML)
+	}
+
 	branch := getGitBranch(botDir)
 	commit := getGitCommit(botDir)
 
