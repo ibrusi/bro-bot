@@ -123,26 +123,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	commands := []tele.Command{
-		{Text: "status", Description: "Статус текущей задачи, лог и очередь"},
-		{Text: "tasks", Description: "Список всех задач и переключение"},
-		{Text: "task", Description: "Переключить задачу: /task <id> [текст]"},
-		{Text: "add", Description: "Дополнить задачу: /add <id> <текст>"},
-		{Text: "new", Description: "Создать новую задачу: /new <текст>"},
-		{Text: "resume", Description: "Возобновить задачу: /resume [id] [ответ]"},
-		{Text: "cancel", Description: "Остановить задачу: /cancel [id]"},
-		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},
-		{Text: "top", Description: "CPU и память бота и agy"},
-		{Text: "limits", Description: "Остаток квот и лимиты моделей"},
-		{Text: "models", Description: "Список доступных моделей"},
-		{Text: "model", Description: "Выбрать модель: /model <имя>"},
-		{Text: "projects", Description: "Список доступных проектов"},
-		{Text: "use", Description: "Переключить проект: /use <имя>"},
-		{Text: "clone", Description: "Клонировать репозиторий: /clone <url> [имя]"},
-		{Text: "restart", Description: "Перезапустить бота"},
-		{Text: "rebuild", Description: "Собрать билд и перезапустить"},
-		{Text: "start", Description: "Справка и активный проект"},
-	}
+	commands := getDefaultCommands()
 	if err := b.SetCommands(commands); err != nil {
 		log.Printf("Предупреждение: не удалось зарегистрировать команды: %v", err)
 	}
@@ -174,6 +155,7 @@ func main() {
 				"• /approve [id] — утвердить план задачи и начать реализацию\n"+
 				"• /add &lt;id&gt; &lt;текст&gt; — отправить дополнение конкретной задаче\n"+
 				"• /new &lt;текст&gt; — создать новую задачу в текущем проекте\n"+
+				"• /resume [id] [ответ] — возобновить задачу или передать ответ\n"+
 				"• /status [id] — подробный статус, логи и очередь правок\n"+
 				"• /cancel [id] — остановить задачу\n\n"+
 				"<b>Система и мониторинг:</b>\n"+
@@ -2197,4 +2179,31 @@ func formatResetDuration(resetTimeStr string) string {
 	}
 
 	return fmt.Sprintf("через %s (%s)", strings.Join(parts, " "), formattedTime)
+}
+
+// getDefaultCommands возвращает список команд для регистрации в Telegram (меню подсказок).
+func getDefaultCommands() []tele.Command {
+	return []tele.Command{
+		{Text: "status", Description: "Статус текущей задачи, лог и очередь"},
+		{Text: "tasks", Description: "Список всех задач и переключение"},
+		{Text: "task", Description: "Переключить задачу: /task <id> [текст]"},
+		{Text: "plan", Description: "Составить план: /plan [проект] <задача>"},
+		{Text: "planmode", Description: "Режим плана: /planmode [on|off]"},
+		{Text: "approve", Description: "Утвердить план: /approve [id]"},
+		{Text: "add", Description: "Дополнить задачу: /add <id> <текст>"},
+		{Text: "new", Description: "Создать новую задачу: /new <текст>"},
+		{Text: "resume", Description: "Возобновить задачу: /resume [id] [ответ]"},
+		{Text: "cancel", Description: "Остановить задачу: /cancel [id]"},
+		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},
+		{Text: "top", Description: "CPU и память бота и agy"},
+		{Text: "limits", Description: "Остаток квот и лимиты моделей"},
+		{Text: "models", Description: "Список доступных моделей"},
+		{Text: "model", Description: "Выбрать модель: /model <имя>"},
+		{Text: "projects", Description: "Список доступных проектов"},
+		{Text: "use", Description: "Переключить проект: /use <имя>"},
+		{Text: "clone", Description: "Клонировать репозиторий: /clone <url> [имя]"},
+		{Text: "restart", Description: "Перезапустить бота"},
+		{Text: "rebuild", Description: "Собрать билд и перезапустить"},
+		{Text: "start", Description: "Справка и активный проект"},
+	}
 }
