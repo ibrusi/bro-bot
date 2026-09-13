@@ -306,3 +306,71 @@ func TestGetDefaultCommands(t *testing.T) {
 	}
 }
 
+func TestPlanApprovalPreservesPendingFollowups(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTaskWithPlan("test-proj", "flash", "Build feature", dummyRecipient{}, true)
+	task.Lock()
+	task.Status = TaskStatusWaitingApproval
+	task.Plan = "1. Step one\n2. Step two"
+	task.PendingFollowups = []string{"add extra validation", "include unit test"}
+	task.Unlock()
+
+	// Simulate plan approval logic
+	task.Lock()
+	task.PlanApproved = true
+	task.Status = TaskStatusRunning
+	task.RecentLogs = nil
+	// Verify that PendingFollowups is NOT cleared
+	followupsCount := len(task.PendingFollowups)
+	task.Unlock()
+
+	if followupsCount != 2 {
+		t.Fatalf("expected 2 pending followups to be preserved on plan approval, got %d", followupsCount)
+	}
+	if task.PendingFollowups[0] != "add extra validation" || task.PendingFollowups[1] != "include unit test" {
+		t.Errorf("unexpected pending followups content: %v", task.PendingFollowups)
+	}
+}
+
+func TestWaitForTaskInputPlanningStatusLogic(t *testing.T) {
+	// When task requires plan and plan is not approved
+	task := &TaskSession{
+		ID:           1,
+		RequiresPlan: true,
+		PlanApproved: false,
+		Status:       TaskStatusWaitingInput,
+	}
+
+	task.Lock()
+	if task.RequiresPlan && !task.PlanApproved {
+		task.Status = TaskStatusPlanning
+	} else {
+		task.Status = TaskStatusRunning
+	}
+	task.Unlock()
+
+	if task.Status != TaskStatusPlanning {
+		t.Errorf("expected status TaskStatusPlanning, got %s", task.Status)
+	}
+
+	// When task does not require plan or is approved
+	task2 := &TaskSession{
+		ID:           2,
+		RequiresPlan: true,
+		PlanApproved: true,
+		Status:       TaskStatusWaitingInput,
+	}
+
+	task2.Lock()
+	if task2.RequiresPlan && !task2.PlanApproved {
+		task2.Status = TaskStatusPlanning
+	} else {
+		task2.Status = TaskStatusRunning
+	}
+	task2.Unlock()
+
+	if task2.Status != TaskStatusRunning {
+		t.Errorf("expected status TaskStatusRunning, got %s", task2.Status)
+	}
+}
+

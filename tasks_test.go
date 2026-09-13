@@ -582,3 +582,60 @@ func TestTaskManagerResumeTask(t *testing.T) {
 	}
 }
 
+func TestGetActiveTaskWithCompletedAndActiveTasks(t *testing.T) {
+	tm := NewTaskManager()
+
+	t1 := tm.CreateTask("proj-1", "m1", "task 1", dummyRecipient{})
+	t1.Lock()
+	t1.Status = TaskStatusRunning
+	t1.Unlock()
+
+	// Initially, t1 is active
+	active := tm.GetActiveTask()
+	if active == nil || active.ID != t1.ID {
+		t.Fatalf("expected active task to be t1, got %v", active)
+	}
+
+	// Task 2 is queued with plan requirement
+	t2 := tm.CreateTaskWithPlan("proj-1", "m1", "task 2", dummyRecipient{}, true)
+	t2.Lock()
+	t2.Status = TaskStatusQueued
+	t2.Unlock()
+
+	// Task 1 completes
+	t1.Lock()
+	t1.Status = TaskStatusCompleted
+	t1.Unlock()
+
+	// Task 2 transitions to planning
+	t2.Lock()
+	t2.Status = TaskStatusPlanning
+	t2.Unlock()
+
+	// GetActiveTask should now return t2 even though activeTaskID initially was t1
+	active = tm.GetActiveTask()
+	if active == nil || active.ID != t2.ID {
+		t.Fatalf("expected active task to be t2 (planning), got %v", active)
+	}
+
+	// Task 2 transitions to waiting approval
+	t2.Lock()
+	t2.Status = TaskStatusWaitingApproval
+	t2.Unlock()
+
+	active = tm.GetActiveTask()
+	if active == nil || active.ID != t2.ID {
+		t.Fatalf("expected active task to be t2 (waiting approval), got %v", active)
+	}
+
+	// Task 2 completes, and no active tasks remain
+	t2.Lock()
+	t2.Status = TaskStatusCompleted
+	t2.Unlock()
+
+	active = tm.GetActiveTask()
+	if active == nil {
+		t.Fatalf("expected fallback task when none are active, got nil")
+	}
+}
+
