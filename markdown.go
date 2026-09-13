@@ -464,3 +464,101 @@ func FormatAskQuestionParams(params map[string]interface{}) string {
 	}
 	return strings.Join(parts, "\n")
 }
+
+// ExtractAskQuestionOptions безопасно извлекает список вариантов ответа из параметров ask_question.
+func ExtractAskQuestionOptions(params map[string]interface{}) []string {
+	if params == nil {
+		return nil
+	}
+
+	var result []string
+
+	// 1. Проверяем params["questions"]
+	if qs, ok := params["questions"].([]interface{}); ok && len(qs) > 0 {
+		for _, qItem := range qs {
+			qMap, ok := qItem.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if opts, ok := qMap["options"].([]interface{}); ok {
+				for _, opt := range opts {
+					s := strings.TrimSpace(fmt.Sprintf("%v", opt))
+					if s != "" {
+						result = append(result, s)
+					}
+				}
+			} else if opts, ok := qMap["options"].([]string); ok {
+				for _, opt := range opts {
+					s := strings.TrimSpace(opt)
+					if s != "" {
+						result = append(result, s)
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Фолбэк на прямой params["options"]
+	if len(result) == 0 {
+		if opts, ok := params["options"].([]interface{}); ok {
+			for _, opt := range opts {
+				s := strings.TrimSpace(fmt.Sprintf("%v", opt))
+				if s != "" {
+					result = append(result, s)
+				}
+			}
+		} else if opts, ok := params["options"].([]string); ok {
+			for _, opt := range opts {
+				s := strings.TrimSpace(opt)
+				if s != "" {
+					result = append(result, s)
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+var planVariantRegex = regexp.MustCompile(`(?i)(?:^|\n)\s*(?:#{1,6}\s+|(?:\d+\.|\*|-)\s+)?((?:Вариант|Option|Альтернатива)\s*(?:\d+|[A-Za-zА-Яа-я])\b(?:[^\n]*))`)
+
+// ExtractPlanVariantOptions ищет в тексте плана предложенные альтернативные варианты реализации.
+func ExtractPlanVariantOptions(planText string) []string {
+	if strings.TrimSpace(planText) == "" {
+		return nil
+	}
+
+	matches := planVariantRegex.FindAllStringSubmatch(planText, -1)
+	if len(matches) < 2 {
+		return nil
+	}
+
+	var variants []string
+	seen := make(map[string]bool)
+
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		raw := strings.TrimSpace(m[1])
+		raw = strings.Trim(raw, "*_#`~:- ")
+		raw = strings.Join(strings.Fields(raw), " ")
+		if len([]rune(raw)) > 40 {
+			runes := []rune(raw)
+			raw = string(runes[:37]) + "..."
+		}
+		lower := strings.ToLower(raw)
+		if raw != "" && !seen[lower] {
+			seen[lower] = true
+			variants = append(variants, raw)
+			if len(variants) >= 5 {
+				break
+			}
+		}
+	}
+
+	if len(variants) < 2 {
+		return nil
+	}
+	return variants
+}

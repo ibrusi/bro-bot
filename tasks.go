@@ -22,6 +22,7 @@ const (
 	TaskStatusWaitingApproval TaskStatus = "waiting_approval"
 	TaskStatusRunning         TaskStatus = "running"
 	TaskStatusWaitingInput    TaskStatus = "waiting_input"
+	TaskStatusPaused          TaskStatus = "paused"
 	TaskStatusCompleted       TaskStatus = "completed"
 	TaskStatusCancelled       TaskStatus = "cancelled"
 	TaskStatusFailed          TaskStatus = "failed"
@@ -39,6 +40,8 @@ func (s TaskStatus) RussianTitle() string {
 		return "⚙️ Выполняется"
 	case TaskStatusWaitingInput:
 		return "❓ Ждёт вашего ответа"
+	case TaskStatusPaused:
+		return "⏸ Приостановлена"
 	case TaskStatusCompleted:
 		return "✅ Завершена"
 	case TaskStatusCancelled:
@@ -62,6 +65,8 @@ func (s TaskStatus) Emoji() string {
 		return "⚙️"
 	case TaskStatusWaitingInput:
 		return "❓"
+	case TaskStatusPaused:
+		return "⏸"
 	case TaskStatusCompleted:
 		return "✅"
 	case TaskStatusCancelled:
@@ -97,6 +102,12 @@ type TaskSession struct {
 	Recipient        tele.Recipient
 	LastModelUsed    string
 	LastTokensUsed   string
+	ConversationID   string
+	LastQuestion     string
+	QuestionOptions  []string
+	QuestionAskedAt  time.Time
+	AnswerChan       chan string
+	PauseChan        chan struct{}
 }
 
 // durationLocked возвращает время работы задачи без захвата мьютекса (мьютекс должен быть уже захвачен вызывающим кодом).
@@ -143,6 +154,46 @@ func (t *TaskSession) AppendLog(line string) {
 	}
 }
 
+// DeliverAnswer безопасно передаёт ответ пользователя на вопрос агента.
+func (t *TaskSession) DeliverAnswer(answer string) bool {
+	t.Lock()
+	defer t.Unlock()
+
+	if t.AnswerChan == nil {
+		t.AnswerChan = make(chan string, 1)
+	}
+
+	select {
+	case t.AnswerChan <- answer:
+		return true
+	default:
+		select {
+		case <-t.AnswerChan:
+		default:
+		}
+		t.AnswerChan <- answer
+		return true
+	}
+}
+
+// PauseTask переводит ожидающую ввода задачу в режим паузы.
+func (t *TaskSession) PauseTask() bool {
+	t.Lock()
+	defer t.Unlock()
+
+	if t.Status == TaskStatusWaitingInput {
+		t.Status = TaskStatusPaused
+		if t.PauseChan != nil {
+			select {
+			case t.PauseChan <- struct{}{}:
+			default:
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // TaskManager управляет жизненным циклом множества задач и переключением активной задачи.
 type TaskManager struct {
 	sync.RWMutex
@@ -187,6 +238,8 @@ func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, recipie
 		Status:        TaskStatusQueued,
 		RequiresPlan:  requiresPlan,
 		Recipient:     recipient,
+		AnswerChan:    make(chan string, 1),
+		PauseChan:     make(chan struct{}, 1),
 	}
 
 	tm.tasks[id] = task
@@ -341,11 +394,90 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 	task.Status = TaskStatusCancelled
 	task.FinishedAt = time.Now()
 	task.PendingFollowups = nil
+	if task.PauseChan != nil {
+		select {
+		case task.PauseChan <- struct{}{}:
+		default:
+		}
+	}
 
 	return task, nil
 }
 
-// AddFollowup добавляет дополнение к конкретной задаче или отправляет ответ в stdin, если задача ждёт ввода.
+// ResumeTask возобновляет задачу, находившуюся в статусе паузы или ожидания ввода.
+func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
+	tm.Lock()
+	defer tm.Unlock()
+
+	task, ok := tm.tasks[id]
+	if !ok {
+		return nil, fmt.Errorf("задача #%d не найдена", id)
+	}
+
+	task.Lock()
+	defer task.Unlock()
+
+	if task.Status != TaskStatusPaused && task.Status != TaskStatusWaitingInput {
+		return task, fmt.Errorf("задача #%d не находится на паузе (текущий статус: %s)", id, task.Status.RussianTitle())
+	}
+
+	// Если задача всё ещё ждёт ввода в живом пайплайне
+	if task.Status == TaskStatusWaitingInput {
+		if answer != "" {
+			if task.AnswerChan == nil {
+				task.AnswerChan = make(chan string, 1)
+			}
+			select {
+			case task.AnswerChan <- answer:
+			default:
+				select {
+				case <-task.AnswerChan:
+				default:
+				}
+				task.AnswerChan <- answer
+			}
+		}
+		return task, nil
+	}
+
+	// Задача была в TaskStatusPaused
+	projectName := task.Project
+	isProjectBusy := false
+	for _, otherID := range tm.taskOrder {
+		if otherID == task.ID {
+			continue
+		}
+		other := tm.tasks[otherID]
+		if other != nil {
+			other.Lock()
+			busy := (other.Project == projectName) &&
+				(other.Status == TaskStatusRunning || other.Status == TaskStatusWaitingInput || other.Status == TaskStatusPlanning || other.Status == TaskStatusWaitingApproval)
+			other.Unlock()
+			if busy {
+				isProjectBusy = true
+				break
+			}
+		}
+	}
+
+	if answer != "" {
+		task.CurrentPrompt = answer
+	}
+	task.LastQuestion = ""
+	task.QuestionOptions = nil
+
+	if isProjectBusy {
+		task.Status = TaskStatusQueued
+	} else {
+		task.Status = TaskStatusRunning
+		task.StartedAt = time.Now()
+		task.RecentLogs = nil
+	}
+
+	return task, nil
+}
+
+// AddFollowup добавляет дополнение к конкретной задаче или отправляет ответ в stdin / AnswerChan, если задача ждёт ввода или на паузе.
 func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool, error) {
 	tm.RLock()
 	task, ok := tm.tasks[id]
@@ -356,25 +488,33 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 	}
 
 	task.Lock()
-	defer task.Unlock()
-
 	if task.Status == TaskStatusCompleted || task.Status == TaskStatusCancelled {
-		return task, 0, false, fmt.Errorf("задача #%d уже %s", id, task.Status.RussianTitle())
+		statusTitle := task.Status.RussianTitle()
+		task.Unlock()
+		return task, 0, false, fmt.Errorf("задача #%d уже %s", id, statusTitle)
+	}
+
+	// Если задача на паузе — возобновляем её с переданным ответом
+	if task.Status == TaskStatusPaused {
+		task.Unlock()
+		resumedTask, err := tm.ResumeTask(id, text)
+		return resumedTask, 0, true, err
 	}
 
 	// Если задача ждёт ответа на вопрос (ask_question)
-	if task.Status == TaskStatusWaitingInput && task.Stdin != nil {
-		task.Status = TaskStatusRunning
-		_, err := io.WriteString(task.Stdin, text+"\n")
-		if err != nil {
-			return task, 0, true, fmt.Errorf("ошибка отправки ответа: %w", err)
+	if task.Status == TaskStatusWaitingInput {
+		if task.Stdin != nil {
+			_, _ = io.WriteString(task.Stdin, text+"\n")
 		}
+		task.Unlock()
+		task.DeliverAnswer(text)
 		return task, 0, true, nil
 	}
 
 	// Добавляем в очередь правок
 	task.PendingFollowups = append(task.PendingFollowups, text)
 	queueLen := len(task.PendingFollowups)
+	task.Unlock()
 	return task, queueLen, false, nil
 }
 
@@ -536,6 +676,7 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 	bldr.WriteString("• <code>/new &lt;текст&gt;</code> — создать новую задачу\n")
 	bldr.WriteString("• <code>/plan &lt;текст&gt;</code> — составить план и утвердить перед реализацией\n")
 	bldr.WriteString("• <code>/approve &lt;id&gt;</code> — утвердить план задачи\n")
+	bldr.WriteString("• <code>/resume &lt;id&gt; [ответ]</code> — возобновить приостановленную задачу\n")
 	bldr.WriteString("• <code>/cancel &lt;id&gt;</code> — отменить задачу")
 
 	// Формируем инлайн-клавиатуру для активных задач
@@ -589,6 +730,7 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	followups := append([]string(nil), task.PendingFollowups...)
 	logs := append([]string(nil), task.RecentLogs...)
 	prURL := task.LastPRURL
+	lastQuestion := task.LastQuestion
 	durStr := formatDurationHuman(task.durationLocked())
 	task.Unlock()
 
@@ -621,6 +763,10 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 		bldr.WriteString(fmt.Sprintf("• <b>PR:</b> 🔗 <a href=\"%s\">%s</a>\n", html.EscapeString(prURL), html.EscapeString(prURL)))
 	}
 
+	if lastQuestion != "" {
+		bldr.WriteString(fmt.Sprintf("\n❓ <b>Вопрос агента:</b>\n<i>%s</i>\n", html.EscapeString(lastQuestion)))
+	}
+
 	if plan != "" {
 		planSnippet := plan
 		if len(planSnippet) > 400 {
@@ -646,6 +792,10 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 
 	if status == TaskStatusWaitingApproval {
 		bldr.WriteString(fmt.Sprintf("\n💡 <i>Утвердить: <code>/approve %d</code> | Дополнить: <code>/add %d &lt;правки&gt;</code> | Отменить: <code>/cancel %d</code></i>", id, id, id))
+	} else if status == TaskStatusPaused {
+		bldr.WriteString(fmt.Sprintf("\n💡 <i>Возобновить: <code>/resume %d &lt;ответ&gt;</code> | Отменить: <code>/cancel %d</code></i>", id, id))
+	} else if status == TaskStatusWaitingInput {
+		bldr.WriteString(fmt.Sprintf("\n💡 <i>Ответить: <code>/add %d &lt;ответ&gt;</code> | Отменить: <code>/cancel %d</code></i>", id, id))
 	} else {
 		bldr.WriteString("\n💡 <i>Дополнить: <code>/add ")
 		bldr.WriteString(strconv.Itoa(id))

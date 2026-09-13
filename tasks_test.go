@@ -443,3 +443,142 @@ func TestTaskManagerLiveQueriesDuringTaskExecution(t *testing.T) {
 		t.Fatal("deadlock detected during concurrent task queries!")
 	}
 }
+
+func TestTaskStatusWaitingInputAndDeliverAnswer(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj-test", "model-x", "do something", dummyRecipient{})
+	task.Lock()
+	task.Status = TaskStatusWaitingInput
+	task.LastQuestion = "Какой цвет выбрать?"
+	task.QuestionOptions = []string{"Красный", "Синий"}
+	task.Unlock()
+
+	if !task.IsActive() {
+		t.Errorf("expected WaitingInput task to be active")
+	}
+
+	ok := task.DeliverAnswer("Синий")
+	if !ok {
+		t.Fatalf("expected DeliverAnswer to succeed")
+	}
+
+	select {
+	case ans := <-task.AnswerChan:
+		if ans != "Синий" {
+			t.Errorf("expected 'Синий', got '%s'", ans)
+		}
+	default:
+		t.Fatalf("expected answer in AnswerChan")
+	}
+}
+
+func TestTaskStatusPausedAndQueueUnblocking(t *testing.T) {
+	tm := NewTaskManager()
+
+	// Task 1 in proj-1 is waiting input
+	t1 := tm.CreateTask("proj-1", "m1", "task 1", dummyRecipient{})
+	t1.Lock()
+	t1.Status = TaskStatusWaitingInput
+	t1.Unlock()
+
+	if !tm.HasRunningTaskInProject("proj-1") {
+		t.Fatalf("expected proj-1 to have running/waiting task")
+	}
+
+	// Task 2 in proj-1 is queued
+	t2 := tm.CreateTask("proj-1", "m1", "task 2", dummyRecipient{})
+	t2.Lock()
+	t2.Status = TaskStatusQueued
+	t2.Unlock()
+
+	// t1 pauses
+	paused := t1.PauseTask()
+	if !paused {
+		t.Fatalf("expected PauseTask to succeed")
+	}
+
+	if t1.Status != TaskStatusPaused {
+		t.Errorf("expected status paused, got %s", t1.Status)
+	}
+	if t1.IsActive() {
+		t.Errorf("expected paused task IsActive() to be false")
+	}
+
+	// Now proj-1 should NOT have running task
+	if tm.HasRunningTaskInProject("proj-1") {
+		t.Errorf("expected proj-1 to NOT have running task after t1 paused")
+	}
+
+	// Queued task t2 should now be picked up
+	nextQueued := tm.GetNextQueuedTaskForProject("proj-1")
+	if nextQueued == nil || nextQueued.ID != t2.ID {
+		t.Fatalf("expected next queued task to be t2, got %v", nextQueued)
+	}
+}
+
+func TestTaskManagerResumeTask(t *testing.T) {
+	tm := NewTaskManager()
+
+	t1 := tm.CreateTask("proj-resume", "m1", "initial", dummyRecipient{})
+	t1.Lock()
+	t1.Status = TaskStatusPaused
+	t1.ConversationID = "conv-abc-123"
+	t1.LastQuestion = "Вы уверены?"
+	t1.QuestionOptions = []string{"Да", "Нет"}
+	t1.Unlock()
+
+	// 1. Возобновление при свободном проекте
+	resumed, err := tm.ResumeTask(t1.ID, "Да, уверен")
+	if err != nil {
+		t.Fatalf("unexpected error resuming task: %v", err)
+	}
+	if resumed.Status != TaskStatusRunning {
+		t.Errorf("expected status Running, got %s", resumed.Status)
+	}
+	if resumed.ConversationID != "conv-abc-123" {
+		t.Errorf("expected ConversationID to be preserved as 'conv-abc-123', got '%s'", resumed.ConversationID)
+	}
+	if resumed.CurrentPrompt != "Да, уверен" {
+		t.Errorf("expected CurrentPrompt to be updated, got '%s'", resumed.CurrentPrompt)
+	}
+
+	// 2. Возобновление при занятом проекте
+	t2 := tm.CreateTask("proj-resume", "m1", "another task", dummyRecipient{})
+	t2.Lock()
+	t2.Status = TaskStatusRunning
+	t2.Unlock()
+
+	// Снова ставим t1 на паузу для теста
+	t1.Lock()
+	t1.Status = TaskStatusPaused
+	t1.Unlock()
+
+	resumedQueued, err := tm.ResumeTask(t1.ID, "Новый ответ")
+	if err != nil {
+		t.Fatalf("unexpected error resuming task when project is busy: %v", err)
+	}
+	if resumedQueued.Status != TaskStatusQueued {
+		t.Errorf("expected status Queued when project is busy, got %s", resumedQueued.Status)
+	}
+	if resumedQueued.CurrentPrompt != "Новый ответ" {
+		t.Errorf("expected CurrentPrompt to be 'Новый ответ', got '%s'", resumedQueued.CurrentPrompt)
+	}
+
+	// 3. Тест AddFollowup для задачи на паузе
+	t3 := tm.CreateTask("proj-free", "m1", "task 3", dummyRecipient{})
+	t3.Lock()
+	t3.Status = TaskStatusPaused
+	t3.Unlock()
+
+	resumedViaFollowup, _, isAnswer, err := tm.AddFollowup(t3.ID, "Ответ через AddFollowup")
+	if err != nil {
+		t.Fatalf("unexpected error from AddFollowup: %v", err)
+	}
+	if !isAnswer {
+		t.Errorf("expected isAnswer to be true for paused task followup")
+	}
+	if resumedViaFollowup.Status != TaskStatusRunning {
+		t.Errorf("expected task to be Running after followup, got %s", resumedViaFollowup.Status)
+	}
+}
+
