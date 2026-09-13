@@ -86,10 +86,8 @@ type TaskSession struct {
 	LastTokensUsed   string
 }
 
-// Duration возвращает время работы задачи.
-func (t *TaskSession) Duration() time.Duration {
-	t.Lock()
-	defer t.Unlock()
+// durationLocked возвращает время работы задачи без захвата мьютекса (мьютекс должен быть уже захвачен вызывающим кодом).
+func (t *TaskSession) durationLocked() time.Duration {
 	if t.StartedAt.IsZero() {
 		return 0
 	}
@@ -99,11 +97,23 @@ func (t *TaskSession) Duration() time.Duration {
 	return time.Since(t.StartedAt).Round(time.Second)
 }
 
+// Duration возвращает время работы задачи.
+func (t *TaskSession) Duration() time.Duration {
+	t.Lock()
+	defer t.Unlock()
+	return t.durationLocked()
+}
+
+// isActiveLocked проверяет статус без захвата мьютекса.
+func (t *TaskSession) isActiveLocked() bool {
+	return t.Status == TaskStatusRunning || t.Status == TaskStatusWaitingInput || t.Status == TaskStatusQueued
+}
+
 // IsActive возвращает true, если задача выполняется или находится в очереди.
 func (t *TaskSession) IsActive() bool {
 	t.Lock()
 	defer t.Unlock()
-	return t.Status == TaskStatusRunning || t.Status == TaskStatusWaitingInput || t.Status == TaskStatusQueued
+	return t.isActiveLocked()
 }
 
 // AppendLog безопасно добавляет запись в лог с ограничением глубины.
@@ -435,9 +445,8 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 			status := t.Status
 			prompt := t.InitialPrompt
 			followupsCount := len(t.PendingFollowups)
+			durStr := formatDurationHuman(t.durationLocked())
 			t.Unlock()
-
-			durStr := formatDurationHuman(t.Duration())
 			focusBadge := "  "
 			if id == activeID {
 				focusBadge = "👉 🎯 "
@@ -504,12 +513,18 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 	menu := &tele.ReplyMarkup{}
 	var buttons []tele.Btn
 	for _, t := range activeList {
+		t.Lock()
+		id := t.ID
+		proj := t.Project
+		emoji := t.Status.Emoji()
+		t.Unlock()
+
 		badge := ""
-		if t.ID == activeID {
+		if id == activeID {
 			badge = "🎯 "
 		}
-		btnText := fmt.Sprintf("%s#%d %s %s", badge, t.ID, t.Status.Emoji(), truncateString(t.Project, 12))
-		btn := menu.Data(btnText, "task_sel", strconv.Itoa(t.ID))
+		btnText := fmt.Sprintf("%s#%d %s %s", badge, id, emoji, truncateString(proj, 12))
+		btn := menu.Data(btnText, "task_sel", strconv.Itoa(id))
 		buttons = append(buttons, btn)
 	}
 
@@ -542,9 +557,8 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	followups := append([]string(nil), task.PendingFollowups...)
 	logs := append([]string(nil), task.RecentLogs...)
 	prURL := task.LastPRURL
+	durStr := formatDurationHuman(task.durationLocked())
 	task.Unlock()
-
-	durStr := formatDurationHuman(task.Duration())
 
 	var bldr strings.Builder
 	focusTitle := ""
