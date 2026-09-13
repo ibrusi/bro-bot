@@ -247,3 +247,62 @@ func TestPlanApprovalWithVariantsMarkup(t *testing.T) {
 		t.Errorf("expected 3 rows in plan menu, got %d", len(planMenu.InlineKeyboard))
 	}
 }
+
+func TestGetDefaultCommands(t *testing.T) {
+	commands := getDefaultCommands()
+	if len(commands) == 0 {
+		t.Fatalf("expected non-empty commands list")
+	}
+	if len(commands) > 100 {
+		t.Errorf("Telegram allows at most 100 commands, got %d", len(commands))
+	}
+
+	expectedRequired := []string{
+		"plan",
+		"planmode",
+		"approve",
+		"resume",
+		"tasks",
+		"status",
+		"task",
+		"add",
+		"new",
+		"cancel",
+		"tokens",
+		"top",
+		"limits",
+		"models",
+		"model",
+		"projects",
+		"use",
+		"clone",
+		"restart",
+		"rebuild",
+		"start",
+	}
+
+	seen := make(map[string]bool)
+	for _, cmd := range commands {
+		if seen[cmd.Text] {
+			t.Errorf("duplicate command found in getDefaultCommands: %s", cmd.Text)
+		}
+		seen[cmd.Text] = true
+
+		if len(cmd.Text) < 1 || len(cmd.Text) > 32 {
+			t.Errorf("invalid command length for '%s': %d (must be 1-32)", cmd.Text, len(cmd.Text))
+		}
+		if strings.ToLower(cmd.Text) != cmd.Text {
+			t.Errorf("command text must be lowercase: %s", cmd.Text)
+		}
+		if len(cmd.Description) < 1 || len(cmd.Description) > 256 {
+			t.Errorf("invalid description length for '%s': %d (must be 1-256)", cmd.Text, len(cmd.Description))
+		}
+	}
+
+	for _, req := range expectedRequired {
+		if !seen[req] {
+			t.Errorf("expected command '%s' to be present in getDefaultCommands", req)
+		}
+	}
+}
+
