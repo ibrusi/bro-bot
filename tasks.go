@@ -86,10 +86,7 @@ type TaskSession struct {
 	LastTokensUsed   string
 }
 
-// Duration возвращает время работы задачи.
-func (t *TaskSession) Duration() time.Duration {
-	t.Lock()
-	defer t.Unlock()
+func (t *TaskSession) durationUnlocked() time.Duration {
 	if t.StartedAt.IsZero() {
 		return 0
 	}
@@ -99,11 +96,22 @@ func (t *TaskSession) Duration() time.Duration {
 	return time.Since(t.StartedAt).Round(time.Second)
 }
 
+// Duration возвращает время работы задачи.
+func (t *TaskSession) Duration() time.Duration {
+	t.Lock()
+	defer t.Unlock()
+	return t.durationUnlocked()
+}
+
+func (t *TaskSession) isActiveUnlocked() bool {
+	return t.Status == TaskStatusRunning || t.Status == TaskStatusWaitingInput || t.Status == TaskStatusQueued
+}
+
 // IsActive возвращает true, если задача выполняется или находится в очереди.
 func (t *TaskSession) IsActive() bool {
 	t.Lock()
 	defer t.Unlock()
-	return t.Status == TaskStatusRunning || t.Status == TaskStatusWaitingInput || t.Status == TaskStatusQueued
+	return t.isActiveUnlocked()
 }
 
 // AppendLog безопасно добавляет запись в лог с ограничением глубины.
@@ -435,9 +443,8 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 			status := t.Status
 			prompt := t.InitialPrompt
 			followupsCount := len(t.PendingFollowups)
+			durStr := formatDurationHuman(t.durationUnlocked())
 			t.Unlock()
-
-			durStr := formatDurationHuman(t.Duration())
 			focusBadge := "  "
 			if id == activeID {
 				focusBadge = "👉 🎯 "
@@ -542,9 +549,8 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	followups := append([]string(nil), task.PendingFollowups...)
 	logs := append([]string(nil), task.RecentLogs...)
 	prURL := task.LastPRURL
+	durStr := formatDurationHuman(task.durationUnlocked())
 	task.Unlock()
-
-	durStr := formatDurationHuman(task.Duration())
 
 	var bldr strings.Builder
 	focusTitle := ""

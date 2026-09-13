@@ -288,3 +288,56 @@ func TestSyncLegacySession(t *testing.T) {
 	}
 }
 
+func TestTaskDurationUnlockedAndLocking(t *testing.T) {
+	session := &TaskSession{
+		StartedAt: time.Now().Add(-5 * time.Second),
+	}
+
+	// Calling durationUnlocked while holding lock should not deadlock
+	session.Lock()
+	dur := session.durationUnlocked()
+	if dur < 4*time.Second || dur > 10*time.Second {
+		t.Errorf("unexpected duration under lock: %v", dur)
+	}
+	session.Unlock()
+
+	// Calling Duration() without holding lock should work properly
+	durPublic := session.Duration()
+	if durPublic < 4*time.Second || durPublic > 10*time.Second {
+		t.Errorf("unexpected duration from public method: %v", durPublic)
+	}
+}
+
+func TestConcurrentTaskOperationsNoDeadlock(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj-deadlock", "model-test", "concurrent test", dummyRecipient{})
+	task.Status = TaskStatusRunning
+	task.StartedAt = time.Now().Add(-2 * time.Second)
+
+	done := make(chan struct{})
+
+	// Simulate background ticker operations
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			task.Lock()
+			_ = task.durationUnlocked()
+			_ = task.isActiveUnlocked()
+			task.Unlock()
+
+			task.AppendLog("test log entry")
+			_ = FormatTaskDetails(task, true)
+			_, _ = FormatTasksList(tm)
+			time.Sleep(1 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case <-done:
+		// Success, no deadlock
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock detected during concurrent task operations")
+	}
+}
+
+

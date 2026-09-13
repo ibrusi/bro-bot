@@ -856,7 +856,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 				if len(task.RecentLogs) > 0 {
 					lastLine = task.RecentLogs[len(task.RecentLogs)-1]
 				}
-				dur := task.Duration()
+				dur := task.durationUnlocked()
 				followupsCount := len(task.PendingFollowups)
 				task.Unlock()
 
