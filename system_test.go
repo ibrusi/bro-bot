@@ -3,9 +3,13 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	tele "gopkg.in/telebot.v3"
 )
 
 func TestParseSystemFlags(t *testing.T) {
@@ -136,5 +140,175 @@ go 1.22
 	}
 	if fi.Mode()&0111 == 0 {
 		t.Errorf("expected target binary to be executable, got mode: %v", fi.Mode())
+	}
+}
+
+func TestPerformGitCheckout(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Инициализируем git репозиторий
+	runGit := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", tmpDir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %v, output: %s", args, err, string(out))
+		}
+	}
+
+	runGit("init")
+	runGit("config", "user.email", "test@example.com")
+	runGit("config", "user.name", "Test User")
+
+	// Создаем тестовый файл и коммит
+	testFile := filepath.Join(tmpDir, "README.md")
+	if err := os.WriteFile(testFile, []byte("# Test Repo\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "README.md")
+	runGit("commit", "-m", "initial commit")
+
+	// Создаем ветку feat-test
+	runGit("branch", "feat-test")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Переключаемся на feat-test без force
+	out, err := performGitCheckout(ctx, tmpDir, "feat-test", false)
+	if err != nil {
+		t.Fatalf("performGitCheckout to feat-test failed: %v, out: %s", err, out)
+	}
+
+	branch := getGitBranch(tmpDir)
+	if branch != "feat-test" {
+		t.Errorf("expected branch feat-test, got %s", branch)
+	}
+
+	// Создаем файл на feat-test и коммитим
+	file2 := filepath.Join(tmpDir, "feature.txt")
+	if err := os.WriteFile(file2, []byte("feature content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "feature.txt")
+	runGit("commit", "-m", "feature commit")
+
+	// Теперь модифицируем README.md без коммита
+	if err := os.WriteFile(testFile, []byte("# Modified Repo\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Попытка переключения на master/main с флагом force=true
+	defaultBranch := "master"
+	outMaster, errMaster := exec.Command("git", "-C", tmpDir, "rev-parse", "--verify", "main").CombinedOutput()
+	if errMaster == nil && len(outMaster) > 0 {
+		defaultBranch = "main"
+	}
+
+	outForce, errForce := performGitCheckout(ctx, tmpDir, defaultBranch, true)
+	if errForce != nil {
+		t.Fatalf("expected forced checkout to succeed, got err: %v, out: %s", errForce, outForce)
+	}
+
+	// Проверяем попытку переключения на несуществующую ветку
+	_, err = performGitCheckout(ctx, tmpDir, "non-existent-branch", false)
+	if err == nil {
+		t.Errorf("expected error when checking out non-existent branch, got nil")
+	}
+}
+
+func TestNormalizeGitURL(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"git@github.com:ibrusi/tg-bot-agent.git", "github.com/ibrusi/tg-bot-agent"},
+		{"https://github.com/ibrusi/tg-bot-agent.git", "github.com/ibrusi/tg-bot-agent"},
+		{"http://github.com/ibrusi/tg-bot-agent", "github.com/ibrusi/tg-bot-agent"},
+		{"ssh://git@github.com/ibrusi/tg-bot-agent.git", "github.com/ibrusi/tg-bot-agent"},
+		{"https://gitlab.com/group/sub/repo.git/", "gitlab.com/group/sub/repo"},
+	}
+
+	for _, tc := range tests {
+		got := normalizeGitURL(tc.input)
+		if got != tc.expected {
+			t.Errorf("normalizeGitURL(%q) = %q; want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+func TestIsBotProject(t *testing.T) {
+	if !isBotProject("tg-bot-agent", "/home/deploy/tg-agent-bot", "") {
+		t.Errorf("expected tg-bot-agent to be recognized as bot project")
+	}
+	if !isBotProject("tg-agent-bot", "/home/deploy/tg-agent-bot", "") {
+		t.Errorf("expected tg-agent-bot to be recognized as bot project")
+	}
+	if !isBotProject("/home/deploy/projects/tg-bot-agent", "/home/deploy/tg-agent-bot", "") {
+		t.Errorf("expected path to tg-bot-agent to be recognized as bot project")
+	}
+	if !isBotProject("my-bot", "/opt/bots/my-bot", "") {
+		t.Errorf("expected basename match to be recognized as bot project")
+	}
+	if isBotProject("other-web-app", "/opt/bots/my-bot", "") {
+		t.Errorf("expected other-web-app to NOT be recognized as bot project")
+	}
+
+	// Проверка через DEFAULT_PROJECT
+	os.Setenv("DEFAULT_PROJECT", "custom-bot-project")
+	defer os.Unsetenv("DEFAULT_PROJECT")
+	if !isBotProject("custom-bot-project", "/tmp/bot", "") {
+		t.Errorf("expected custom-bot-project to match DEFAULT_PROJECT")
+	}
+}
+
+func TestCheckActiveTasksForSystemAction(t *testing.T) {
+	// Сохраняем исходный taskManager и восстанавливаем после теста
+	origTM := taskManager
+	defer func() { taskManager = origTM }()
+
+	// 1. Нет активных задач
+	testTM := NewTaskManager()
+	taskManager = testTM
+
+	warn, blocked := checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
+	if blocked || warn != "" {
+		t.Errorf("expected no block when no tasks active, got blocked=%v, warn=%s", blocked, warn)
+	}
+
+	// 2. Активная задача на проекте бота при /rebuild pull
+	task := testTM.CreateTask("tg-bot-agent", "gemini", "Делаем рефакторинг", tele.ChatID(123))
+	task.Status = TaskStatusRunning
+
+	warn, blocked = checkActiveTasksForSystemAction("/rebuild pull", SystemFlags{}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
+	if !blocked {
+		t.Errorf("expected block for active task on bot project")
+	}
+	if !strings.Contains(warn, "На проекте бота выполняется активная задача") {
+		t.Errorf("expected warning to mention bot project task, got: %s", warn)
+	}
+	if !strings.Contains(warn, "Смена ветки на main, git pull и сборка") {
+		t.Errorf("expected warning to mention branch switch and pull, got: %s", warn)
+	}
+
+	// 3. Активная задача на другом проекте
+	testTM2 := NewTaskManager()
+	taskManager = testTM2
+	task2 := testTM2.CreateTask("some-other-project", "gemini", "Фича для сайта", tele.ChatID(123))
+	task2.Status = TaskStatusRunning
+
+	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
+	if !blocked {
+		t.Errorf("expected block for active task on other project without force")
+	}
+	if !strings.Contains(warn, "Выполняются активные задачи") {
+		t.Errorf("expected warning to mention active tasks, got: %s", warn)
+	}
+
+	// 4. Флаг Force отменяет задачи и разрешает выполнение
+	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{Force: true}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
+	if blocked || warn != "" {
+		t.Errorf("expected Force to allow operation, got blocked=%v, warn=%s", blocked, warn)
+	}
+	if task2.Status != TaskStatusCancelled {
+		t.Errorf("expected task2 to be cancelled by Force, got status %s", task2.Status)
 	}
 }
