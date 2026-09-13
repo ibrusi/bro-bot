@@ -155,7 +155,7 @@ func handleCloneCommand(b *tele.Bot, c tele.Context) error {
 			"  <code>/clone https://github.com/owner/repo.git</code>\n" +
 			"• <b>Своё имя папки:</b>\n" +
 			"  <code>/clone git@github.com:owner/repo.git my-project</code>\n\n" +
-			"💡 <i>Репозиторий будет сохранен в каталог проектов, а активный проект бота автоматически переключится на него.</i>"
+			"💡 <i>Репозиторий будет сохранен в каталог проектов рядом с остальными проектами. Активный проект не переключается (для переключения используйте <code>/use &lt;имя&gt;</code>).</i>"
 		return c.Send(helpMsg, tele.ModeHTML)
 	}
 
@@ -182,6 +182,9 @@ func handleCloneCommand(b *tele.Bot, c tele.Context) error {
 	}
 
 	cleanRoot := filepath.Clean(projectsRoot)
+	if err := os.MkdirAll(cleanRoot, 0755); err != nil {
+		return c.Send(fmt.Sprintf("❌ Ошибка доступа к каталогу проектов: %s", html.EscapeString(err.Error())), tele.ModeHTML)
+	}
 	targetPath := filepath.Join(cleanRoot, targetName)
 	cleanTargetPath := filepath.Clean(targetPath)
 
@@ -261,23 +264,29 @@ func handleCloneCommand(b *tele.Bot, c tele.Context) error {
 			}
 		}
 
-		// Switch current project to the cloned one
-		projectState.Lock()
-		projectState.currentProject = targetName
-		projectState.Unlock()
+		// Do not switch current project; keep the existing active project
+		projectState.RLock()
+		curProj := projectState.currentProject
+		projectState.RUnlock()
+
+		var curProjInfo string
+		if curProj != "" {
+			curProjInfo = fmt.Sprintf("🎯 <b>Текущий активный проект:</b> <code>%s</code>\n\n", html.EscapeString(curProj))
+		}
 
 		successMsg := fmt.Sprintf(
 			"✅ <b>Репозиторий успешно склонирован!</b>\n\n"+
-				"📁 <b>Активный проект:</b> <code>%s</code>\n"+
+				"📁 <b>Склонирован проект:</b> <code>%s</code>\n"+
 				"🌐 <b>Источник:</b> <code>%s</code>\n"+
-				"📂 <b>Путь:</b> <code>%s</code>\n\n"+
-				"🚀 <i>Проект выбран активным. Теперь вы можете отправлять задачи:</i>\n"+
-				"• <code>/task new &lt;текст задачи&gt;</code>\n"+
-				"• <code>/plan &lt;текст задачи&gt;</code>\n"+
-				"• Или просто отправьте описание задачи в чат.",
+				"📂 <b>Путь:</b> <code>%s</code>\n"+
+				"%s"+
+				"💡 <i>Активный проект не изменился. Чтобы переключиться на склонированный проект, выполните:</i>\n"+
+				"• <code>/use %s</code>",
 			html.EscapeString(targetName),
 			html.EscapeString(cleanURL),
 			html.EscapeString(targetPath),
+			curProjInfo,
+			html.EscapeString(targetName),
 		)
 
 		if _, editErr := b.Edit(statusMsg, successMsg, tele.ModeHTML); editErr != nil {

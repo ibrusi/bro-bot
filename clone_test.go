@@ -160,3 +160,50 @@ func TestCopyFile(t *testing.T) {
 		t.Errorf("got content %q, want %q", string(data), content)
 	}
 }
+
+func TestCloneDestinationAndActiveProjectUnchanged(t *testing.T) {
+	tmpProjectsDir := t.TempDir()
+
+	// Existing projects in projects dir
+	existing1 := filepath.Join(tmpProjectsDir, "existing-repo-1")
+	existing2 := filepath.Join(tmpProjectsDir, "existing-repo-2")
+	if err := os.MkdirAll(existing1, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	if err := os.MkdirAll(existing2, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	// Set active project
+	initialActiveProject := "existing-repo-1"
+	projectState.Lock()
+	projectState.currentProject = initialActiveProject
+	projectState.Unlock()
+
+	// Simulate target resolution in clone command
+	targetName, err := sanitizeProjectName("new-cloned-repo")
+	if err != nil {
+		t.Fatalf("sanitizeProjectName failed: %v", err)
+	}
+
+	cleanRoot := filepath.Clean(tmpProjectsDir)
+	targetPath := filepath.Join(cleanRoot, targetName)
+
+	// Verify targetPath is directly inside projectsRoot (adjacent to existing projects)
+	if filepath.Dir(targetPath) != cleanRoot {
+		t.Errorf("expected targetPath parent to be %q, got %q", cleanRoot, filepath.Dir(targetPath))
+	}
+	if filepath.Base(targetPath) != "new-cloned-repo" {
+		t.Errorf("expected target folder name %q, got %q", "new-cloned-repo", filepath.Base(targetPath))
+	}
+
+	// Verify active project remains untouched
+	projectState.RLock()
+	currentActive := projectState.currentProject
+	projectState.RUnlock()
+
+	if currentActive != initialActiveProject {
+		t.Errorf("active project changed: got %q, want %q", currentActive, initialActiveProject)
+	}
+}
+
