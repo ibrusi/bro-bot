@@ -138,6 +138,7 @@ func main() {
 		{Text: "model", Description: "Выбрать модель: /model <имя>"},
 		{Text: "projects", Description: "Список доступных проектов"},
 		{Text: "use", Description: "Переключить проект: /use <имя>"},
+		{Text: "clone", Description: "Клонировать репозиторий: /clone <url> [имя]"},
 		{Text: "restart", Description: "Перезапустить бота"},
 		{Text: "rebuild", Description: "Собрать билд и перезапустить"},
 		{Text: "start", Description: "Справка и активный проект"},
@@ -181,6 +182,7 @@ func main() {
 				"• /limits — статистика токенов и лимиты\n"+
 				"• /models — список моделей и переключение (/model)\n"+
 				"• /projects — список проектов и переключение (/use)\n"+
+				"• /clone &lt;url&gt; [имя] — клонировать репозиторий по SSH или HTTPS\n"+
 				"• /restart, /rebuild — управление процессом бота\n\n"+
 				"💡 <i>Отправьте задачу сообщением в чат. Для предварительного плана используйте /plan &lt;задача&gt;. Дополнения можно отправлять через /add &lt;id&gt; &lt;текст&gt; или ответом на сообщения бота.</i>",
 			html.EscapeString(curProj),
@@ -485,9 +487,10 @@ func main() {
 		}
 
 		if !found {
-			return c.Send("В каталоге проектов пока нет склонированных репозиториев.")
+			return c.Send("В каталоге проектов пока нет склонированных репозиториев.\n\n💡 Клонировать: <code>/clone &lt;url&gt; [имя]</code>", tele.ModeHTML)
 		}
 
+		bldr.WriteString("\n💡 Клонировать новый: <code>/clone &lt;url&gt; [имя]</code>")
 		return c.Send(bldr.String(), tele.ModeHTML)
 	})
 
@@ -509,6 +512,10 @@ func main() {
 		projectState.Unlock()
 
 		return c.Send(fmt.Sprintf("✅ Проект переключен на: <code>%s</code>", html.EscapeString(target)), tele.ModeHTML)
+	})
+
+	b.Handle("/clone", func(c tele.Context) error {
+		return handleCloneCommand(b, c)
 	})
 
 	b.Handle("/task", func(c tele.Context) error {
