@@ -856,13 +856,13 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 				if len(task.RecentLogs) > 0 {
 					lastLine = task.RecentLogs[len(task.RecentLogs)-1]
 				}
-				dur := task.Duration()
+				dur := task.durationLocked()
 				followupsCount := len(task.PendingFollowups)
 				task.Unlock()
 
 				tokenSnippet := tokenTracker.GetLiveStatusSnippet()
 
-				if statusMsg != nil && (lastLine != "" || tokenSnippet != "") {
+				if statusMsg != nil {
 					queueInfo := ""
 					if followupsCount > 0 {
 						queueInfo = fmt.Sprintf(" | Правок в очереди: %d", followupsCount)
@@ -878,6 +878,8 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 					))
 					if lastLine != "" {
 						bldr.WriteString(fmt.Sprintf("📍 <b>Действие:</b>\n<code>%s</code>\n\n", html.EscapeString(truncateString(lastLine, 80))))
+					} else {
+						bldr.WriteString("📍 <b>Действие:</b>\n<code>Инициализация сессии агента...</code>\n\n")
 					}
 					if tokenSnippet != "" {
 						bldr.WriteString(tokenSnippet + "\n\n")

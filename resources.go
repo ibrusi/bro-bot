@@ -498,6 +498,29 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 	}
 	session.Unlock()
 
+	activeTask := taskManager.GetActiveTask()
+	if activeTask != nil {
+		activeTask.Lock()
+		if activeTask.Status == TaskStatusRunning || activeTask.Status == TaskStatusWaitingInput {
+			hasActive = true
+			if activeTask.Project != "" {
+				projName = activeTask.Project
+			}
+			if activeTask.CurrentPrompt != "" {
+				prompt = activeTask.CurrentPrompt
+			} else if activeTask.InitialPrompt != "" {
+				prompt = activeTask.InitialPrompt
+			}
+			if !activeTask.StartedAt.IsZero() {
+				startedAt = activeTask.StartedAt
+			}
+			if activeTask.Cmd != nil && activeTask.Cmd.Process != nil && activeTask.Cmd.Process.Pid > 0 {
+				activeWorkerPid = activeTask.Cmd.Process.Pid
+			}
+		}
+		activeTask.Unlock()
+	}
+
 	activePid, otherPids := taskManager.GetRunningWorkerPids()
 	if activePid > 0 {
 		activeWorkerPid = activePid
