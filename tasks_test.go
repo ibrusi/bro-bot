@@ -362,3 +362,84 @@ func TestFormatTasksListAndDetailsWithPlan(t *testing.T) {
 	}
 }
 
+func TestTaskSessionDurationAndLocking(t *testing.T) {
+	task := &TaskSession{
+		ID:        1,
+		Status:    TaskStatusRunning,
+		StartedAt: time.Now().Add(-5 * time.Second),
+	}
+
+	// 1. Duration() without prior lock
+	dur := task.Duration()
+	if dur < 4*time.Second || dur > 7*time.Second {
+		t.Errorf("expected ~5s duration, got %v", dur)
+	}
+
+	// 2. durationLocked() while task.Lock() is held (simulating ticker goroutine)
+	task.Lock()
+	durLocked := task.durationLocked()
+	task.Unlock()
+	if durLocked < 4*time.Second || durLocked > 7*time.Second {
+		t.Errorf("expected ~5s durationLocked, got %v", durLocked)
+	}
+
+	// 3. Completed task duration
+	task.Lock()
+	task.FinishedAt = task.StartedAt.Add(12 * time.Second)
+	durFinished := task.durationLocked()
+	task.Unlock()
+	if durFinished != 12*time.Second {
+		t.Errorf("expected 12s, got %v", durFinished)
+	}
+}
+
+func TestTaskManagerLiveQueriesDuringTaskExecution(t *testing.T) {
+	tm := NewTaskManager()
+	t1 := tm.CreateTask("proj-live", "gemini-3.8-flash", "test concurrency", dummyRecipient{})
+	t1.Lock()
+	t1.Status = TaskStatusRunning
+	t1.StartedAt = time.Now().Add(-10 * time.Second)
+	t1.RecentLogs = []string{"initializing...", "running tool test"}
+	t1.Unlock()
+
+	syncLegacySession(t1)
+
+	// Run concurrent queries that would hang if any lock was deadlocked
+	done := make(chan bool)
+	go func() {
+		for i := 0; i < 20; i++ {
+			// Simulate ticker reading durationLocked under lock
+			t1.Lock()
+			_ = t1.durationLocked()
+			t1.Unlock()
+
+			t1.AppendLog("another step")
+
+			// Concurrently format tasks list (what /tasks does)
+			msg, _ := FormatTasksList(tm)
+			if !strings.Contains(msg, "#1") {
+				t.Errorf("expected #1 in tasks list")
+			}
+
+			// Concurrently format details (what /status does)
+			det := FormatTaskDetails(t1, true)
+			if !strings.Contains(det, "#1") {
+				t.Errorf("expected #1 in details")
+			}
+
+			// Concurrently get worker PIDs (what /top does)
+			_, _ = tm.GetRunningWorkerPids()
+
+			// Concurrently collect resource report
+			_ = CollectResourceReport(false)
+		}
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		// Success, no deadlocks
+	case <-time.After(3 * time.Second):
+		t.Fatal("deadlock detected during concurrent task queries!")
+	}
+}

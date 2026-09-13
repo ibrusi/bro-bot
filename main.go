@@ -1103,14 +1103,14 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 				if len(task.RecentLogs) > 0 {
 					lastLine = task.RecentLogs[len(task.RecentLogs)-1]
 				}
-				dur := task.Duration()
+				dur := task.durationLocked()
 				followupsCount := len(task.PendingFollowups)
 				taskStatus := task.Status
 				task.Unlock()
 
 				tokenSnippet := tokenTracker.GetLiveStatusSnippet()
 
-				if statusMsg != nil && (lastLine != "" || tokenSnippet != "") {
+				if statusMsg != nil {
 					queueInfo := ""
 					if followupsCount > 0 {
 						queueInfo = fmt.Sprintf(" | Правок в очереди: %d", followupsCount)
@@ -1131,6 +1131,8 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 					))
 					if lastLine != "" {
 						bldr.WriteString(fmt.Sprintf("📍 <b>Действие:</b>\n<code>%s</code>\n\n", html.EscapeString(truncateString(lastLine, 80))))
+					} else {
+						bldr.WriteString("📍 <b>Действие:</b>\n<code>Инициализация сессии агента...</code>\n\n")
 					}
 					if tokenSnippet != "" {
 						bldr.WriteString(tokenSnippet + "\n\n")
@@ -1181,10 +1183,17 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 
 						questionText := u.TextDelta
 						if u.ToolName == "ask_question" && u.ToolInfo != nil && u.ToolInfo.Parameters != nil {
-							questionText = fmt.Sprintf("%v", u.ToolInfo.Parameters)
+							questionText = FormatAskQuestionParams(u.ToolInfo.Parameters)
 						}
-						qMsg, _ := b.Send(recipient, fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
-							taskID, html.EscapeString(projectName), html.EscapeString(questionText), taskID), tele.ModeHTML)
+						formattedQ := MarkdownToTelegramHTML(questionText)
+						msgText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
+							taskID, html.EscapeString(projectName), formattedQ, taskID)
+						qMsg, err := b.Send(recipient, msgText, tele.ModeHTML)
+						if err != nil {
+							fallbackText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
+								taskID, html.EscapeString(projectName), html.EscapeString(questionText), taskID)
+							qMsg, _ = b.Send(recipient, fallbackText, tele.ModeHTML)
+						}
 						if qMsg != nil {
 							taskManager.RegisterMessageTask(qMsg.ID, taskID)
 						}
@@ -1231,8 +1240,15 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 				task.Unlock()
 				syncLegacySession(task)
 
-				qMsg, _ := b.Send(recipient, fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
-					taskID, html.EscapeString(projectName), html.EscapeString(cleanLine), taskID), tele.ModeHTML)
+				formattedQ := MarkdownToTelegramHTML(cleanLine)
+				msgText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
+					taskID, html.EscapeString(projectName), formattedQ, taskID)
+				qMsg, err := b.Send(recipient, msgText, tele.ModeHTML)
+				if err != nil {
+					fallbackText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
+						taskID, html.EscapeString(projectName), html.EscapeString(cleanLine), taskID)
+					qMsg, _ = b.Send(recipient, fallbackText, tele.ModeHTML)
+				}
 				if qMsg != nil {
 					taskManager.RegisterMessageTask(qMsg.ID, taskID)
 				}
@@ -1561,35 +1577,23 @@ func isQuestionText(s string) bool {
 }
 
 func sendLongMarkdown(b *tele.Bot, recipient tele.Recipient, text string) {
-	const maxChunkSize = 3900
 	text = strings.TrimSpace(text)
-
-	if len(text) <= maxChunkSize {
-		_, err := b.Send(recipient, text, tele.ModeMarkdown)
-		if err != nil {
-			b.Send(recipient, text)
-		}
+	if text == "" {
 		return
 	}
 
-	for len(text) > 0 {
-		chunkSize := maxChunkSize
-		if len(text) < chunkSize {
-			chunkSize = len(text)
-		} else {
-			if lastNL := strings.LastIndex(text[:chunkSize], "\n"); lastNL > 1000 {
-				chunkSize = lastNL
-			}
+	chunks := SplitMarkdown(text, 3500)
+	for _, chunk := range chunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			continue
 		}
 
-		chunk := strings.TrimSpace(text[:chunkSize])
-		text = strings.TrimSpace(text[chunkSize:])
-
-		if chunk != "" {
-			_, err := b.Send(recipient, chunk, tele.ModeMarkdown)
-			if err != nil {
-				b.Send(recipient, chunk)
-			}
+		htmlContent := MarkdownToTelegramHTML(chunk)
+		_, err := b.Send(recipient, htmlContent, tele.ModeHTML)
+		if err != nil {
+			// Если Telegram отклонил HTML-разметку, отправляем обычным текстом без стилей
+			b.Send(recipient, chunk)
 		}
 	}
 }
