@@ -129,6 +129,7 @@ func main() {
 		{Text: "task", Description: "Переключить задачу: /task <id> [текст]"},
 		{Text: "add", Description: "Дополнить задачу: /add <id> <текст>"},
 		{Text: "new", Description: "Создать новую задачу: /new <текст>"},
+		{Text: "resume", Description: "Возобновить задачу: /resume [id] [ответ]"},
 		{Text: "cancel", Description: "Остановить задачу: /cancel [id]"},
 		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},
 		{Text: "top", Description: "CPU и память бота и agy"},
@@ -757,6 +758,283 @@ func main() {
 		return c.Send(fmt.Sprintf("🛑 Задача <b>#%d</b> (<code>%s</code>) остановлена.", task.ID, html.EscapeString(task.Project)), tele.ModeHTML)
 	})
 
+	btnPlanApproveVar := tele.Btn{Unique: "plan_appr_var"}
+	b.Handle(&btnPlanApproveVar, func(c tele.Context) error {
+		parts := strings.Split(strings.TrimSpace(c.Data()), ":")
+		if len(parts) < 2 {
+			return c.Respond(&tele.CallbackResponse{Text: "Некорректные параметры"})
+		}
+		id, err1 := strconv.Atoi(parts[0])
+		varIdx, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи или варианта"})
+		}
+		task := taskManager.GetTask(id)
+		if task == nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Задача не найдена"})
+		}
+		task.Lock()
+		planText := task.Plan
+		task.Unlock()
+		variants := ExtractPlanVariantOptions(planText)
+		chosenVar := ""
+		if varIdx >= 0 && varIdx < len(variants) {
+			chosenVar = variants[varIdx]
+		}
+		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Утверждён вариант: %s", truncateString(chosenVar, 20))})
+		return handleApprovePlanWithVariant(b, c.Recipient(), id, chosenVar)
+	})
+
+	btnQuestionChoice := tele.Btn{Unique: "q_choice"}
+	b.Handle(&btnQuestionChoice, func(c tele.Context) error {
+		parts := strings.Split(strings.TrimSpace(c.Data()), ":")
+		if len(parts) < 2 {
+			return c.Respond(&tele.CallbackResponse{Text: "Некорректные данные кнопки"})
+		}
+		taskID, err1 := strconv.Atoi(parts[0])
+		optIdx, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Некорректные параметры"})
+		}
+
+		task := taskManager.GetTask(taskID)
+		if task == nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Задача не найдена"})
+		}
+
+		task.Lock()
+		status := task.Status
+		var chosenText string
+		if optIdx >= 0 && optIdx < len(task.QuestionOptions) {
+			chosenText = task.QuestionOptions[optIdx]
+		}
+		task.Unlock()
+
+		if chosenText == "" {
+			return c.Respond(&tele.CallbackResponse{Text: "Вариант не найден"})
+		}
+
+		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Выбрано: %s", truncateString(chosenText, 25))})
+
+		if status == TaskStatusWaitingInput {
+			task.DeliverAnswer(chosenText)
+			return c.Send(fmt.Sprintf("💬 <b>Выбран вариант %d для задачи #%d:</b>\n<i>«%s»</i>", optIdx+1, taskID, html.EscapeString(chosenText)), tele.ModeHTML)
+		} else if status == TaskStatusPaused {
+			resumedTask, err := taskManager.ResumeTask(taskID, chosenText)
+			if err != nil {
+				return c.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", taskID, err.Error()), tele.ModeHTML)
+			}
+			syncLegacySession(resumedTask)
+			resumedTask.Lock()
+			resumedStatus := resumedTask.Status
+			projectName := resumedTask.Project
+			resumedTask.Unlock()
+
+			if resumedStatus == TaskStatusQueued {
+				return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
+					taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), tele.ModeHTML)
+			}
+			workDir := filepath.Join(projectsRoot, projectName)
+			go runAgentTaskPipeline(b, c.Recipient(), resumedTask, workDir)
+			return c.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>",
+				taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), tele.ModeHTML)
+		}
+
+		return c.Send(fmt.Sprintf("ℹ️ Задача #%d сейчас не ожидает ответа (текущий статус: %s).", taskID, status.RussianTitle()))
+	})
+
+	btnQuestionPause := tele.Btn{Unique: "q_pause"}
+	b.Handle(&btnQuestionPause, func(c tele.Context) error {
+		idStr := strings.TrimSpace(c.Data())
+		taskID, err := strconv.Atoi(idStr)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+		}
+
+		task := taskManager.GetTask(taskID)
+		if task == nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Задача не найдена"})
+		}
+
+		if !task.PauseTask() {
+			return c.Respond(&tele.CallbackResponse{Text: "Задача не ожидает ответа"})
+		}
+
+		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Задача #%d приостановлена", taskID)})
+		syncLegacySession(task)
+
+		task.Lock()
+		projectName := task.Project
+		task.Unlock()
+
+		checkAndStartQueuedTask(b, projectName, projectsRoot)
+
+		resumeMenu := buildResumeMarkup(taskID)
+		msg := fmt.Sprintf("⏸ <b>Задача #%d (<code>%s</code>) приостановлена.</b>\nОчередь проекта освобождена.\nНажмите кнопку ниже или используйте <code>/resume %d &lt;ответ&gt;</code>, чтобы продолжить.", taskID, html.EscapeString(projectName), taskID)
+		return c.Send(msg, resumeMenu, tele.ModeHTML)
+	})
+
+	btnTaskResume := tele.Btn{Unique: "q_resume"}
+	b.Handle(&btnTaskResume, func(c tele.Context) error {
+		idStr := strings.TrimSpace(c.Data())
+		taskID, err := strconv.Atoi(idStr)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+		}
+
+		task := taskManager.GetTask(taskID)
+		if task == nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Задача не найдена"})
+		}
+
+		task.Lock()
+		status := task.Status
+		lastQ := task.LastQuestion
+		opts := append([]string(nil), task.QuestionOptions...)
+		proj := task.Project
+		task.Unlock()
+
+		_ = c.Respond(&tele.CallbackResponse{})
+
+		if status != TaskStatusPaused && status != TaskStatusWaitingInput {
+			return c.Send(fmt.Sprintf("ℹ️ Задача #%d не находится на паузе (текущий статус: %s).", taskID, status.RussianTitle()))
+		}
+
+		if len(opts) > 0 {
+			menu := buildQuestionMarkup(task)
+			promptMsg := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Выберите вариант кнопкой или ответьте сообщением в чат:</i>",
+				taskID, html.EscapeString(proj), MarkdownToTelegramHTML(lastQ))
+			return c.Send(promptMsg, menu, tele.ModeHTML)
+		}
+
+		return c.Send(fmt.Sprintf("💡 Чтобы возобновить задачу #%d, отправьте ответ в чат (Reply) или <code>/resume %d &lt;ответ&gt;</code>.", taskID, taskID), tele.ModeHTML)
+	})
+
+	b.Handle("/pause", func(c tele.Context) error {
+		args := c.Args()
+		var targetID int
+		if len(args) > 0 {
+			idStr := strings.TrimPrefix(args[0], "#")
+			var err error
+			targetID, err = strconv.Atoi(idStr)
+			if err != nil {
+				return c.Send("Укажите номер задачи. Пример: <code>/pause 2</code>", tele.ModeHTML)
+			}
+		} else {
+			active := taskManager.GetActiveTask()
+			if active == nil {
+				return c.Send("Сейчас нет активных задач.")
+			}
+			targetID = active.ID
+		}
+
+		task := taskManager.GetTask(targetID)
+		if task == nil {
+			return c.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), tele.ModeHTML)
+		}
+
+		if !task.PauseTask() {
+			task.Lock()
+			st := task.Status
+			task.Unlock()
+			return c.Send(fmt.Sprintf("ℹ️ Задачу #%d нельзя приостановить (текущий статус: %s). Пауза доступна при ожидании ответа.", targetID, st.RussianTitle()), tele.ModeHTML)
+		}
+
+		syncLegacySession(task)
+		task.Lock()
+		projectName := task.Project
+		task.Unlock()
+
+		checkAndStartQueuedTask(b, projectName, projectsRoot)
+
+		resumeMenu := buildResumeMarkup(targetID)
+		msg := fmt.Sprintf("⏸ <b>Задача #%d (<code>%s</code>) приостановлена.</b>\nОчередь проекта освобождена.\nЧтобы возобновить, используйте <code>/resume %d &lt;ответ&gt;</code> или кнопку ниже.", targetID, html.EscapeString(projectName), targetID)
+		return c.Send(msg, resumeMenu, tele.ModeHTML)
+	})
+
+	b.Handle("/resume", func(c tele.Context) error {
+		args := c.Args()
+		var targetID int
+		var answer string
+
+		if len(args) > 0 {
+			if id, err := strconv.Atoi(args[0]); err == nil {
+				targetID = id
+				if len(args) > 1 {
+					answer = strings.Join(args[1:], " ")
+				}
+			} else {
+				answer = strings.Join(args, " ")
+			}
+		}
+
+		if targetID == 0 {
+			all := taskManager.ListTasks()
+			for i := len(all) - 1; i >= 0; i-- {
+				t := all[i]
+				t.Lock()
+				st := t.Status
+				t.Unlock()
+				if st == TaskStatusPaused || st == TaskStatusWaitingInput {
+					targetID = t.ID
+					break
+				}
+			}
+		}
+
+		if targetID == 0 {
+			active := taskManager.GetActiveTask()
+			if active != nil {
+				targetID = active.ID
+			}
+		}
+
+		if targetID == 0 {
+			return c.Send("❌ Не указана задача для возобновления. Использование: <code>/resume &lt;id&gt; [ответ]</code>", tele.ModeHTML)
+		}
+
+		task := taskManager.GetTask(targetID)
+		if task == nil {
+			return c.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), tele.ModeHTML)
+		}
+
+		task.Lock()
+		status := task.Status
+		task.Unlock()
+
+		if status == TaskStatusWaitingInput {
+			if answer != "" {
+				task.DeliverAnswer(answer)
+				return c.Send(fmt.Sprintf("💬 <b>Ответ передан задаче #%d</b> (<code>%s</code>)...", targetID, html.EscapeString(task.Project)), tele.ModeHTML)
+			}
+			menu := buildQuestionMarkup(task)
+			return c.Send(fmt.Sprintf("❓ Задача #%d ждёт ответа. Выберите вариант или отправьте: <code>/resume %d &lt;ответ&gt;</code>", targetID, targetID), menu, tele.ModeHTML)
+		}
+
+		if status != TaskStatusPaused {
+			return c.Send(fmt.Sprintf("ℹ️ Задача #%d не находится на паузе (текущий статус: %s).", targetID, status.RussianTitle()))
+		}
+
+		resumedTask, err := taskManager.ResumeTask(targetID, answer)
+		if err != nil {
+			return c.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", targetID, err.Error()), tele.ModeHTML)
+		}
+		syncLegacySession(resumedTask)
+
+		resumedTask.Lock()
+		resStatus := resumedTask.Status
+		proj := resumedTask.Project
+		resumedTask.Unlock()
+
+		if resStatus == TaskStatusQueued {
+			return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.\nОна запустится автоматически, как только текущая задача завершится.", targetID, html.EscapeString(proj)), tele.ModeHTML)
+		}
+
+		workDir := filepath.Join(projectsRoot, proj)
+		go runAgentTaskPipeline(b, c.Recipient(), resumedTask, workDir)
+		return c.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code>!</b>", targetID, html.EscapeString(proj)), tele.ModeHTML)
+	})
+
 	b.Handle("/restart", func(c tele.Context) error {
 		return handleRestart(b, c)
 	})
@@ -797,8 +1075,13 @@ func main() {
 
 		// 2. Проверяем активную задачу в фокусе
 		active := taskManager.GetActiveTask()
-		if active != nil && active.IsActive() {
-			return handleAddFollowupToTask(b, c, active.ID, userText)
+		if active != nil {
+			active.Lock()
+			st := active.Status
+			active.Unlock()
+			if active.IsActive() || st == TaskStatusPaused {
+				return handleAddFollowupToTask(b, c, active.ID, userText)
+			}
 		}
 
 		// 3. Нет активных задач — запускаем новую задачу
@@ -874,7 +1157,6 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *TaskSessi
 			return
 		}
 		task.Status = TaskStatusPlanning
-		activeModel := task.Model
 		existingPlan := task.Plan
 		curPrompt := task.CurrentPrompt
 		task.Unlock()
@@ -913,19 +1195,47 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *TaskSessi
 			)
 		}
 
-		executeStepForTask(b, recipient, task, workDir, planningPrompt, activeModel)
-
-		task.Lock()
-		if task.Status == TaskStatusCancelled {
+		for {
+			task.Lock()
+			if task.Status == TaskStatusCancelled {
+				task.Unlock()
+				checkAndStartQueuedTask(b, projectName, projectsRoot)
+				return
+			}
+			task.Status = TaskStatusPlanning
+			activeModel := task.Model
 			task.Unlock()
-			checkAndStartQueuedTask(b, projectName, projectsRoot)
-			return
+
+			syncLegacySession(task)
+
+			executeStepForTask(b, recipient, task, workDir, planningPrompt, activeModel)
+
+			task.Lock()
+			if task.Status == TaskStatusCancelled {
+				task.Unlock()
+				checkAndStartQueuedTask(b, projectName, projectsRoot)
+				return
+			}
+			st := task.Status
+			task.Unlock()
+
+			if st == TaskStatusWaitingInput {
+				answer, ok := waitForTaskInput(b, recipient, task, projectName, taskID)
+				if !ok {
+					return
+				}
+				planningPrompt = answer
+				continue
+			}
+
+			break
 		}
 
 		planText := strings.TrimSpace(task.FullOutput.String())
 		if planText == "" {
 			planText = "Агент не сформировал подробный план. Вы можете дополнить задачу замечаниями или утвердить её."
 		}
+		task.Lock()
 		task.Plan = planText
 		task.Status = TaskStatusWaitingApproval
 		task.FullOutput.Reset()
@@ -965,7 +1275,19 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *TaskSessi
 			checkAndStartQueuedTask(b, projectName, projectsRoot)
 			return
 		}
+		st := task.Status
+		task.Unlock()
 
+		if st == TaskStatusWaitingInput {
+			answer, ok := waitForTaskInput(b, recipient, task, projectName, taskID)
+			if !ok {
+				return
+			}
+			currentPrompt = answer
+			continue
+		}
+
+		task.Lock()
 		if len(task.PendingFollowups) == 0 {
 			prURL := task.LastPRURL
 			finalReport := task.FullOutput.String()
@@ -1020,6 +1342,20 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *TaskSessi
 	}
 }
 
+func buildAgyArgs(convID, modelName, prompt string) []string {
+	args := []string{
+		"--dangerously-skip-permissions",
+		"--print-timeout", "30m",
+		"--output-format", "stream-json",
+	}
+	if convID != "" {
+		args = append(args, "--conversation", convID)
+	}
+	args = append(args, buildAgyModelArgs(modelName)...)
+	args = append(args, "-p", prompt)
+	return args
+}
+
 func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession, workDir, prompt, modelName string) {
 	projectName := task.Project
 	taskID := task.ID
@@ -1047,13 +1383,11 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 
 	syncLegacySession(task)
 
-	args := []string{
-		"--dangerously-skip-permissions",
-		"--print-timeout", "30m",
-		"--output-format", "stream-json",
-	}
-	args = append(args, buildAgyModelArgs(modelName)...)
-	args = append(args, "-p", prompt)
+	task.Lock()
+	convID := task.ConversationID
+	task.Unlock()
+
+	args := buildAgyArgs(convID, modelName, prompt)
 	cmd := exec.Command("agy", args...)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
@@ -1156,6 +1490,19 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 
 			evt, err := ParseStreamEvent(cleanLine)
 			if err == nil && evt != nil {
+				convID := evt.ConversationID
+				if convID == "" && evt.StepUpdate != nil {
+					convID = evt.StepUpdate.ConversationID
+				}
+				if convID == "" && evt.Result != nil {
+					convID = evt.Result.ConversationID
+				}
+				if convID != "" {
+					task.Lock()
+					task.ConversationID = convID
+					task.Unlock()
+				}
+
 				if evt.StepUpdate != nil {
 					u := evt.StepUpdate
 					if u.Usage != nil {
@@ -1176,23 +1523,30 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 					// Проверка на вопрос пользователю
 					if u.ToolName == "ask_question" ||
 						(u.StepType == "agent_response" && u.State == "DONE" && isQuestionText(u.TextDelta)) {
+						questionText := u.TextDelta
+						var options []string
+						if u.ToolName == "ask_question" && u.ToolInfo != nil && u.ToolInfo.Parameters != nil {
+							questionText = FormatAskQuestionParams(u.ToolInfo.Parameters)
+							options = ExtractAskQuestionOptions(u.ToolInfo.Parameters)
+						}
+
 						task.Lock()
 						task.Status = TaskStatusWaitingInput
+						task.LastQuestion = questionText
+						task.QuestionOptions = options
+						task.QuestionAskedAt = time.Now()
 						task.Unlock()
 						syncLegacySession(task)
 
-						questionText := u.TextDelta
-						if u.ToolName == "ask_question" && u.ToolInfo != nil && u.ToolInfo.Parameters != nil {
-							questionText = FormatAskQuestionParams(u.ToolInfo.Parameters)
-						}
+						menu := buildQuestionMarkup(task)
 						formattedQ := MarkdownToTelegramHTML(questionText)
-						msgText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
-							taskID, html.EscapeString(projectName), formattedQ, taskID)
-						qMsg, err := b.Send(recipient, msgText, tele.ModeHTML)
+						msgText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или выберите вариант кнопкой.</i>",
+							taskID, html.EscapeString(projectName), formattedQ)
+						qMsg, err := b.Send(recipient, msgText, menu, tele.ModeHTML)
 						if err != nil {
-							fallbackText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
-								taskID, html.EscapeString(projectName), html.EscapeString(questionText), taskID)
-							qMsg, _ = b.Send(recipient, fallbackText, tele.ModeHTML)
+							fallbackText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или выберите вариант кнопкой.</i>",
+								taskID, html.EscapeString(projectName), html.EscapeString(questionText))
+							qMsg, _ = b.Send(recipient, fallbackText, menu, tele.ModeHTML)
 						}
 						if qMsg != nil {
 							taskManager.RegisterMessageTask(qMsg.ID, taskID)
@@ -1237,17 +1591,21 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 			if isQuestionText(cleanLine) {
 				task.Lock()
 				task.Status = TaskStatusWaitingInput
+				task.LastQuestion = cleanLine
+				task.QuestionOptions = nil
+				task.QuestionAskedAt = time.Now()
 				task.Unlock()
 				syncLegacySession(task)
 
+				menu := buildQuestionMarkup(task)
 				formattedQ := MarkdownToTelegramHTML(cleanLine)
 				msgText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
 					taskID, html.EscapeString(projectName), formattedQ, taskID)
-				qMsg, err := b.Send(recipient, msgText, tele.ModeHTML)
+				qMsg, err := b.Send(recipient, msgText, menu, tele.ModeHTML)
 				if err != nil {
 					fallbackText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
 						taskID, html.EscapeString(projectName), html.EscapeString(cleanLine), taskID)
-					qMsg, _ = b.Send(recipient, fallbackText, tele.ModeHTML)
+					qMsg, _ = b.Send(recipient, fallbackText, menu, tele.ModeHTML)
 				}
 				if qMsg != nil {
 					taskManager.RegisterMessageTask(qMsg.ID, taskID)
@@ -1265,9 +1623,6 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 	if task.Stdin != nil {
 		_ = task.Stdin.Close()
 		task.Stdin = nil
-	}
-	if task.Status == TaskStatusWaitingInput {
-		task.Status = TaskStatusRunning
 	}
 	task.Unlock()
 	syncLegacySession(task)
@@ -1364,6 +1719,22 @@ func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text strin
 	syncLegacySession(task)
 
 	if isAnswer {
+		task.Lock()
+		curStatus := task.Status
+		proj := task.Project
+		cmdIsNil := (task.Cmd == nil || task.Cmd.Process == nil)
+		task.Unlock()
+
+		if curStatus == TaskStatusQueued {
+			return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
+				taskID, html.EscapeString(proj), html.EscapeString(text)), tele.ModeHTML)
+		} else if curStatus == TaskStatusRunning && cmdIsNil {
+			workDir := filepath.Join(projectsRoot, proj)
+			go runAgentTaskPipeline(b, c.Recipient(), task, workDir)
+			return c.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с ответом:</b>\n<i>«%s»</i>",
+				taskID, html.EscapeString(proj), html.EscapeString(text)), tele.ModeHTML)
+		}
+
 		return c.Send(fmt.Sprintf("💬 <b>Ответ передан задаче #%d</b> (<code>%s</code>)...", taskID, html.EscapeString(task.Project)), tele.ModeHTML)
 	}
 
@@ -1387,6 +1758,10 @@ func isConfirmationText(s string) bool {
 }
 
 func handleApprovePlan(b *tele.Bot, recipient tele.Recipient, taskID int) error {
+	return handleApprovePlanWithVariant(b, recipient, taskID, "")
+}
+
+func handleApprovePlanWithVariant(b *tele.Bot, recipient tele.Recipient, taskID int, variant string) error {
 	task := taskManager.GetTask(taskID)
 	if task == nil {
 		_, err := b.Send(recipient, fmt.Sprintf("❌ Задача #%d не найдена.", taskID))
@@ -1412,9 +1787,14 @@ func handleApprovePlan(b *tele.Bot, recipient tele.Recipient, taskID int) error 
 	initialPrompt := task.InitialPrompt
 	planText := task.Plan
 
+	variantInstruction := ""
+	if variant != "" {
+		variantInstruction = fmt.Sprintf("\n\nПОЛЬЗОВАТЕЛЬ ВЫБРАЛ И УТВЕРДИЛ ВАРИАНТ:\n%s\nРеализуй задачу строго в соответствии с этим выбранным вариантом плана.", variant)
+	}
+
 	implPrompt := fmt.Sprintf(
 		"Задача пользователя: %s\n\n"+
-			"УТВЕРЖДЁННЫЙ ПЛАН РЕАЛИЗАЦИИ:\n%s\n\n"+
+			"УТВЕРЖДЁННЫЙ ПЛАН РЕАЛИЗАЦИИ:\n%s%s\n\n"+
 			"Приступай к полной автономной реализации задачи в точности по утверждённому плану и инструкциям в AGENT.md:\n"+
 			"1. Создай ветку от актуального main: feat/... или fix/...\n"+
 			"2. Реализуй все пункты плана.\n"+
@@ -1425,6 +1805,7 @@ func handleApprovePlan(b *tele.Bot, recipient tele.Recipient, taskID int) error 
 			"PR_URL: <полная web-ссылка на созданный PR>",
 		initialPrompt,
 		planText,
+		variantInstruction,
 	)
 
 	task.CurrentPrompt = implPrompt
@@ -1480,13 +1861,26 @@ func sendPlanForApproval(b *tele.Bot, recipient tele.Recipient, task *TaskSessio
 	}
 
 	planMenu := &tele.ReplyMarkup{}
+	var rows []tele.Row
+
+	// Проверяем наличие альтернативных вариантов в плане
+	variants := ExtractPlanVariantOptions(planText)
+	if len(variants) > 0 {
+		for i, v := range variants {
+			btnText := fmt.Sprintf("Утвердить: %s", truncateString(v, 24))
+			btn := planMenu.Data(btnText, "plan_appr_var", fmt.Sprintf("%d:%d", taskID, i))
+			rows = append(rows, planMenu.Row(btn))
+		}
+	}
+
 	btnApprove := planMenu.Data("✅ Утвердить и начать", "plan_approve", strconv.Itoa(taskID))
 	btnCancel := planMenu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(taskID))
-	planMenu.Inline(planMenu.Row(btnApprove, btnCancel))
+	rows = append(rows, planMenu.Row(btnApprove, btnCancel))
+	planMenu.Inline(rows...)
 
 	footer := fmt.Sprintf(
 		"👆 <b>План задачи #%d ожидает вашего утверждения:</b>\n\n"+
-			"• Нажмите <b>«✅ Утвердить и начать»</b> или введите <code>/approve %d</code>, чтобы начать автономную реализацию.\n"+
+			"• Нажмите <b>«✅ Утвердить и начать»</b> (или выберите конкретный вариант) либо введите <code>/approve %d</code>.\n"+
 			"• Чтобы внести правки, ответьте (Reply) на это сообщение или введите <code>/add %d &lt;замечания&gt;</code>.\n"+
 			"• Для отмены нажмите <b>«❌ Отменить»</b> или <code>/cancel %d</code>.",
 		taskID, taskID, taskID, taskID,
@@ -1495,6 +1889,126 @@ func sendPlanForApproval(b *tele.Bot, recipient tele.Recipient, task *TaskSessio
 	ctlMsg, _ := b.Send(recipient, footer, planMenu, tele.ModeHTML)
 	if ctlMsg != nil {
 		taskManager.RegisterMessageTask(ctlMsg.ID, taskID)
+	}
+}
+
+func buildResumeMarkup(taskID int) *tele.ReplyMarkup {
+	menu := &tele.ReplyMarkup{}
+	btnResume := menu.Data("▶️ Возобновить задачу", "q_resume", strconv.Itoa(taskID))
+	btnCancel := menu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(taskID))
+	menu.Inline(menu.Row(btnResume, btnCancel))
+	return menu
+}
+
+func buildQuestionMarkup(task *TaskSession) *tele.ReplyMarkup {
+	menu := &tele.ReplyMarkup{}
+	task.Lock()
+	taskID := task.ID
+	options := append([]string(nil), task.QuestionOptions...)
+	task.Unlock()
+
+	var rows []tele.Row
+
+	if len(options) > 0 {
+		var optButtons []tele.Btn
+		for i, opt := range options {
+			cleanOpt := strings.TrimSpace(opt)
+			btnText := fmt.Sprintf("%d. %s", i+1, truncateString(cleanOpt, 30))
+			btn := menu.Data(btnText, "q_choice", fmt.Sprintf("%d:%d", taskID, i))
+			optButtons = append(optButtons, btn)
+		}
+
+		allShort := true
+		for _, opt := range options {
+			if len([]rune(opt)) > 15 {
+				allShort = false
+				break
+			}
+		}
+
+		if allShort && len(optButtons) > 1 {
+			for i := 0; i < len(optButtons); i += 2 {
+				if i+1 < len(optButtons) {
+					rows = append(rows, menu.Row(optButtons[i], optButtons[i+1]))
+				} else {
+					rows = append(rows, menu.Row(optButtons[i]))
+				}
+			}
+		} else {
+			for _, b := range optButtons {
+				rows = append(rows, menu.Row(b))
+			}
+		}
+	}
+
+	btnPause := menu.Data("⏸ Приостановить", "q_pause", strconv.Itoa(taskID))
+	btnCancel := menu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(taskID))
+	rows = append(rows, menu.Row(btnPause, btnCancel))
+
+	menu.Inline(rows...)
+	return menu
+}
+
+func waitForTaskInput(b *tele.Bot, recipient tele.Recipient, task *TaskSession, projectName string, taskID int) (string, bool) {
+	timeout := 15 * time.Minute
+	if envTimeout := os.Getenv("QUESTION_TIMEOUT"); envTimeout != "" {
+		if d, err := time.ParseDuration(envTimeout); err == nil && d > 0 {
+			timeout = d
+		} else if sec, err := strconv.Atoi(envTimeout); err == nil && sec > 0 {
+			timeout = time.Duration(sec) * time.Second
+		}
+	}
+
+	select {
+	case answer := <-task.AnswerChan:
+		task.Lock()
+		task.Status = TaskStatusRunning
+		task.CurrentPrompt = answer
+		task.LastQuestion = ""
+		task.QuestionOptions = nil
+		task.StartedAt = time.Now()
+		task.Unlock()
+		syncLegacySession(task)
+
+		b.Send(recipient, fmt.Sprintf("▶️ <b>Задача #%d: Ответ получен, продолжаю выполнение...</b>", taskID), tele.ModeHTML)
+		return answer, true
+
+	case <-task.PauseChan:
+		task.Lock()
+		isCancelled := (task.Status == TaskStatusCancelled)
+		if !isCancelled {
+			task.Status = TaskStatusPaused
+		}
+		task.Unlock()
+		syncLegacySession(task)
+
+		if !isCancelled {
+			checkAndStartQueuedTask(b, projectName, projectsRoot)
+		}
+		return "", false
+
+	case <-time.After(timeout):
+		task.Lock()
+		if task.Status == TaskStatusWaitingInput {
+			task.Status = TaskStatusPaused
+		}
+		task.Unlock()
+		syncLegacySession(task)
+
+		resumeMenu := buildResumeMarkup(taskID)
+		timeoutMsg := fmt.Sprintf(
+			"⏸ <b>Задача #%d (<code>%s</code>) приостановлена по таймауту ожидания ответа (%v).</b>\n\n"+
+				"Очередь проекта освобождена для других задач.\n"+
+				"Чтобы возобновить с места вопроса, нажмите <b>«▶️ Возобновить задачу»</b> или введите <code>/resume %d &lt;ответ&gt;</code>.",
+			taskID, html.EscapeString(projectName), timeout, taskID,
+		)
+		tMsg, _ := b.Send(recipient, timeoutMsg, resumeMenu, tele.ModeHTML)
+		if tMsg != nil {
+			taskManager.RegisterMessageTask(tMsg.ID, taskID)
+		}
+
+		checkAndStartQueuedTask(b, projectName, projectsRoot)
+		return "", false
 	}
 }
 

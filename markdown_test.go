@@ -187,3 +187,64 @@ func TestFormatAskQuestionParams(t *testing.T) {
 		t.Errorf("expected options, got: %s", result)
 	}
 }
+
+func TestExtractAskQuestionOptions(t *testing.T) {
+	// Nested in questions array
+	params := map[string]interface{}{
+		"questions": []interface{}{
+			map[string]interface{}{
+				"question": "Выберите действие:",
+				"options": []interface{}{
+					"Вариант A",
+					"Вариант B",
+				},
+			},
+		},
+	}
+	opts := ExtractAskQuestionOptions(params)
+	if len(opts) != 2 || opts[0] != "Вариант A" || opts[1] != "Вариант B" {
+		t.Errorf("unexpected options: %v", opts)
+	}
+
+	// Direct options
+	paramsDirect := map[string]interface{}{
+		"options": []string{"Option 1", "Option 2"},
+	}
+	optsDirect := ExtractAskQuestionOptions(paramsDirect)
+	if len(optsDirect) != 2 || optsDirect[0] != "Option 1" || optsDirect[1] != "Option 2" {
+		t.Errorf("unexpected options: %v", optsDirect)
+	}
+
+	// Nil / empty
+	if ExtractAskQuestionOptions(nil) != nil {
+		t.Errorf("expected nil for nil params")
+	}
+}
+
+func TestExtractPlanVariantOptions(t *testing.T) {
+	planText := `
+### Анализ вариантов
+
+Вариант 1: Использовать встроенную библиотеку
+Здесь описание первого варианта...
+
+Вариант 2: Подключить сторонний SDK
+Здесь описание второго варианта...
+`
+	variants := ExtractPlanVariantOptions(planText)
+	if len(variants) != 2 {
+		t.Fatalf("expected 2 variants, got %d: %v", len(variants), variants)
+	}
+	if !strings.HasPrefix(variants[0], "Вариант 1") {
+		t.Errorf("expected variant 1, got %s", variants[0])
+	}
+	if !strings.HasPrefix(variants[1], "Вариант 2") {
+		t.Errorf("expected variant 2, got %s", variants[1])
+	}
+
+	// Single occurrence should not trigger variants
+	singleText := "Мы выбрали вариант 1 для архитектуры."
+	if ExtractPlanVariantOptions(singleText) != nil {
+		t.Errorf("expected nil for text without multiple variants")
+	}
+}
