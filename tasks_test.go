@@ -288,6 +288,80 @@ func TestSyncLegacySession(t *testing.T) {
 	}
 }
 
+func TestTaskManagerCreateTaskWithPlan(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Implement feature X", dummyRecipient{}, true)
+
+	if !task.RequiresPlan {
+		t.Errorf("expected RequiresPlan to be true")
+	}
+	if task.PlanApproved {
+		t.Errorf("expected PlanApproved to be false")
+	}
+	if task.Plan != "" {
+		t.Errorf("expected Plan to be empty initially")
+	}
+
+	task.Status = TaskStatusPlanning
+	if !task.IsActive() {
+		t.Errorf("expected task to be active during planning")
+	}
+	if task.Status.RussianTitle() != "📝 Составление плана" {
+		t.Errorf("unexpected RussianTitle: %s", task.Status.RussianTitle())
+	}
+	if task.Status.Emoji() != "📝" {
+		t.Errorf("unexpected Emoji: %s", task.Status.Emoji())
+	}
+
+	if !tm.HasRunningTaskInProject("proj-plan") {
+		t.Errorf("expected HasRunningTaskInProject to be true when planning")
+	}
+
+	task.Status = TaskStatusWaitingApproval
+	task.Plan = "1. First step\n2. Second step"
+	if !task.IsActive() {
+		t.Errorf("expected task to be active when waiting approval")
+	}
+	if task.Status.RussianTitle() != "📋 Ожидает утверждения плана" {
+		t.Errorf("unexpected RussianTitle: %s", task.Status.RussianTitle())
+	}
+	if task.Status.Emoji() != "📋" {
+		t.Errorf("unexpected Emoji: %s", task.Status.Emoji())
+	}
+	if !tm.HasRunningTaskInProject("proj-plan") {
+		t.Errorf("expected HasRunningTaskInProject to be true when waiting approval")
+	}
+}
+
+func TestFormatTasksListAndDetailsWithPlan(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Build feature Y", dummyRecipient{}, true)
+	task.Status = TaskStatusWaitingApproval
+	task.Plan = "1. Create models\n2. Add endpoints"
+
+	listMsg, menu := FormatTasksList(tm)
+	if !strings.Contains(listMsg, "📋") {
+		t.Errorf("expected listMsg to contain 📋 emoji")
+	}
+	if !strings.Contains(listMsg, "/approve") {
+		t.Errorf("expected listMsg to contain /approve")
+	}
+	if menu == nil {
+		t.Errorf("expected inline menu for active tasks")
+	}
+
+	details := FormatTaskDetails(task, true)
+	if !strings.Contains(details, "Ожидает утверждения") {
+		t.Errorf("expected details to mention 'Ожидает утверждения'")
+	}
+	if !strings.Contains(details, "План реализации") {
+		t.Errorf("expected details to contain 'План реализации'")
+	}
+	if !strings.Contains(details, "/approve") {
+		t.Errorf("expected details to contain /approve")
+	}
+}
+
 func TestTaskSessionDurationAndLocking(t *testing.T) {
 	task := &TaskSession{
 		ID:        1,
@@ -369,5 +443,3 @@ func TestTaskManagerLiveQueriesDuringTaskExecution(t *testing.T) {
 		t.Fatal("deadlock detected during concurrent task queries!")
 	}
 }
-
-
