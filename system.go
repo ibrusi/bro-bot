@@ -188,15 +188,32 @@ func parseSystemFlags(args []string) SystemFlags {
 	return f
 }
 
-func performGitCheckout(ctx context.Context, dir, branch string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "checkout", branch)
+func performGitCheckout(ctx context.Context, dir, branch string, force bool) (string, error) {
+	args := []string{"-C", dir, "checkout"}
+	if force {
+		args = append(args, "-f")
+	}
+	args = append(args, branch)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 
-func performGitPull(ctx context.Context, dir string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "pull")
+func performGitPull(ctx context.Context, dir string, force bool) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "pull", "origin", "main")
 	out, err := cmd.CombinedOutput()
+	if err != nil && force {
+		fetchCmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin", "main")
+		if fetchOut, fetchErr := fetchCmd.CombinedOutput(); fetchErr == nil {
+			resetCmd := exec.CommandContext(ctx, "git", "-C", dir, "reset", "--hard", "origin/main")
+			resetOut, resetErr := resetCmd.CombinedOutput()
+			if resetErr == nil {
+				return strings.TrimSpace(string(resetOut)), nil
+			}
+		} else {
+			return strings.TrimSpace(string(fetchOut)), fetchErr
+		}
+	}
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -273,71 +290,133 @@ func getGitRemoteURL(dir string) string {
 	return ""
 }
 
+func normalizeGitURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimRight(raw, "/")
+	raw = strings.TrimSuffix(raw, ".git")
+	raw = strings.TrimRight(raw, "/")
+	if idx := strings.Index(raw, "://"); idx != -1 {
+		raw = raw[idx+3:]
+	}
+	if idx := strings.Index(raw, "@"); idx != -1 {
+		raw = raw[idx+1:]
+	}
+	raw = strings.ReplaceAll(raw, ":", "/")
+	raw = strings.Trim(raw, "/")
+	return strings.ToLower(raw)
+}
+
 func isBotProject(projectName, botDir, projectsRoot string) bool {
 	cleanProj := strings.TrimSpace(projectName)
 	if cleanProj == "" {
 		return false
 	}
-	// Прямое совпадение с известными именами репозитория бота
-	if cleanProj == "tg-bot-agent" || cleanProj == "tg-agent-bot" {
-		return true
-	}
-	if botDir != "" && strings.EqualFold(cleanProj, filepath.Base(botDir)) {
-		return true
-	}
-	if projectsRoot != "" && botDir != "" {
-		projDir := filepath.Join(projectsRoot, cleanProj)
-		botRemote := getGitRemoteURL(botDir)
-		projRemote := getGitRemoteURL(projDir)
-		if botRemote != "" && projRemote != "" && botRemote == projRemote {
+	cleanProj = filepath.Clean(cleanProj)
+	baseProj := filepath.Base(cleanProj)
+
+	// Проверка по DEFAULT_PROJECT
+	if defProj := os.Getenv("DEFAULT_PROJECT"); defProj != "" {
+		if strings.EqualFold(cleanProj, defProj) || strings.EqualFold(baseProj, defProj) {
 			return true
 		}
 	}
+
+	// Прямое совпадение с известными именами репозитория бота
+	for _, name := range []string{"tg-bot-agent", "tg-agent-bot"} {
+		if strings.EqualFold(cleanProj, name) || strings.EqualFold(baseProj, name) {
+			return true
+		}
+	}
+
+	// Совпадение с basename директории бота (например, tg-agent-bot)
+	if botDir != "" {
+		botBase := filepath.Base(botDir)
+		if strings.EqualFold(cleanProj, botBase) || strings.EqualFold(baseProj, botBase) {
+			return true
+		}
+	}
+
+	// Совпадение по нормализованному Git Remote URL
+	if botDir != "" {
+		botRemote := normalizeGitURL(getGitRemoteURL(botDir))
+		if botRemote != "" {
+			var projDir string
+			if filepath.IsAbs(cleanProj) {
+				projDir = cleanProj
+			} else if projectsRoot != "" {
+				projDir = filepath.Join(projectsRoot, cleanProj)
+			}
+			if projDir != "" {
+				projRemote := normalizeGitURL(getGitRemoteURL(projDir))
+				if projRemote != "" && botRemote == projRemote {
+					return true
+				}
+			}
+		}
+	}
+
 	return false
 }
 
 func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, projectsRoot string) (string, bool) {
 	activeTasks := taskManager.GetActiveOrQueuedTasks()
 
-	// 1. Ищем активную задачу на проекте самого бота
-	var botTask *TaskSession
+	// 1. Ищем активные задачи на проекте самого бота
+	var botTasks []*TaskSession
+	var otherTasks []*TaskSession
 	for _, t := range activeTasks {
 		if isBotProject(t.Project, botDir, projectsRoot) {
-			botTask = t
-			break
+			botTasks = append(botTasks, t)
+		} else {
+			otherTasks = append(otherTasks, t)
 		}
 	}
 
-	// 2. Если есть задача на проекте бота и нет флага Force
-	if botTask != nil && !flags.Force {
-		botTask.Lock()
-		tID := botTask.ID
-		tProj := botTask.Project
-		tPrompt := botTask.CurrentPrompt
-		tStatus := botTask.Status.RussianTitle()
-		botTask.Unlock()
+	// 2. Если есть задачи на проекте бота и нет флага Force
+	if len(botTasks) > 0 && !flags.Force {
+		firstTask := botTasks[0]
+		firstTask.Lock()
+		tID := firstTask.ID
+		tProj := firstTask.Project
+		tPrompt := firstTask.CurrentPrompt
+		tStatus := firstTask.Status.RussianTitle()
+		firstTask.Unlock()
+
+		countStr := ""
+		if len(botTasks) > 1 {
+			countStr = fmt.Sprintf(" (%d шт.)", len(botTasks))
+		}
+
+		actionDesc := "Сборка и перезапуск"
+		if strings.Contains(cmdName, "pull") {
+			actionDesc = "Смена ветки на main, git pull и сборка"
+		} else if strings.Contains(cmdName, "restart") {
+			actionDesc = "Перезапуск бота"
+		}
 
 		return fmt.Sprintf(
-			"⚠️ <b>На проекте бота выполняется активная задача!</b>\n\n"+
+			"⚠️ <b>На проекте бота выполняется активная задача%s!</b>\n\n"+
 				"• Проект: <code>%s</code>\n"+
 				"• Задача #%d: <i>%s</i>\n"+
 				"• Статус: %s\n\n"+
-				"Смена ветки, git pull и сборка могут повлиять на рабочий репозиторий и прервут выполнение.\n"+
+				"%s могут повлиять на рабочий репозиторий и прервут выполнение.\n"+
 				"Чтобы принудительно остановить задачу и выполнить команду:\n"+
 				"<code>%s force</code>\n\n"+
 				"Или отмените текущую задачу командой: <code>/cancel %d</code>.",
+			countStr,
 			html.EscapeString(tProj),
 			tID,
 			html.EscapeString(truncateString(tPrompt, 100)),
 			html.EscapeString(tStatus),
+			actionDesc,
 			cmdName,
 			tID,
 		), true
 	}
 
 	// 3. Если есть любые другие активные задачи в боте и нет флага Force
-	if len(activeTasks) > 0 && !flags.Force {
-		firstTask := activeTasks[0]
+	if len(otherTasks) > 0 && !flags.Force {
+		firstTask := otherTasks[0]
 		firstTask.Lock()
 		tID := firstTask.ID
 		tProj := firstTask.Project
@@ -352,7 +431,7 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 				"Чтобы принудительно остановить задачи и выполнить операцию:\n"+
 				"<code>%s force</code>\n\n"+
 				"Или дождитесь их завершения.",
-			len(activeTasks),
+			len(otherTasks),
 			tID,
 			html.EscapeString(tProj),
 			html.EscapeString(truncateString(tPrompt, 100)),
@@ -446,7 +525,7 @@ func handleRebuild(b *tele.Bot, c tele.Context) error {
 	if flags.Pull {
 		updateStatus("🌿 <b>Переключаюсь на ветку main...</b>")
 		ctxCheckout, cancelCheckout := context.WithTimeout(context.Background(), 30*time.Second)
-		checkoutOut, checkoutErr := performGitCheckout(ctxCheckout, botDir, "main")
+		checkoutOut, checkoutErr := performGitCheckout(ctxCheckout, botDir, "main", flags.Force)
 		cancelCheckout()
 		if checkoutErr != nil {
 			errMsg := checkoutOut
@@ -462,7 +541,7 @@ func handleRebuild(b *tele.Bot, c tele.Context) error {
 
 		updateStatus("📥 <b>Выполняю git pull origin...</b>")
 		ctxPull, cancelPull := context.WithTimeout(context.Background(), 30*time.Second)
-		pullOut, pullErr := performGitPull(ctxPull, botDir)
+		pullOut, pullErr := performGitPull(ctxPull, botDir, flags.Force)
 		cancelPull()
 		if pullErr != nil {
 			errMsg := pullOut
