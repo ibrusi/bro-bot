@@ -358,3 +358,45 @@ func TestStorageRecovery(t *testing.T) {
 		t.Fatalf("expected recovery log entry for t1, got %+v", logs1)
 	}
 }
+
+func TestStorageUpdateTaskConversationID(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	task := &TaskRecord{
+		Project:       "conv-proj",
+		Model:         "flash",
+		InitialPrompt: "Task without convID initially",
+		Status:        "running",
+	}
+
+	id, err := s.CreateTask(ctx, task)
+	if err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	// Verify conversation_id is initially empty
+	got, err := s.GetTask(ctx, id)
+	if err != nil {
+		t.Fatalf("GetTask failed: %v", err)
+	}
+	if got.ConversationID != "" {
+		t.Fatalf("expected empty ConversationID, got %q", got.ConversationID)
+	}
+
+	// Update conversation_id immediately
+	testConvID := "conv-test-uuid-4567-89ab"
+	if err := s.UpdateTaskConversationID(ctx, id, testConvID); err != nil {
+		t.Fatalf("UpdateTaskConversationID failed: %v", err)
+	}
+
+	// Verify conversation_id is persisted
+	got2, err := s.GetTask(ctx, id)
+	if err != nil {
+		t.Fatalf("GetTask failed: %v", err)
+	}
+	if got2.ConversationID != testConvID {
+		t.Fatalf("expected ConversationID %q, got %q", testConvID, got2.ConversationID)
+	}
+}
+

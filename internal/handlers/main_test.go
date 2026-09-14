@@ -320,6 +320,7 @@ func TestGetDefaultCommands(t *testing.T) {
 		"planmode",
 		"approve",
 		"resume",
+		"retry",
 		"tasks",
 		"status",
 		"task",
@@ -582,4 +583,90 @@ func TestHandlersSQLiteSettingsPersistence(t *testing.T) {
 		t.Errorf("settings mismatch: p=%q, m=%q, pm=%q", p, m, pm)
 	}
 }
+
+func TestBuildAgyArgsWithStepTimeout(t *testing.T) {
+	origTimeout := config.StepTimeout
+	defer func() { config.StepTimeout = origTimeout }()
+
+	config.StepTimeout = 45 * time.Minute
+	args := buildAgyArgs("conv-xyz-789", "gemini-3.1-pro-high", "Test prompt")
+
+	hasTimeout := false
+	for i, arg := range args {
+		if arg == "--print-timeout" && i+1 < len(args) && args[i+1] == "45m0s" {
+			hasTimeout = true
+			break
+		}
+	}
+	if !hasTimeout {
+		t.Errorf("expected --print-timeout 45m0s in args, got: %v", args)
+	}
+
+	hasConv := false
+	for i, arg := range args {
+		if arg == "--conversation" && i+1 < len(args) && args[i+1] == "conv-xyz-789" {
+			hasConv = true
+			break
+		}
+	}
+	if !hasConv {
+		t.Errorf("expected --conversation conv-xyz-789 in args, got: %v", args)
+	}
+}
+
+func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
+	memStore, err := storage.NewSQLiteStorage(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create sqlite: %v", err)
+	}
+	defer memStore.Close()
+
+	tm := domain.NewTaskManagerWithStorage(memStore)
+	domain.GlobalTaskManager = tm
+
+	task := tm.CreateTask("proj-timeout", "m", "Prompt", dummyRecipient{})
+	task.Lock()
+	task.ConversationID = "conv-timeout-123"
+	task.Status = domain.TaskStatusRunning
+	task.Unlock()
+	tm.SaveTask(task)
+
+	// 1. Проверяем перевод задачи в статус paused при таймауте
+	handleTaskStepTimeout(nil, dummyRecipient{}, task, "proj-timeout", task.ID, false)
+
+	task.Lock()
+	st := task.Status
+	logs := append([]string(nil), task.RecentLogs...)
+	task.Unlock()
+
+	if st != domain.TaskStatusPaused {
+		t.Errorf("expected task to be paused after timeout, got: %s", st)
+	}
+	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "Превышен таймаут") {
+		t.Errorf("expected timeout message in logs, got: %+v", logs)
+	}
+
+	// 2. Проверяем перевод задачи в статус failed при ошибке
+	task2 := tm.CreateTask("proj-err", "m", "Prompt 2", dummyRecipient{})
+	task2.Lock()
+	task2.ConversationID = "conv-err-456"
+	task2.Status = domain.TaskStatusRunning
+	task2.Unlock()
+	tm.SaveTask(task2)
+
+	handleTaskStepError(nil, dummyRecipient{}, task2, "proj-err", task2.ID, fmt.Errorf("exit status 127"))
+
+	task2.Lock()
+	st2 := task2.Status
+	logs2 := append([]string(nil), task2.RecentLogs...)
+	task2.Unlock()
+
+	if st2 != domain.TaskStatusFailed {
+		t.Errorf("expected task to be failed after error, got: %s", st2)
+	}
+	if len(logs2) == 0 || !strings.Contains(logs2[len(logs2)-1], "exit status 127") {
+		t.Errorf("expected error details in logs, got: %+v", logs2)
+	}
+}
+
 

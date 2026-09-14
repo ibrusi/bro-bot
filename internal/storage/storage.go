@@ -67,6 +67,7 @@ type Storage interface {
 	UpdateTaskStatus(ctx context.Context, id int, status string) error
 	UpdateTaskPlan(ctx context.Context, id int, plan string, approved bool) error
 	UpdateTaskFinished(ctx context.Context, id int, status string, finishedAt time.Time, prURL string) error
+	UpdateTaskConversationID(ctx context.Context, id int, conversationID string) error
 
 	// Followups
 	AddFollowup(ctx context.Context, taskID int, text string, orderIndex int) error

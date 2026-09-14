@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"tg-agent-bot/internal/storage"
@@ -704,4 +705,95 @@ func TestTaskManagerWithSQLiteStorage(t *testing.T) {
 		t.Fatalf("expected task 3 ID to be 3, got %d", task3.ID)
 	}
 }
+
+func TestSetAndClearTaskConversationID(t *testing.T) {
+	memStore, err := storage.NewSQLiteStorage(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create sqlite: %v", err)
+	}
+	defer memStore.Close()
+
+	tm := NewTaskManagerWithStorage(memStore)
+	task := tm.CreateTask("proj-conv", "model", "Prompt", dummyRecipient{})
+
+	// 1. Установка conversation_id через SetTaskConversationID
+	testConvID := "agy-conv-uuid-12345"
+	tm.SetTaskConversationID(task.ID, testConvID)
+
+	task.Lock()
+	gotMemConv := task.ConversationID
+	task.Unlock()
+	if gotMemConv != testConvID {
+		t.Fatalf("expected task.ConversationID to be %s in memory, got %s", testConvID, gotMemConv)
+	}
+
+	// Проверяем персистентность в SQLite
+	rec, err := memStore.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask failed: %v", err)
+	}
+	if rec.ConversationID != testConvID {
+		t.Fatalf("expected ConversationID in SQLite to be %s, got %s", testConvID, rec.ConversationID)
+	}
+
+	// 2. Очистка conversation_id через ClearTaskConversationID
+	tm.ClearTaskConversationID(task.ID)
+
+	task.Lock()
+	clearedMem := task.ConversationID
+	task.Unlock()
+	if clearedMem != "" {
+		t.Fatalf("expected empty ConversationID after clear, got %s", clearedMem)
+	}
+
+	recCleared, err := memStore.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask failed: %v", err)
+	}
+	if recCleared.ConversationID != "" {
+		t.Fatalf("expected empty ConversationID in SQLite after clear, got %s", recCleared.ConversationID)
+	}
+}
+
+func TestResumeTaskDefaultPrompts(t *testing.T) {
+	tm := NewTaskManager()
+
+	// 1. Задача на планировании без переданного ответа с существующей сессией
+	pTask := tm.CreateTaskWithPlan("proj-plan", "m", "Make plan", dummyRecipient{}, true)
+	pTask.Lock()
+	pTask.Status = TaskStatusPaused
+	pTask.ConversationID = "conv-plan-123"
+	pTask.Unlock()
+
+	resumedPlan, err := tm.ResumeTask(pTask.ID, "")
+	if err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+	if resumedPlan.Status != TaskStatusPlanning {
+		t.Fatalf("expected status Planning, got %s", resumedPlan.Status)
+	}
+	if !strings.Contains(resumedPlan.CurrentPrompt, "детального плана") {
+		t.Fatalf("expected default planning prompt, got: %s", resumedPlan.CurrentPrompt)
+	}
+
+	// 2. Задача на исполнении без переданного ответа с существующей сессией
+	execTask := tm.CreateTaskWithPlan("proj-exec", "m", "Execute task", dummyRecipient{}, true)
+	execTask.Lock()
+	execTask.PlanApproved = true
+	execTask.Status = TaskStatusPaused
+	execTask.ConversationID = "conv-exec-123"
+	execTask.Unlock()
+
+	resumedExec, err := tm.ResumeTask(execTask.ID, "")
+	if err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+	if resumedExec.Status != TaskStatusRunning {
+		t.Fatalf("expected status Running, got %s", resumedExec.Status)
+	}
+	if !strings.Contains(resumedExec.CurrentPrompt, "утвержденному плану") {
+		t.Fatalf("expected default implementation prompt, got: %s", resumedExec.CurrentPrompt)
+	}
+}
+
 

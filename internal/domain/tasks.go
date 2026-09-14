@@ -666,6 +666,12 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 
 	if answer != "" {
 		task.CurrentPrompt = answer
+	} else if task.ConversationID != "" || task.CurrentPrompt == "" {
+		if task.RequiresPlan && !task.PlanApproved {
+			task.CurrentPrompt = "Продолжай исследование репозитория и заверши составление детального плана реализации задачи."
+		} else {
+			task.CurrentPrompt = "Продолжай автономное выполнение задачи по утвержденному плану в текущей ветке git. Заверши необходимые изменения, запусти тесты и линтеры, закоммить изменения и открой Pull Request."
+		}
 	}
 	task.LastQuestion = ""
 	task.QuestionOptions = nil
@@ -673,7 +679,11 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 	if isProjectBusy {
 		task.Status = TaskStatusQueued
 	} else {
-		task.Status = TaskStatusRunning
+		if task.RequiresPlan && !task.PlanApproved {
+			task.Status = TaskStatusPlanning
+		} else {
+			task.Status = TaskStatusRunning
+		}
 		task.StartedAt = time.Now()
 		task.RecentLogs = nil
 	}
@@ -683,6 +693,56 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 	tm.SaveTask(task)
 
 	return task, nil
+}
+
+// SetTaskConversationID сохраняет ID сессии agy для задачи и немедленно персистирует его в хранилище.
+func (tm *TaskManager) SetTaskConversationID(id int, convID string) {
+	if tm == nil || convID == "" {
+		return
+	}
+	tm.RLock()
+	task, ok := tm.tasks[id]
+	s := tm.storage
+	tm.RUnlock()
+
+	if !ok || task == nil {
+		return
+	}
+
+	task.Lock()
+	if task.ConversationID == convID {
+		task.Unlock()
+		return
+	}
+	task.ConversationID = convID
+	task.Unlock()
+
+	if s != nil {
+		_ = s.UpdateTaskConversationID(context.Background(), id, convID)
+	}
+}
+
+// ClearTaskConversationID очищает сохраненную сессию agy задачи (для повтора с нуля).
+func (tm *TaskManager) ClearTaskConversationID(id int) {
+	if tm == nil {
+		return
+	}
+	tm.RLock()
+	task, ok := tm.tasks[id]
+	s := tm.storage
+	tm.RUnlock()
+
+	if !ok || task == nil {
+		return
+	}
+
+	task.Lock()
+	task.ConversationID = ""
+	task.Unlock()
+
+	if s != nil {
+		_ = s.UpdateTaskConversationID(context.Background(), id, "")
+	}
 }
 
 
