@@ -329,22 +329,24 @@ func TestStorageRecovery(t *testing.T) {
 	t2, _ := s.CreateTask(ctx, &TaskRecord{Project: "p2", Model: "m", Status: "planning"})
 	t3, _ := s.CreateTask(ctx, &TaskRecord{Project: "p3", Model: "m", Status: "waiting_approval"})
 	t4, _ := s.CreateTask(ctx, &TaskRecord{Project: "p4", Model: "m", Status: "completed"})
+	t5, _ := s.CreateTask(ctx, &TaskRecord{Project: "p5", Model: "m", Status: "waiting_input"})
 
 	recovered, err := s.RecoverInterruptedTasks(ctx)
 	if err != nil {
 		t.Fatalf("RecoverInterruptedTasks failed: %v", err)
 	}
-	if len(recovered) != 2 {
-		t.Fatalf("expected 2 recovered tasks, got %d (%+v)", len(recovered), recovered)
+	if len(recovered) != 3 {
+		t.Fatalf("expected 3 recovered tasks, got %d (%+v)", len(recovered), recovered)
 	}
 
 	got1, _ := s.GetTask(ctx, t1)
 	got2, _ := s.GetTask(ctx, t2)
 	got3, _ := s.GetTask(ctx, t3)
 	got4, _ := s.GetTask(ctx, t4)
+	got5, _ := s.GetTask(ctx, t5)
 
-	if got1.Status != "paused" || got2.Status != "paused" {
-		t.Fatalf("expected t1 and t2 to be paused, got %s, %s", got1.Status, got2.Status)
+	if got1.Status != "paused" || got2.Status != "paused" || got5.Status != "paused" {
+		t.Fatalf("expected t1, t2, t5 to be paused, got %s, %s, %s", got1.Status, got2.Status, got5.Status)
 	}
 	if got3.Status != "waiting_approval" {
 		t.Fatalf("expected t3 to remain waiting_approval, got %s", got3.Status)

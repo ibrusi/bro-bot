@@ -192,6 +192,10 @@ func (t *TaskSession) DeliverAnswer(answer string) bool {
 	t.Lock()
 	defer t.Unlock()
 
+	if t.Stdin != nil {
+		_, _ = io.WriteString(t.Stdin, answer+"\n")
+	}
+
 	if t.AnswerChan == nil {
 		t.AnswerChan = make(chan string, 1)
 	}
@@ -216,6 +220,13 @@ func (t *TaskSession) PauseTask() bool {
 
 	if t.Status == TaskStatusWaitingInput {
 		t.Status = TaskStatusPaused
+		if t.Cmd != nil && t.Cmd.Process != nil {
+			_ = syscall.Kill(-t.Cmd.Process.Pid, syscall.SIGKILL)
+		}
+		if t.Stdin != nil {
+			_ = t.Stdin.Close()
+			t.Stdin = nil
+		}
 		if t.PauseChan != nil {
 			select {
 			case t.PauseChan <- struct{}{}:
@@ -625,23 +636,30 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 
 	// Если задача всё ещё ждёт ввода в живом пайплайне
 	if task.Status == TaskStatusWaitingInput {
-		if answer != "" {
-			if task.AnswerChan == nil {
-				task.AnswerChan = make(chan string, 1)
-			}
-			select {
-			case task.AnswerChan <- answer:
-			default:
-				select {
-				case <-task.AnswerChan:
-				default:
+		cmdIsNil := (task.Cmd == nil || task.Cmd.Process == nil)
+		if !cmdIsNil {
+			if answer != "" {
+				if task.Stdin != nil {
+					_, _ = io.WriteString(task.Stdin, answer+"\n")
 				}
-				task.AnswerChan <- answer
+				if task.AnswerChan == nil {
+					task.AnswerChan = make(chan string, 1)
+				}
+				select {
+				case task.AnswerChan <- answer:
+				default:
+					select {
+					case <-task.AnswerChan:
+					default:
+					}
+					task.AnswerChan <- answer
+				}
 			}
+			task.Unlock()
+			tm.Unlock()
+			return task, nil
 		}
-		task.Unlock()
-		tm.Unlock()
-		return task, nil
+		// Если процесс не запущен (например, после рестарта или завершения шага), продолжаем логику возобновления
 	}
 
 	// Задача была в TaskStatusPaused

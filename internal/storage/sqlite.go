@@ -612,7 +612,7 @@ func (s *SQLiteStorage) RecoverInterruptedTasks(ctx context.Context) ([]int, err
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tasks WHERE status IN ('running', 'planning')`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tasks WHERE status IN ('running', 'planning', 'waiting_input')`)
 	if err != nil {
 		return nil, err
 	}

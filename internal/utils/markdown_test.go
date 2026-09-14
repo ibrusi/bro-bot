@@ -283,3 +283,73 @@ func TestExtractPlanSummary(t *testing.T) {
 		}
 	})
 }
+
+func TestIsFinalResponseAQuestion(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{
+			name:     "Empty text",
+			input:    "",
+			expected: false,
+		},
+		{
+			name:     "Normal completion text",
+			input:    "Задача выполнена успешно. Все тесты пройдены.",
+			expected: false,
+		},
+		{
+			name:     "Markdown header ending with question mark",
+			input:    "Вот план реализации:\n\n### Нужны ли дополнительные тесты?",
+			expected: false,
+		},
+		{
+			name:     "Code block ending with question",
+			input:    "Код функции:\n```go\n// is valid?\n```",
+			expected: false,
+		},
+		{
+			name:     "Explicit question to user",
+			input:    "Я проанализировал задачу. Какой подход к базе данных вы предпочитаете?",
+			expected: true,
+		},
+		{
+			name:     "Confirmation request",
+			input:    "Перед началом изменений подтвердите выбор библиотеки.",
+			expected: true,
+		},
+		{
+			name:     "Multi-line response ending with question",
+			input:    "Шаг 1 выполнен.\nШаг 2 выполнен.\n\nПродолжить реализацию следующего этапа?",
+			expected: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IsFinalResponseAQuestion(tc.input)
+			if got != tc.expected {
+				t.Errorf("IsFinalResponseAQuestion(%q) = %v; want %v", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestExtractQuestionFromResponse(t *testing.T) {
+	short := "Какой цвет выбрать?"
+	if got := ExtractQuestionFromResponse(short); got != short {
+		t.Errorf("expected %q, got %q", short, got)
+	}
+
+	long := strings.Repeat("Анализ проекта и кодовой базы.\n\n", 30) + "Итоговый вопрос: какой фреймворк подключить?"
+	got := ExtractQuestionFromResponse(long)
+	if !strings.Contains(got, "Итоговый вопрос: какой фреймворк подключить?") {
+		t.Errorf("expected got to contain the final paragraph, got %q", got)
+	}
+	if strings.HasPrefix(got, "Анализ проекта") {
+		t.Errorf("expected early paragraphs to be excluded for long text, got %q", got)
+	}
+}
+
