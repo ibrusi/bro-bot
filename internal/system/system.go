@@ -57,7 +57,8 @@ func getBotDir() string {
 			return exeDir
 		}
 	}
-	return defaultBotDir
+	log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр BOT_DIR не задан и не удалось определить его автоматически")
+	return ""
 }
 
 func getGoBinary() string {
@@ -269,7 +270,7 @@ func performBuild(ctx context.Context, botDir string) (string, error) {
 func executeRestart(b *tele.Bot, recipient tele.Recipient) {
 	serviceName := os.Getenv("BOT_SERVICE_NAME")
 	if serviceName == "" {
-		serviceName = defaultServiceName
+		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр BOT_SERVICE_NAME не задан")
 	}
 
 	log.Printf("Инициирован перезапуск бота (сервис: %s)...", serviceName)

@@ -71,16 +71,37 @@ var (
 
 func Start() {
 	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
-	adminIDStr := os.Getenv("TELEGRAM_ADMIN_ID")
-	envProjectsRoot := os.Getenv("PROJECTS_ROOT")
-	if envProjectsRoot != "" {
-		config.ProjectsRoot = envProjectsRoot
+	if botToken == "" {
+		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр TELEGRAM_BOT_TOKEN не задан")
 	}
 
+	adminIDStr := os.Getenv("TELEGRAM_ADMIN_ID")
 	var err error
 	config.AdminID, err = strconv.ParseInt(adminIDStr, 10, 64)
 	if err != nil || config.AdminID == 0 {
-		log.Fatal("Некорректный или отсутствующий TELEGRAM_ADMIN_ID")
+		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр TELEGRAM_ADMIN_ID не задан или некорректен")
+	}
+
+	envProjectsRoot := os.Getenv("PROJECTS_ROOT")
+	if envProjectsRoot == "" {
+		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр PROJECTS_ROOT не задан")
+	}
+	config.ProjectsRoot = envProjectsRoot
+
+	envTimeout := os.Getenv("QUESTION_TIMEOUT")
+	if envTimeout == "" {
+		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр QUESTION_TIMEOUT не задан")
+	}
+	if d, err := time.ParseDuration(envTimeout); err == nil && d > 0 {
+		config.QuestionTimeout = d
+	} else if sec, err := strconv.Atoi(envTimeout); err == nil && sec > 0 {
+		config.QuestionTimeout = time.Duration(sec) * time.Second
+	} else {
+		log.Fatal("Некорректный формат QUESTION_TIMEOUT")
+	}
+
+	if os.Getenv("BOT_SERVICE_NAME") == "" {
+		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр BOT_SERVICE_NAME не задан")
 	}
 
 	models.GlobalModelRegistry = models.NewModelRegistry(10 * time.Minute)
@@ -1090,17 +1111,15 @@ func Start() {
 
 func initDefaultProject(root string) {
 	defaultProject := os.Getenv("DEFAULT_PROJECT")
-	if defaultProject == "" {
-		defaultProject = "tg-bot-agent"
-	}
-
-	targetDir := filepath.Join(root, defaultProject)
-	if info, err := os.Stat(targetDir); err == nil && info.IsDir() {
-		config.ProjectState.Lock()
-		config.ProjectState.CurrentProject = defaultProject
-		config.ProjectState.Unlock()
-		log.Printf("Инициализирован проект по умолчанию: %s", defaultProject)
-		return
+	if defaultProject != "" {
+		targetDir := filepath.Join(root, defaultProject)
+		if info, err := os.Stat(targetDir); err == nil && info.IsDir() {
+			config.ProjectState.Lock()
+			config.ProjectState.CurrentProject = defaultProject
+			config.ProjectState.Unlock()
+			log.Printf("Инициализирован проект по умолчанию: %s", defaultProject)
+			return
+		}
 	}
 
 	entries, err := os.ReadDir(root)
@@ -1114,7 +1133,7 @@ func initDefaultProject(root string) {
 			config.ProjectState.CurrentProject = e.Name()
 			config.ProjectState.Unlock()
 			log.Printf("Инициализирован первый найденный проект: %s", e.Name())
-			break
+			return
 		}
 	}
 }
@@ -1122,8 +1141,9 @@ func initDefaultProject(root string) {
 func initDefaultModel() {
 	defaultModel := os.Getenv("DEFAULT_MODEL")
 	if defaultModel == "" {
-		defaultModel = "gemini-3.1-pro-high"
-	} else if models.GlobalModelRegistry != nil {
+		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр DEFAULT_MODEL не задан")
+	}
+	if models.GlobalModelRegistry != nil {
 		if resolved, ok := models.GlobalModelRegistry.ResolveModel(defaultModel); ok {
 			defaultModel = resolved
 		}
@@ -1977,14 +1997,7 @@ func buildQuestionMarkup(task *domain.TaskSession) *tele.ReplyMarkup {
 }
 
 func waitForTaskInput(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession, projectName string, taskID int) (string, bool) {
-	timeout := 15 * time.Minute
-	if envTimeout := os.Getenv("QUESTION_TIMEOUT"); envTimeout != "" {
-		if d, err := time.ParseDuration(envTimeout); err == nil && d > 0 {
-			timeout = d
-		} else if sec, err := strconv.Atoi(envTimeout); err == nil && sec > 0 {
-			timeout = time.Duration(sec) * time.Second
-		}
-	}
+	timeout := config.QuestionTimeout
 
 	select {
 	case answer := <-task.AnswerChan:
