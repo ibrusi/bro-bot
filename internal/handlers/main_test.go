@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"tg-agent-bot/internal/config"
 	"tg-agent-bot/internal/domain"
@@ -11,6 +13,7 @@ import (
 	"tg-agent-bot/internal/utils"
 	"time"
 
+	"github.com/creack/pty"
 	tele "gopkg.in/telebot.v3"
 )
 
@@ -425,3 +428,25 @@ func TestWaitForTaskInputPlanningStatusLogic(t *testing.T) {
 
 type dummyRecipient struct{}
 func (d dummyRecipient) Recipient() string { return "12345" }
+
+func TestPTYLaunchProcessGroup(t *testing.T) {
+	cmd := exec.Command("sleep", "1")
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("expected pty.Start to succeed, got %v", err)
+	}
+	defer ptmx.Close()
+	defer func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
+
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err != nil {
+		t.Fatalf("expected Getpgid to succeed, got %v", err)
+	}
+	if pgid != cmd.Process.Pid {
+		t.Errorf("expected pgid %d to equal pid %d", pgid, cmd.Process.Pid)
+	}
+}
