@@ -127,7 +127,7 @@ func Start() {
 			if c.Sender().ID != config.AdminID {
 				return nil
 			}
-			return next(c)
+			return next(&autoSplitContext{Context: c, bot: b})
 		}
 	})
 
@@ -1345,9 +1345,9 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 
 			var compMsg *tele.Message
 			if prURL != "" {
-				compMsg, _ = b.Send(recipient, fmt.Sprintf("🎉 <b>Задача #%d выполнена!</b>\n📁 Проект: <code>%s</code>\n🔗 <a href=\"%s\">Открыть Pull Request</a>\n\n%s", taskID, html.EscapeString(projectName), html.EscapeString(prURL), statsSummary), tele.ModeHTML)
+				compMsg, _ = SendSplit(b, recipient, fmt.Sprintf("🎉 <b>Задача #%d выполнена!</b>\n📁 Проект: <code>%s</code>\n🔗 <a href=\"%s\">Открыть Pull Request</a>\n\n%s", taskID, html.EscapeString(projectName), html.EscapeString(prURL), statsSummary), tele.ModeHTML)
 			} else {
-				compMsg, _ = b.Send(recipient, fmt.Sprintf("✅ <b>Задача #%d завершена!</b> (<code>%s</code>)\n\n%s", taskID, html.EscapeString(projectName), statsSummary), tele.ModeHTML)
+				compMsg, _ = SendSplit(b, recipient, fmt.Sprintf("✅ <b>Задача #%d завершена!</b> (<code>%s</code>)\n\n%s", taskID, html.EscapeString(projectName), statsSummary), tele.ModeHTML)
 			}
 			if compMsg != nil {
 				domain.GlobalTaskManager.RegisterMessageTask(compMsg.ID, taskID)
@@ -1441,7 +1441,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		b.Send(recipient, fmt.Sprintf("❌ Ошибка запуска PTY для задачи #%d: %v", taskID, err))
+		SendSplit(b, recipient, fmt.Sprintf("❌ Ошибка запуска PTY для задачи #%d: %v", taskID, err))
 		task.Lock()
 		task.Status = domain.TaskStatusFailed
 		task.Unlock()
@@ -1587,11 +1587,11 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 						formattedQ := utils.MarkdownToTelegramHTML(questionText)
 						msgText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или выберите вариант кнопкой.</i>",
 							taskID, html.EscapeString(projectName), formattedQ)
-						qMsg, err := b.Send(recipient, msgText, menu, tele.ModeHTML)
+						qMsg, err := SendSplit(b, recipient, msgText, menu, tele.ModeHTML)
 						if err != nil {
 							fallbackText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или выберите вариант кнопкой.</i>",
 								taskID, html.EscapeString(projectName), html.EscapeString(questionText))
-							qMsg, _ = b.Send(recipient, fallbackText, menu, tele.ModeHTML)
+							qMsg, _ = SendSplit(b, recipient, fallbackText, menu, tele.ModeHTML)
 						}
 						if qMsg != nil {
 							domain.GlobalTaskManager.RegisterMessageTask(qMsg.ID, taskID)
@@ -1646,11 +1646,11 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 				formattedQ := utils.MarkdownToTelegramHTML(cleanLine)
 				msgText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
 					taskID, html.EscapeString(projectName), formattedQ, taskID)
-				qMsg, err := b.Send(recipient, msgText, menu, tele.ModeHTML)
+				qMsg, err := SendSplit(b, recipient, msgText, menu, tele.ModeHTML)
 				if err != nil {
 					fallbackText := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или <code>/add %d &lt;ответ&gt;</code>.</i>",
 						taskID, html.EscapeString(projectName), html.EscapeString(cleanLine), taskID)
-					qMsg, _ = b.Send(recipient, fallbackText, menu, tele.ModeHTML)
+					qMsg, _ = SendSplit(b, recipient, fallbackText, menu, tele.ModeHTML)
 				}
 				if qMsg != nil {
 					domain.GlobalTaskManager.RegisterMessageTask(qMsg.ID, taskID)
