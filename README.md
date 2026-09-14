@@ -68,6 +68,7 @@
 │                                                          │
 │  internal/handlers/  ──► Telegram Commands & Callbacks   │
 │  internal/domain/    ──► Task Queue, Sessions & Tokens   │
+│  internal/storage/   ──► SQLite Persistence & Migrations │
 │  internal/models/    ──► Model Registry & Aliases        │
 │  internal/system/    ──► Hot-Rebuild, Systemd & Top/PS   │
 │  internal/utils/     ──► Telegram HTML/Markdown Parser   │
@@ -79,6 +80,12 @@
 │  --stream-json / subagents   │ │   /home/deploy/projects │
 │  Autonomous Coding Agent     │ │   ├── project-1/        │
 └──────────────────────────────┘ │   └── project-2/        │
+                                 └─────────────────────────┘
+                                             ▲
+                                             │ WAL Mode
+                                 ┌─────────────────────────┐
+                                 │   SQLite Database       │
+                                 │   data/bot.db           │
                                  └─────────────────────────┘
 ```
 
@@ -155,6 +162,7 @@ nano .env
 | `QUESTION_TIMEOUT` | **Да** | — | Таймаут ожидания ответа на вопрос агента (`ask_question`). Поддерживает форматы `15m`, `300s`, `1h` или число секунд. По истечении задача ставится на паузу. |
 | `BOT_DIR` | Нет | Автоопределение | Путь к исходному коду бота для выполнения команд `/rebuild` и сохранения маркера перезапуска. |
 | `BOT_SERVICE_NAME` | **Да** | — | Имя службы systemd для перезапуска через команды `/restart` и `/rebuild`. |
+| `SQLITE_DB_PATH` | Нет | `data/bot.db` | Путь к файлу базы данных SQLite для персистентного хранения задач, архитектурных планов, логов, метрик и настроек бота. |
 
 ### Пример `.env`
 
@@ -167,6 +175,7 @@ DEFAULT_MODEL=gemini-3.1-pro-high
 QUESTION_TIMEOUT=15m
 BOT_DIR=/home/deploy/tg-agent-bot
 BOT_SERVICE_NAME=tg-bot.service
+SQLITE_DB_PATH=data/bot.db
 ```
 
 ---

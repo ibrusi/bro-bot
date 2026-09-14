@@ -19,3 +19,10 @@
 *.tmp
 bac/
 .restart_notify.json
+
+# SQLite Database & Data
+data/
+*.db
+*.db-shm
+*.db-wal
+

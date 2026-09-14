@@ -3,10 +3,12 @@ package domain
 import (
 	"strings"
 	"testing"
+	"tg-agent-bot/internal/storage"
 	"time"
 
 	tele "gopkg.in/telebot.v3"
 )
+
 
 type dummyRecipient struct{}
 
@@ -617,3 +619,89 @@ func TestGetActiveTaskWithCompletedAndActiveTasks(t *testing.T) {
 		t.Fatalf("expected fallback task when none are active, got nil")
 	}
 }
+
+func TestTaskManagerWithSQLiteStorage(t *testing.T) {
+	s, err := storage.NewSQLiteStorage(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create sqlite memory storage: %v", err)
+	}
+	defer s.Close()
+
+	// 1. Инициализация менеджера с хранилищем
+	tm1 := NewTaskManagerWithStorage(s)
+
+	task1 := tm1.CreateTaskWithPlan("proj-alpha", "gemini-3.1-pro-high", "Initial task prompt", dummyRecipient{}, true)
+	if task1.ID != 1 {
+		t.Fatalf("expected task1 ID 1, got %d", task1.ID)
+	}
+
+	task1.Lock()
+	task1.Plan = "## Step 1\nArchitecture Plan"
+	task1.PlanApproved = true
+	task1.Status = TaskStatusWaitingApproval
+	task1.Unlock()
+	tm1.SaveTask(task1)
+
+	task1.AppendLog("Log 1: started planning")
+	task1.AppendLog("Log 2: plan generated")
+
+	_, qLen, isAns, err := tm1.AddFollowup(task1.ID, "Followup requirement 1")
+	if err != nil || qLen != 1 || isAns {
+		t.Fatalf("AddFollowup failed: %v, qLen=%d, isAns=%v", err, qLen, isAns)
+	}
+
+	tm1.RegisterMessageTask(100500, task1.ID)
+	_, _ = tm1.SetActiveTask(task1.ID)
+
+	task2 := tm1.CreateTask("proj-beta", "flash", "Task 2 prompt", dummyRecipient{})
+	task2.Lock()
+	task2.Status = TaskStatusRunning // Имитируем задачу, оставшуюся running при падении
+	task2.Unlock()
+	tm1.SaveTask(task2)
+
+	// 2. Имитация перезапуска сервиса (создаём новый TaskManager над той же БД)
+	tm2 := NewTaskManagerWithStorage(s)
+
+	if len(tm2.ListTasks()) != 2 {
+		t.Fatalf("expected 2 tasks restored, got %d", len(tm2.ListTasks()))
+	}
+
+	restored1 := tm2.GetTask(1)
+	if restored1 == nil {
+		t.Fatalf("task 1 not found after restart")
+	}
+	if restored1.Project != "proj-alpha" || restored1.Plan != "## Step 1\nArchitecture Plan" || !restored1.PlanApproved {
+		t.Fatalf("task 1 fields mismatch: %+v", restored1)
+	}
+	if len(restored1.PendingFollowups) != 1 || restored1.PendingFollowups[0] != "Followup requirement 1" {
+		t.Fatalf("task 1 followups mismatch: %+v", restored1.PendingFollowups)
+	}
+	if len(restored1.RecentLogs) != 2 || restored1.RecentLogs[0] != "Log 1: started planning" {
+		t.Fatalf("task 1 logs mismatch: %+v", restored1.RecentLogs)
+	}
+
+	// Проверка маппинга сообщений
+	msgTask := tm2.GetTaskByMessageID(100500)
+	if msgTask == nil || msgTask.ID != 1 {
+		t.Fatalf("expected message 100500 to map to task 1, got %v", msgTask)
+	}
+
+	// Проверка восстановления упавшей задачи (task 2 была running -> должна стать paused)
+	restored2 := tm2.GetTask(2)
+	if restored2 == nil {
+		t.Fatalf("task 2 not found after restart")
+	}
+	if restored2.Status != TaskStatusPaused {
+		t.Fatalf("expected task 2 to be recovered to paused, got %s", restored2.Status)
+	}
+	if len(restored2.RecentLogs) == 0 || !strings.Contains(restored2.RecentLogs[len(restored2.RecentLogs)-1], "перезапуском бота") {
+		t.Fatalf("expected recovery log entry in task 2, got %+v", restored2.RecentLogs)
+	}
+
+	// Проверка создания следующей задачи (nextID должен быть 3)
+	task3 := tm2.CreateTask("proj-gamma", "model", "Task 3", dummyRecipient{})
+	if task3.ID != 3 {
+		t.Fatalf("expected task 3 ID to be 3, got %d", task3.ID)
+	}
+}
+

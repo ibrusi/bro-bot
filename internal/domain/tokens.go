@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -13,6 +14,7 @@ import (
 	"tg-agent-bot/internal/utils"
 	"time"
 )
+
 
 // UsageStats содержит статистику токенов от модели.
 type UsageStats struct {
@@ -526,11 +528,37 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 		bldr.WriteString(fmt.Sprintf("  └ 💾 Кэш: <code>%s</code>\n", formatCompact(t.sessionUsage.CacheReadTokens)))
 		bldr.WriteString(fmt.Sprintf("• Общее время работы: <code>%s</code>\n", totalDurStr))
 		bldr.WriteString(fmt.Sprintf("• Средняя скорость: <code>%.1f токенов/сек</code>\n", avgSpeed))
+	} else if GlobalTaskManager != nil && GlobalTaskManager.Storage() != nil {
+		if agg, err := GlobalTaskManager.Storage().GetAggregateMetrics(context.Background()); err == nil && agg != nil && agg.TotalTasks > 0 {
+			var avgSpeed float64
+			if agg.TotalDuration > 0 && agg.OutputTokens > 0 {
+				avgSpeed = float64(agg.OutputTokens) / agg.TotalDuration
+			}
+			totalDurStr := FormatDurationHuman(time.Duration(agg.TotalDuration * float64(time.Second)))
+
+			bldr.WriteString("📈 <b>Общая статистика всех задач (из базы данных):</b>\n")
+			bldr.WriteString(fmt.Sprintf("• Всего выполнено задач: <code>%d</code>\n", agg.TotalTasks))
+			bldr.WriteString(fmt.Sprintf("• Всего токенов: <code>%s</code>\n", formatThousands(agg.TotalTokens)))
+			bldr.WriteString(fmt.Sprintf("  ├ 📥 Промпт: <code>%s</code>\n", formatCompact(agg.InputTokens)))
+			bldr.WriteString(fmt.Sprintf("  ├ 📤 Ответы: <code>%s</code>", formatCompact(agg.OutputTokens)))
+			if agg.ThinkingTokens > 0 {
+				bldr.WriteString(fmt.Sprintf(" (💭 %s thinking)", formatCompact(agg.ThinkingTokens)))
+			}
+			bldr.WriteString("\n")
+			bldr.WriteString(fmt.Sprintf("  └ 💾 Кэш: <code>%s</code>\n", formatCompact(agg.CacheReadTokens)))
+			bldr.WriteString(fmt.Sprintf("• Общее время работы: <code>%s</code>\n", totalDurStr))
+			bldr.WriteString(fmt.Sprintf("• Средняя скорость: <code>%.1f токенов/сек</code>\n", avgSpeed))
+		} else {
+			bldr.WriteString("📊 <b>Статистика использования токенов</b>\n\n")
+			bldr.WriteString("💤 Задачи ещё не запускались в этой сессии.\n")
+			bldr.WriteString("Отправьте задачу боту сообщением в чат, чтобы начать работу!")
+		}
 	} else {
 		bldr.WriteString("📊 <b>Статистика использования токенов</b>\n\n")
 		bldr.WriteString("💤 Задачи ещё не запускались в этой сессии.\n")
 		bldr.WriteString("Отправьте задачу боту сообщением в чат, чтобы начать работу!")
 	}
+
 
 	bldr.WriteString("\n\n💡 <i>Детализация контекстного окна модели: /context</i>")
 	return bldr.String()

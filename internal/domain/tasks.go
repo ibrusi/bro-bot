@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"fmt"
 	"html"
 	"io"
@@ -9,11 +10,13 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"tg-agent-bot/internal/storage"
 	"tg-agent-bot/internal/utils"
 	"time"
 
 	tele "gopkg.in/telebot.v3"
 )
+
 
 // TaskStatus определяет текущий жизненный цикл задачи.
 type TaskStatus string
@@ -111,6 +114,14 @@ type TaskSession struct {
 	AnswerChan       chan string
 	PauseChan        chan struct{}
 	TokenMetrics     *TaskTokenMetrics
+	storage          storage.Storage
+}
+
+// stringRecipient реализует tele.Recipient для строкового ID получателя.
+type stringRecipient string
+
+func (r stringRecipient) Recipient() string {
+	return string(r)
 }
 
 // durationLocked возвращает время работы задачи без захвата мьютекса (мьютекс должен быть уже захвачен вызывающим кодом).
@@ -147,13 +158,32 @@ func (t *TaskSession) IsActive() bool {
 	return t.isActiveLocked()
 }
 
-// AppendLog безопасно добавляет запись в лог с ограничением глубины.
+// AppendLog безопасно добавляет запись в лог с ограничением глубины и сохраняет в БД.
 func (t *TaskSession) AppendLog(line string) {
 	t.Lock()
-	defer t.Unlock()
 	t.RecentLogs = append(t.RecentLogs, line)
 	if len(t.RecentLogs) > 20 {
 		t.RecentLogs = t.RecentLogs[1:]
+	}
+	s := t.storage
+	id := t.ID
+	t.Unlock()
+
+	if s != nil {
+		_ = s.AppendLog(context.Background(), id, line)
+	}
+}
+
+// ClearPendingFollowups очищает очередь правок и синхронизирует с хранилищем.
+func (t *TaskSession) ClearPendingFollowups() {
+	t.Lock()
+	t.PendingFollowups = nil
+	s := t.storage
+	id := t.ID
+	t.Unlock()
+
+	if s != nil {
+		_ = s.ClearFollowups(context.Background(), id)
 	}
 }
 
@@ -205,19 +235,140 @@ type TaskManager struct {
 	activeTaskID int
 	nextID       int
 	msgToTask    map[int]int // messageID -> taskID
+	storage      storage.Storage
 }
 
 var GlobalTaskManager = NewTaskManager()
 
-// NewTaskManager создаёт новый менеджер задач.
+func taskRecordToSession(rec *storage.TaskRecord, s storage.Storage) *TaskSession {
+	var recipient tele.Recipient
+	if rec.RecipientID != "" {
+		recipient = stringRecipient(rec.RecipientID)
+	}
+	return &TaskSession{
+		ID:              rec.ID,
+		Project:         rec.Project,
+		Model:           rec.Model,
+		InitialPrompt:   rec.InitialPrompt,
+		CurrentPrompt:   rec.CurrentPrompt,
+		Status:          TaskStatus(rec.Status),
+		RequiresPlan:    rec.RequiresPlan,
+		Plan:            rec.Plan,
+		PlanApproved:    rec.PlanApproved,
+		StartedAt:       rec.StartedAt,
+		FinishedAt:      rec.FinishedAt,
+		LastPRURL:       rec.LastPRURL,
+		ConversationID:  rec.ConversationID,
+		LastQuestion:    rec.LastQuestion,
+		QuestionOptions: rec.QuestionOptions,
+		QuestionAskedAt: rec.QuestionAskedAt,
+		LastModelUsed:   rec.LastModelUsed,
+		LastTokensUsed:  rec.LastTokensUsed,
+		Recipient:       recipient,
+		AnswerChan:      make(chan string, 1),
+		PauseChan:       make(chan struct{}, 1),
+		storage:         s,
+	}
+}
+
+// NewTaskManager создаёт новый менеджер задач без постоянного хранилища (в памяти).
 func NewTaskManager() *TaskManager {
-	return &TaskManager{
+	return NewTaskManagerWithStorage(nil)
+}
+
+// NewTaskManagerWithStorage создаёт менеджер задач с подключённым хранилищем.
+func NewTaskManagerWithStorage(s storage.Storage) *TaskManager {
+	tm := &TaskManager{
 		tasks:     make(map[int]*TaskSession),
 		taskOrder: make([]int, 0),
 		msgToTask: make(map[int]int),
 		nextID:    1,
 	}
+	if s != nil {
+		tm.InitWithStorage(s)
+	}
+	return tm
 }
+
+// InitWithStorage инициализирует менеджер задачами из постоянного хранилища.
+func (tm *TaskManager) InitWithStorage(s storage.Storage) {
+	tm.Lock()
+	defer tm.Unlock()
+
+	tm.storage = s
+	if s == nil {
+		return
+	}
+
+	ctx := context.Background()
+	_, _ = s.RecoverInterruptedTasks(ctx)
+
+	records, err := s.ListTasks(ctx)
+	if err == nil {
+		maxID := 0
+		for _, rec := range records {
+			sess := taskRecordToSession(rec, s)
+			if fws, err := s.GetFollowups(ctx, rec.ID); err == nil {
+				sess.PendingFollowups = fws
+			}
+			if logs, err := s.GetRecentLogs(ctx, rec.ID, 20); err == nil {
+				sess.RecentLogs = logs
+			}
+			if m, err := s.GetMetrics(ctx, rec.ID); err == nil && m != nil {
+				sess.TokenMetrics = &TaskTokenMetrics{
+					Project:         rec.Project,
+					Model:           m.Model,
+					PRURL:           m.PRURL,
+					ConversationID:  m.ConversationID,
+					DurationSeconds: m.DurationSeconds,
+					Turns:           m.Turns,
+					ToolCallsCount:  m.ToolCallsCount,
+					Usage: UsageStats{
+						InputTokens:     m.InputTokens,
+						OutputTokens:    m.OutputTokens,
+						ThinkingTokens:  m.ThinkingTokens,
+						CacheReadTokens: m.CacheReadTokens,
+						TotalTokens:     m.TotalTokens,
+					},
+				}
+			}
+
+			tm.tasks[rec.ID] = sess
+			tm.taskOrder = append(tm.taskOrder, rec.ID)
+			if rec.ID > maxID {
+				maxID = rec.ID
+			}
+		}
+		if maxID >= tm.nextID {
+			tm.nextID = maxID + 1
+		}
+	}
+
+	if msgMap, err := s.ListAllMessageTasks(ctx); err == nil {
+		for msgID, taskID := range msgMap {
+			tm.msgToTask[msgID] = taskID
+		}
+	}
+
+	if val, err := s.GetSetting(ctx, "active_task_id"); err == nil && val != "" {
+		if id, err := strconv.Atoi(val); err == nil {
+			if _, ok := tm.tasks[id]; ok {
+				tm.activeTaskID = id
+			}
+		}
+	}
+	if tm.activeTaskID == 0 && len(tm.taskOrder) > 0 {
+		tm.activeTaskID = tm.taskOrder[len(tm.taskOrder)-1]
+	}
+}
+
+// Storage возвращает используемое хранилище.
+func (tm *TaskManager) Storage() storage.Storage {
+	tm.RLock()
+	defer tm.RUnlock()
+	return tm.storage
+}
+
 
 // CreateTask создаёт задачу без обязательного плана и регистрирует её в менеджере.
 func (tm *TaskManager) CreateTask(project, model, prompt string, recipient tele.Recipient) *TaskSession {
@@ -243,6 +394,29 @@ func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, recipie
 		Recipient:     recipient,
 		AnswerChan:    make(chan string, 1),
 		PauseChan:     make(chan struct{}, 1),
+		storage:       tm.storage,
+	}
+
+	if tm.storage != nil {
+		rec := &storage.TaskRecord{
+			Project:       project,
+			Model:         model,
+			InitialPrompt: prompt,
+			CurrentPrompt: prompt,
+			Status:        string(TaskStatusQueued),
+			RequiresPlan:  requiresPlan,
+		}
+		if recipient != nil {
+			rec.RecipientID = recipient.Recipient()
+		}
+		dbID, err := tm.storage.CreateTask(context.Background(), rec)
+		if err == nil && dbID > 0 {
+			task.ID = dbID
+			id = dbID
+			if dbID >= tm.nextID {
+				tm.nextID = dbID + 1
+			}
+		}
 	}
 
 	tm.tasks[id] = task
@@ -252,6 +426,9 @@ func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, recipie
 	curTask := tm.tasks[tm.activeTaskID]
 	if curTask == nil || !curTask.IsActive() {
 		tm.activeTaskID = id
+		if tm.storage != nil {
+			_ = tm.storage.SetSetting(context.Background(), "active_task_id", strconv.Itoa(id))
+		}
 	}
 
 	return task
@@ -307,8 +484,12 @@ func (tm *TaskManager) SetActiveTask(id int) (*TaskSession, error) {
 	}
 
 	tm.activeTaskID = id
+	if tm.storage != nil {
+		_ = tm.storage.SetSetting(context.Background(), "active_task_id", strconv.Itoa(id))
+	}
 	return task, nil
 }
+
 
 // ListTasks возвращает все задачи в хронологическом порядке.
 func (tm *TaskManager) ListTasks() []*TaskSession {
@@ -386,10 +567,10 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 	}
 
 	task.Lock()
-	defer task.Unlock()
-
 	if task.Status == TaskStatusCompleted || task.Status == TaskStatusCancelled {
-		return task, fmt.Errorf("задача #%d уже %s", id, task.Status.RussianTitle())
+		statusTitle := task.Status.RussianTitle()
+		task.Unlock()
+		return task, fmt.Errorf("задача #%d уже %s", id, statusTitle)
 	}
 
 	if task.Cmd != nil && task.Cmd.Process != nil {
@@ -409,6 +590,17 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 		default:
 		}
 	}
+	finAt := task.FinishedAt
+	prURL := task.LastPRURL
+	task.Unlock()
+
+	tm.RLock()
+	s := tm.storage
+	tm.RUnlock()
+	if s != nil {
+		_ = s.UpdateTaskFinished(context.Background(), id, string(TaskStatusCancelled), finAt, prURL)
+		_ = s.ClearFollowups(context.Background(), id)
+	}
 
 	return task, nil
 }
@@ -416,18 +608,19 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 // ResumeTask возобновляет задачу, находившуюся в статусе паузы или ожидания ввода.
 func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 	tm.Lock()
-	defer tm.Unlock()
 
 	task, ok := tm.tasks[id]
 	if !ok {
+		tm.Unlock()
 		return nil, fmt.Errorf("задача #%d не найдена", id)
 	}
 
 	task.Lock()
-	defer task.Unlock()
-
 	if task.Status != TaskStatusPaused && task.Status != TaskStatusWaitingInput {
-		return task, fmt.Errorf("задача #%d не находится на паузе (текущий статус: %s)", id, task.Status.RussianTitle())
+		statusTitle := task.Status.RussianTitle()
+		task.Unlock()
+		tm.Unlock()
+		return task, fmt.Errorf("задача #%d не находится на паузе (текущий статус: %s)", id, statusTitle)
 	}
 
 	// Если задача всё ещё ждёт ввода в живом пайплайне
@@ -446,6 +639,8 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 				task.AnswerChan <- answer
 			}
 		}
+		task.Unlock()
+		tm.Unlock()
 		return task, nil
 	}
 
@@ -482,9 +677,14 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 		task.StartedAt = time.Now()
 		task.RecentLogs = nil
 	}
+	task.Unlock()
+	tm.Unlock()
+
+	tm.SaveTask(task)
 
 	return task, nil
 }
+
 
 // AddFollowup добавляет дополнение к конкретной задаче или отправляет ответ в stdin / AnswerChan, если задача ждёт ввода или на паузе.
 func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool, error) {
@@ -521,18 +721,102 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 	}
 
 	// Добавляем в очередь правок
+	orderIdx := len(task.PendingFollowups)
 	task.PendingFollowups = append(task.PendingFollowups, text)
 	queueLen := len(task.PendingFollowups)
 	task.Unlock()
+
+	tm.RLock()
+	s := tm.storage
+	tm.RUnlock()
+	if s != nil {
+		_ = s.AddFollowup(context.Background(), id, text, orderIdx)
+	}
 	return task, queueLen, false, nil
 }
 
 // RegisterMessageTask связывает ID сообщения Telegram с ID задачи.
 func (tm *TaskManager) RegisterMessageTask(msgID int, taskID int) {
 	tm.Lock()
-	defer tm.Unlock()
 	tm.msgToTask[msgID] = taskID
+	s := tm.storage
+	tm.Unlock()
+
+	if s != nil {
+		_ = s.RegisterMessageTask(context.Background(), msgID, 0, taskID)
+	}
 }
+
+// SaveTask сохраняет текущее состояние задачи в хранилище.
+func (tm *TaskManager) SaveTask(task *TaskSession) {
+	if tm == nil || task == nil {
+		return
+	}
+	tm.RLock()
+	s := tm.storage
+	tm.RUnlock()
+	if s == nil {
+		return
+	}
+
+	task.Lock()
+	rec := &storage.TaskRecord{
+		ID:              task.ID,
+		Project:         task.Project,
+		Model:           task.Model,
+		InitialPrompt:   task.InitialPrompt,
+		CurrentPrompt:   task.CurrentPrompt,
+		Status:          string(task.Status),
+		RequiresPlan:    task.RequiresPlan,
+		Plan:            task.Plan,
+		PlanApproved:    task.PlanApproved,
+		StartedAt:       task.StartedAt,
+		FinishedAt:      task.FinishedAt,
+		LastPRURL:       task.LastPRURL,
+		ConversationID:  task.ConversationID,
+		LastQuestion:    task.LastQuestion,
+		QuestionOptions: append([]string(nil), task.QuestionOptions...),
+		QuestionAskedAt: task.QuestionAskedAt,
+		LastModelUsed:   task.LastModelUsed,
+		LastTokensUsed:  task.LastTokensUsed,
+	}
+	if task.Recipient != nil {
+		rec.RecipientID = task.Recipient.Recipient()
+	}
+	task.Unlock()
+
+	_ = s.UpdateTask(context.Background(), rec)
+}
+
+// SaveTaskMetrics сохраняет метрики задачи в хранилище.
+func (tm *TaskManager) SaveTaskMetrics(taskID int, metrics *TaskTokenMetrics) {
+	if tm == nil || metrics == nil {
+		return
+	}
+	tm.RLock()
+	s := tm.storage
+	tm.RUnlock()
+	if s == nil {
+		return
+	}
+
+	rec := &storage.TokenMetricsRecord{
+		TaskID:          taskID,
+		InputTokens:     metrics.Usage.InputTokens,
+		OutputTokens:    metrics.Usage.OutputTokens,
+		ThinkingTokens:  metrics.Usage.ThinkingTokens,
+		CacheReadTokens: metrics.Usage.CacheReadTokens,
+		TotalTokens:     metrics.Usage.TotalTokens,
+		DurationSeconds: metrics.EffectiveDuration(),
+		Turns:           metrics.Turns,
+		ToolCallsCount:  metrics.ToolCallsCount,
+		Model:           metrics.Model,
+		PRURL:           metrics.PRURL,
+		ConversationID:  metrics.ConversationID,
+	}
+	_ = s.SaveMetrics(context.Background(), rec)
+}
+
 
 // GetTaskByMessageID возвращает задачу, к которой относится сообщение Telegram.
 func (tm *TaskManager) GetTaskByMessageID(msgID int) *TaskSession {
