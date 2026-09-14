@@ -248,3 +248,38 @@ func TestExtractPlanVariantOptions(t *testing.T) {
 		t.Errorf("expected nil for text without multiple variants")
 	}
 }
+
+func TestExtractPlanSummary(t *testing.T) {
+	t.Run("Short plan is preserved", func(t *testing.T) {
+		short := "# План\n1. Шаг один\n2. Шаг два"
+		summary := ExtractPlanSummary(short, 100)
+		if summary != short {
+			t.Errorf("expected %q, got %q", short, summary)
+		}
+	})
+
+	t.Run("Long plan cut at paragraph boundary", func(t *testing.T) {
+		p1 := "Параграф один с описанием архитектуры."
+		p2 := "Параграф два с описанием компонентов."
+		p3 := "Параграф три с описанием тестов."
+		full := p1 + "\n\n" + p2 + "\n\n" + p3
+
+		// Limit to cut between p2 and p3
+		maxRunes := len([]rune(p1)) + len([]rune(p2)) + 5
+		summary := ExtractPlanSummary(full, maxRunes)
+		if strings.Contains(summary, p3) {
+			t.Errorf("expected summary to not contain p3, got: %s", summary)
+		}
+		if !strings.Contains(summary, p1) || !strings.Contains(summary, p2) {
+			t.Errorf("expected summary to contain p1 and p2, got: %s", summary)
+		}
+	})
+
+	t.Run("Unclosed code block is closed", func(t *testing.T) {
+		text := "Начало плана\n\n```go\nfunc step1() {\n    do()\n}\nfunc step2() {\n    do()\n}"
+		summary := ExtractPlanSummary(text, 35)
+		if strings.Count(summary, "```")%2 != 0 {
+			t.Errorf("expected balanced code fence in summary, got: %s", summary)
+		}
+	})
+}

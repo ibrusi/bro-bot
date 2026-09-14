@@ -658,6 +658,47 @@ func Start() {
 		return c.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nНовые задачи будут сразу приступать к реализации (для плана используйте <code>/plan &lt;задача&gt;</code>).", tele.ModeHTML)
 	})
 
+	b.Handle("/planfile", func(c tele.Context) error {
+		args := c.Args()
+		var target *domain.TaskSession
+		if len(args) > 0 {
+			first := strings.TrimPrefix(args[0], "#")
+			if id, err := strconv.Atoi(first); err == nil {
+				target = domain.GlobalTaskManager.GetTask(id)
+				if target == nil {
+					return c.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), tele.ModeHTML)
+				}
+			}
+		}
+
+		if target == nil {
+			target = domain.GlobalTaskManager.GetActiveTask()
+		}
+
+		if target == nil {
+			return c.Send("❌ Нет активных задач. Список задач: /tasks", tele.ModeHTML)
+		}
+
+		target.Lock()
+		planText := strings.TrimSpace(target.Plan)
+		id := target.ID
+		proj := target.Project
+		target.Unlock()
+
+		if planText == "" {
+			return c.Send(fmt.Sprintf("ℹ️ У задачи #%d нет сформированного плана.", id), tele.ModeHTML)
+		}
+
+		docName := fmt.Sprintf("plan_task_%d.md", id)
+		doc := &tele.Document{
+			File:     tele.FromReader(strings.NewReader(planText)),
+			FileName: docName,
+			MIME:     "text/markdown",
+			Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", id, proj),
+		}
+		return c.Send(doc)
+	})
+
 	b.Handle("/approve", func(c tele.Context) error {
 		args := c.Args()
 		var targetID int
@@ -798,6 +839,37 @@ func Start() {
 		}
 		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Утверждён вариант: %s", truncateString(chosenVar, 20))})
 		return handleApprovePlanWithVariant(b, c.Recipient(), id, chosenVar)
+	})
+
+	btnPlanDoc := tele.Btn{Unique: "plan_doc"}
+	b.Handle(&btnPlanDoc, func(c tele.Context) error {
+		idStr := strings.TrimSpace(c.Data())
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+		}
+		task := domain.GlobalTaskManager.GetTask(id)
+		if task == nil {
+			return c.Respond(&tele.CallbackResponse{Text: "Задача не найдена"})
+		}
+		task.Lock()
+		planText := strings.TrimSpace(task.Plan)
+		proj := task.Project
+		task.Unlock()
+
+		if planText == "" {
+			return c.Respond(&tele.CallbackResponse{Text: "У задачи нет сформированного плана"})
+		}
+
+		_ = c.Respond(&tele.CallbackResponse{Text: "Отправляю файл плана..."})
+		docName := fmt.Sprintf("plan_task_%d.md", id)
+		doc := &tele.Document{
+			File:     tele.FromReader(strings.NewReader(planText)),
+			FileName: docName,
+			MIME:     "text/markdown",
+			Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", id, proj),
+		}
+		return c.Send(doc)
 	})
 
 	btnQuestionChoice := tele.Btn{Unique: "q_choice"}
@@ -1893,19 +1965,14 @@ func handleRevisePlan(b *tele.Bot, recipient tele.Recipient, taskID int, feedbac
 	return nil
 }
 
+const maxInlinePlanRunes = 2500
+
 func sendPlanForApproval(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession) {
 	task.Lock()
 	taskID := task.ID
 	projectName := task.Project
-	planText := task.Plan
+	planText := strings.TrimSpace(task.Plan)
 	task.Unlock()
-
-	header := fmt.Sprintf("📋 <b>План реализации задачи #%d</b> (<code>%s</code>):\n", taskID, html.EscapeString(projectName))
-	b.Send(recipient, header, tele.ModeHTML)
-
-	if strings.TrimSpace(planText) != "" {
-		sendLongMarkdown(b, recipient, planText)
-	}
 
 	planMenu := &tele.ReplyMarkup{}
 	var rows []tele.Row
@@ -1923,19 +1990,78 @@ func sendPlanForApproval(b *tele.Bot, recipient tele.Recipient, task *domain.Tas
 	btnApprove := planMenu.Data("✅ Утвердить и начать", "plan_approve", strconv.Itoa(taskID))
 	btnCancel := planMenu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(taskID))
 	rows = append(rows, planMenu.Row(btnApprove, btnCancel))
+
+	planRunes := []rune(planText)
+	isLongPlan := len(planRunes) > maxInlinePlanRunes
+
+	if isLongPlan {
+		btnDoc := planMenu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(taskID))
+		rows = append(rows, planMenu.Row(btnDoc))
+	}
 	planMenu.Inline(rows...)
 
-	footer := fmt.Sprintf(
-		"👆 <b>План задачи #%d ожидает вашего утверждения:</b>\n\n"+
-			"• Нажмите <b>«✅ Утвердить и начать»</b> (или выберите конкретный вариант) либо введите <code>/approve %d</code>.\n"+
-			"• Чтобы внести правки, ответьте (Reply) на это сообщение или введите <code>/add %d &lt;замечания&gt;</code>.\n"+
-			"• Для отмены нажмите <b>«❌ Отменить»</b> или <code>/cancel %d</code>.",
-		taskID, taskID, taskID, taskID,
-	)
+	if isLongPlan {
+		// Длинный план: отправляем резюме + прикрепляем файл .md + подвал с кнопками
+		summary := utils.ExtractPlanSummary(planText, 1800)
+		summaryHTML := utils.MarkdownToTelegramHTML(summary)
 
-	ctlMsg, _ := b.Send(recipient, footer, planMenu, tele.ModeHTML)
-	if ctlMsg != nil {
-		domain.GlobalTaskManager.RegisterMessageTask(ctlMsg.ID, taskID)
+		summaryMsgText := fmt.Sprintf(
+			"📋 <b>План реализации задачи #%d</b> (<code>%s</code>):\n\n%s\n\n"+
+				"📄 <i>Полный детальный план (%d знаков) прикреплён файлом ниже.</i>",
+			taskID, html.EscapeString(projectName), summaryHTML, len(planRunes),
+		)
+		sMsg, _ := SendSplit(b, recipient, summaryMsgText, tele.ModeHTML)
+		if sMsg != nil {
+			domain.GlobalTaskManager.RegisterMessageTask(sMsg.ID, taskID)
+		}
+
+		docName := fmt.Sprintf("plan_task_%d.md", taskID)
+		doc := &tele.Document{
+			File:     tele.FromReader(strings.NewReader(planText)),
+			FileName: docName,
+			MIME:     "text/markdown",
+			Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", taskID, projectName),
+		}
+		docMsg, docErr := b.Send(recipient, doc)
+		if docErr != nil {
+			// Если Telegram отклонил отправку документа, используем запасной вариант с текстовым сплитом
+			sendLongMarkdown(b, recipient, planText)
+		} else if docMsg != nil {
+			domain.GlobalTaskManager.RegisterMessageTask(docMsg.ID, taskID)
+		}
+
+		footer := fmt.Sprintf(
+			"👆 <b>План задачи #%d ожидает вашего утверждения:</b>\n\n"+
+				"• Ознакомьтесь с резюме выше и полным планом в файле <code>%s</code>.\n"+
+				"• Нажмите <b>«✅ Утвердить и начать»</b> (или выберите конкретный вариант) либо введите <code>/approve %d</code>.\n"+
+				"• Чтобы внести правки, ответьте (Reply) на это сообщение или введите <code>/add %d &lt;замечания&gt;</code>.\n"+
+				"• Для отмены нажмите <b>«❌ Отменить»</b> или <code>/cancel %d</code>.",
+			taskID, html.EscapeString(docName), taskID, taskID, taskID,
+		)
+		ctlMsg, _ := b.Send(recipient, footer, planMenu, tele.ModeHTML)
+		if ctlMsg != nil {
+			domain.GlobalTaskManager.RegisterMessageTask(ctlMsg.ID, taskID)
+		}
+	} else {
+		// Короткий план: отправляем целиком в чат
+		header := fmt.Sprintf("📋 <b>План реализации задачи #%d</b> (<code>%s</code>):\n", taskID, html.EscapeString(projectName))
+		b.Send(recipient, header, tele.ModeHTML)
+
+		if planText != "" {
+			sendLongMarkdown(b, recipient, planText)
+		}
+
+		footer := fmt.Sprintf(
+			"👆 <b>План задачи #%d ожидает вашего утверждения:</b>\n\n"+
+				"• Нажмите <b>«✅ Утвердить и начать»</b> (или выберите конкретный вариант) либо введите <code>/approve %d</code>.\n"+
+				"• Чтобы внести правки, ответьте (Reply) на это сообщение или введите <code>/add %d &lt;замечания&gt;</code>.\n"+
+				"• Для отмены нажмите <b>«❌ Отменить»</b> или <code>/cancel %d</code>.",
+			taskID, taskID, taskID, taskID,
+		)
+		ctlMsg, _ := b.Send(recipient, footer, planMenu, tele.ModeHTML)
+		if ctlMsg != nil {
+			domain.GlobalTaskManager.RegisterMessageTask(ctlMsg.ID, taskID)
+		}
 	}
 }
 
@@ -2246,6 +2372,7 @@ func getDefaultCommands() []tele.Command {
 		{Text: "plan", Description: "[проект] <текст> Составить план для новой задачи"},
 		{Text: "planmode", Description: "[on|off] Включить/выключить обязательный план"},
 		{Text: "approve", Description: "[id] Утвердить план и начать реализацию"},
+		{Text: "planfile", Description: "[id] Скачать полный план задачи в виде .md файла"},
 		{Text: "add", Description: "[id] <текст> Дополнить задачу текстом"},
 		{Text: "new", Description: "[проект] <текст> Создать новую задачу в проекте"},
 		{Text: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},

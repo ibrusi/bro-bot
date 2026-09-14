@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -451,5 +452,69 @@ func TestPTYLaunchProcessGroup(t *testing.T) {
 	}
 	if pgid != cmd.Process.Pid {
 		t.Errorf("expected pgid %d to equal pid %d", pgid, cmd.Process.Pid)
+	}
+}
+
+func TestPlanMenuForLongPlanIncludesDocumentButton(t *testing.T) {
+	// 1. Long plan
+	longPlan := strings.Repeat("Абвгд12345 ", 300) // ~3300 runes > maxInlinePlanRunes
+	planRunes := []rune(longPlan)
+	isLong := len(planRunes) > maxInlinePlanRunes
+	if !isLong {
+		t.Fatalf("expected longPlan to be > maxInlinePlanRunes (2500), got %d", len(planRunes))
+	}
+
+	planMenu := &tele.ReplyMarkup{}
+	var rows []tele.Row
+	btnApprove := planMenu.Data("✅ Утвердить и начать", "plan_approve", "42")
+	btnCancel := planMenu.Data("❌ Отменить", "plan_cancel", "42")
+	rows = append(rows, planMenu.Row(btnApprove, btnCancel))
+
+	if isLong {
+		btnDoc := planMenu.Data("📄 Скачать план (.md)", "plan_doc", "42")
+		rows = append(rows, planMenu.Row(btnDoc))
+	}
+	planMenu.Inline(rows...)
+
+	if len(planMenu.InlineKeyboard) != 2 {
+		t.Fatalf("expected 2 rows in long plan menu (actions + doc button), got %d", len(planMenu.InlineKeyboard))
+	}
+
+	foundDocBtn := false
+	for _, row := range planMenu.InlineKeyboard {
+		for _, btn := range row {
+			if strings.Contains(btn.Text, "Скачать план") && btn.Data == "plan_doc|42" || btn.Unique == "plan_doc" {
+				foundDocBtn = true
+			}
+		}
+	}
+	if !foundDocBtn {
+		t.Errorf("expected plan_doc button in planMenu for long plan")
+	}
+
+	// 2. Document file creation
+	docName := fmt.Sprintf("plan_task_%d.md", 42)
+	doc := &tele.Document{
+		File:     tele.FromReader(strings.NewReader(longPlan)),
+		FileName: docName,
+		MIME:     "text/markdown",
+		Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", 42, "test-proj"),
+	}
+
+	if doc.FileName != "plan_task_42.md" {
+		t.Errorf("expected doc.FileName to be plan_task_42.md, got %s", doc.FileName)
+	}
+	if doc.MIME != "text/markdown" {
+		t.Errorf("expected MIME text/markdown, got %s", doc.MIME)
+	}
+}
+
+func TestPlanSummaryFormattingForTelegram(t *testing.T) {
+	plan := "# Архитектурный план\n\n## 1. Анализ проблемы\nЗдесь анализ...\n\n## 2. Решение\nЗдесь решение..."
+	summary := utils.ExtractPlanSummary(plan, 50)
+	htmlText := utils.MarkdownToTelegramHTML(summary)
+
+	if !strings.Contains(htmlText, "<b>Архитектурный план</b>") {
+		t.Errorf("expected HTML to contain formatted header, got: %s", htmlText)
 	}
 }
