@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"tg-agent-bot/internal/storage"
@@ -324,26 +325,63 @@ func TestFormatTasksListAndDetailsWithPlan(t *testing.T) {
 	}
 }
 
-func TestFormatTaskDetails_PlanSnippetPreservation(t *testing.T) {
+func TestFormatTaskDetails_PlanTruncationAndDownloadLink(t *testing.T) {
 	tm := NewTaskManager()
 	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Build feature Y", dummyRecipient{}, true)
 	task.Status = TaskStatusWaitingApproval
 
-	// 1. Plan with ~550 Russian characters
-	longPlan := strings.Repeat("План реализации шага. ", 25)
-	task.Plan = longPlan
-
-	details := FormatTaskDetails(task, true)
-	if !strings.Contains(details, longPlan) {
-		t.Errorf("expected details to contain full 550 char plan without truncation")
+	// 1. Short plan fits without truncation and includes /planfile link
+	shortPlan := "1. Short step 1\n2. Short step 2"
+	task.Plan = shortPlan
+	detailsShort := FormatTaskDetails(task, true)
+	if !strings.Contains(detailsShort, shortPlan) {
+		t.Errorf("expected details to contain full short plan")
+	}
+	if !strings.Contains(detailsShort, fmt.Sprintf("/planfile_%d", task.ID)) {
+		t.Errorf("expected details to contain /planfile link for short plan")
 	}
 
-	// 2. Plan longer than 2500 characters is preserved in full (to be sent via chunked messages)
-	veryLongPlan := strings.Repeat("Абвгд12345", 300) // 3000 runes
+	// 2. Plan longer than MaxTaskDetailsPlanRunes is truncated and contains /planfile link
+	veryLongPlan := strings.Repeat("Абвгд12345", 100) // 1000 runes > MaxTaskDetailsPlanRunes (400)
 	task.Plan = veryLongPlan
-	detailsVeryLong := FormatTaskDetails(task, true)
-	if !strings.Contains(detailsVeryLong, veryLongPlan) {
-		t.Errorf("expected details to contain full 3000 rune plan without truncation")
+	detailsLong := FormatTaskDetails(task, true)
+	if strings.Contains(detailsLong, veryLongPlan) {
+		t.Errorf("expected veryLongPlan to be truncated in details")
+	}
+	if !strings.Contains(detailsLong, "...") {
+		t.Errorf("expected truncated plan to have ellipsis")
+	}
+	if !strings.Contains(detailsLong, fmt.Sprintf("/planfile_%d", task.ID)) {
+		t.Errorf("expected details to contain /planfile link for long plan")
+	}
+
+	// 3. Long prompt is truncated to MaxTaskDetailsPromptRunes
+	task.InitialPrompt = strings.Repeat("Очень длинная задача. ", 30) // ~660 chars > 250
+	detailsWithLongPrompt := FormatTaskDetails(task, true)
+	if strings.Contains(detailsWithLongPrompt, task.InitialPrompt) {
+		t.Errorf("expected initialPrompt to be truncated in details")
+	}
+
+	// 4. Markup builders
+	markup := BuildTaskDetailsMarkup(task)
+	if markup == nil || len(markup.InlineKeyboard) == 0 {
+		t.Fatalf("expected non-empty markup from BuildTaskDetailsMarkup")
+	}
+	foundDocBtn := false
+	for _, row := range markup.InlineKeyboard {
+		for _, btn := range row {
+			if strings.Contains(btn.Text, "Скачать план") {
+				foundDocBtn = true
+			}
+		}
+	}
+	if !foundDocBtn {
+		t.Errorf("expected plan_doc button in BuildTaskDetailsMarkup")
+	}
+
+	planMarkup := BuildTaskPlanMarkup(task.ID)
+	if planMarkup == nil || len(planMarkup.InlineKeyboard) == 0 {
+		t.Errorf("expected non-empty planMarkup")
 	}
 }
 

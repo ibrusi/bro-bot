@@ -1068,6 +1068,12 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 	return bldr.String(), nil
 }
 
+// MaxTaskDetailsPromptRunes задает максимальную длину текста задачи в карточке статуса.
+const MaxTaskDetailsPromptRunes = 250
+
+// MaxTaskDetailsPlanRunes задает максимальную длину текста плана в карточке статуса перед обрезкой.
+const MaxTaskDetailsPlanRunes = 400
+
 // FormatTaskDetails формирует подробную карточку статуса задачи.
 func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	task.Lock()
@@ -1096,7 +1102,7 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	bldr.WriteString(fmt.Sprintf("• <b>Статус:</b> %s <b>%s</b>\n", status.Emoji(), status.RussianTitle()))
 	bldr.WriteString(fmt.Sprintf("• <b>Модель:</b> <code>%s</code>\n", html.EscapeString(model)))
 	bldr.WriteString(fmt.Sprintf("• <b>Время:</b> <code>%s</code>\n", durStr))
-	bldr.WriteString(fmt.Sprintf("• <b>Задача:</b> <i>«%s»</i>\n", html.EscapeString(initialPrompt)))
+	bldr.WriteString(fmt.Sprintf("• <b>Задача:</b> <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(initialPrompt, MaxTaskDetailsPromptRunes))))
 
 	if requiresPlan {
 		if planApproved {
@@ -1117,17 +1123,25 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	}
 
 	if lastQuestion != "" {
-		bldr.WriteString(fmt.Sprintf("\n❓ <b>Вопрос агента:</b>\n<i>%s</i>\n", html.EscapeString(lastQuestion)))
+		bldr.WriteString(fmt.Sprintf("\n❓ <b>Вопрос агента:</b>\n<i>%s</i>\n", html.EscapeString(utils.TruncateString(lastQuestion, 300))))
 	}
 
 	if plan != "" {
-		bldr.WriteString(fmt.Sprintf("\n📋 <b>План реализации:</b>\n<i>%s</i>\n", html.EscapeString(plan)))
+		planRunes := []rune(plan)
+		if len(planRunes) > MaxTaskDetailsPlanRunes {
+			planSnippet := utils.TruncateString(plan, MaxTaskDetailsPlanRunes)
+			bldr.WriteString(fmt.Sprintf("\n📋 <b>План реализации (кратко):</b>\n<i>%s</i>\n📄 <i>Полный план:</i> /planfile_%d\n",
+				html.EscapeString(planSnippet), id))
+		} else {
+			bldr.WriteString(fmt.Sprintf("\n📋 <b>План реализации:</b>\n<i>%s</i>\n📄 <i>Полный план:</i> /planfile_%d\n",
+				html.EscapeString(plan), id))
+		}
 	}
 
 	if len(followups) > 0 {
 		bldr.WriteString(fmt.Sprintf("\n📥 <b>В очереди дополнений (%d):</b>\n", len(followups)))
 		for i, f := range followups {
-			bldr.WriteString(fmt.Sprintf("%d. <i>«%s»</i>\n", i+1, html.EscapeString(f)))
+			bldr.WriteString(fmt.Sprintf("%d. <i>«%s»</i>\n", i+1, html.EscapeString(utils.TruncateString(f, 120))))
 		}
 	}
 
@@ -1154,4 +1168,46 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	}
 
 	return bldr.String()
+}
+
+// BuildTaskDetailsMarkup формирует инлайн-клавиатуру для карточки задачи,
+// включая кнопку скачивания плана (если он есть) и управляющие кнопки по статусу.
+func BuildTaskDetailsMarkup(task *TaskSession) *tele.ReplyMarkup {
+	task.Lock()
+	id := task.ID
+	hasPlan := task.Plan != ""
+	status := task.Status
+	task.Unlock()
+
+	menu := &tele.ReplyMarkup{}
+	var rows []tele.Row
+
+	if hasPlan {
+		btnDoc := menu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(id))
+		rows = append(rows, menu.Row(btnDoc))
+	}
+
+	if status == TaskStatusWaitingApproval {
+		btnApprove := menu.Data("✅ Утвердить план", "plan_approve", strconv.Itoa(id))
+		btnCancel := menu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(id))
+		rows = append(rows, menu.Row(btnApprove, btnCancel))
+	} else if status == TaskStatusPaused {
+		btnResume := menu.Data("▶️ Возобновить", "q_resume", strconv.Itoa(id))
+		btnCancel := menu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(id))
+		rows = append(rows, menu.Row(btnResume, btnCancel))
+	}
+
+	if len(rows) > 0 {
+		menu.Inline(rows...)
+		return menu
+	}
+	return nil
+}
+
+// BuildTaskPlanMarkup создает инлайн-кнопку скачивания полного файла плана задачи.
+func BuildTaskPlanMarkup(taskID int) *tele.ReplyMarkup {
+	menu := &tele.ReplyMarkup{}
+	btnDoc := menu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(taskID))
+	menu.Inline(menu.Row(btnDoc))
+	return menu
 }
