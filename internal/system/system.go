@@ -41,8 +41,9 @@ type RestartMarker struct {
 }
 
 type SystemFlags struct {
-	Pull  bool
-	Force bool
+	Pull   bool
+	Force  bool
+	Branch string
 }
 
 func getBotDir() string {
@@ -180,13 +181,27 @@ func CheckAndNotifyRestart(b *tele.Bot, defaultAdminID int64) {
 
 func parseSystemFlags(args []string) SystemFlags {
 	var f SystemFlags
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		lower := strings.ToLower(strings.TrimSpace(a))
+		if strings.HasPrefix(lower, "branch=") || strings.HasPrefix(lower, "--branch=") {
+			parts := strings.SplitN(a, "=", 2)
+			if len(parts) == 2 {
+				f.Branch = strings.TrimSpace(parts[1])
+			}
+			continue
+		}
+		
 		switch lower {
 		case "pull", "-p", "--pull":
 			f.Pull = true
 		case "force", "-f", "--force":
 			f.Force = true
+		case "branch", "-b", "--branch":
+			if i+1 < len(args) {
+				f.Branch = strings.TrimSpace(args[i+1])
+				i++
+			}
 		}
 	}
 	return f
@@ -203,13 +218,13 @@ func performGitCheckout(ctx context.Context, dir, branch string, force bool) (st
 	return strings.TrimSpace(string(out)), err
 }
 
-func performGitPull(ctx context.Context, dir string, force bool) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "pull", "origin", "main")
+func performGitPull(ctx context.Context, dir, branch string, force bool) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "pull", "origin", branch)
 	out, err := cmd.CombinedOutput()
 	if err != nil && force {
-		fetchCmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin", "main")
+		fetchCmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin", branch)
 		if fetchOut, fetchErr := fetchCmd.CombinedOutput(); fetchErr == nil {
-			resetCmd := exec.CommandContext(ctx, "git", "-C", dir, "reset", "--hard", "origin/main")
+			resetCmd := exec.CommandContext(ctx, "git", "-C", dir, "reset", "--hard", "origin/"+branch)
 			resetOut, resetErr := resetCmd.CombinedOutput()
 			if resetErr == nil {
 				return strings.TrimSpace(string(resetOut)), nil
@@ -228,7 +243,7 @@ func performBuild(ctx context.Context, botDir string) (string, error) {
 
 	_ = os.Remove(tmpBinary)
 
-	cmd := exec.CommandContext(ctx, goBin, "build", "-o", tmpBinary, ".")
+	cmd := exec.CommandContext(ctx, goBin, "build", "-o", tmpBinary, "./cmd/bot")
 	cmd.Dir = botDir
 	out, err := cmd.CombinedOutput()
 	outStr := strings.TrimSpace(string(out))
@@ -525,11 +540,16 @@ func HandleRebuild(b *tele.Bot, c tele.Context) error {
 		statusMsg, _ = b.Send(c.Recipient(), text, tele.ModeHTML)
 	}
 
-	// Опциональный git checkout main и git pull
-	if flags.Pull {
-		updateStatus("🌿 <b>Переключаюсь на ветку main...</b>")
+	// Опциональный git checkout и git pull
+	if flags.Pull || flags.Branch != "" {
+		targetBranch := "main"
+		if flags.Branch != "" {
+			targetBranch = flags.Branch
+		}
+		
+		updateStatus(fmt.Sprintf("🌿 <b>Переключаюсь на ветку %s...</b>", html.EscapeString(targetBranch)))
 		ctxCheckout, cancelCheckout := context.WithTimeout(context.Background(), 30*time.Second)
-		checkoutOut, checkoutErr := performGitCheckout(ctxCheckout, botDir, "main", flags.Force)
+		checkoutOut, checkoutErr := performGitCheckout(ctxCheckout, botDir, targetBranch, flags.Force)
 		cancelCheckout()
 		if checkoutErr != nil {
 			errMsg := checkoutOut
@@ -537,26 +557,29 @@ func HandleRebuild(b *tele.Bot, c tele.Context) error {
 				errMsg = checkoutErr.Error()
 			}
 			updateStatus(fmt.Sprintf(
-				"❌ <b>Ошибка при переключении на ветку main:</b>\n<pre>%s</pre>\n<i>Сборка отменена, бот продолжает работу на текущей ветке.</i>",
+				"❌ <b>Ошибка при переключении на ветку %s:</b>\n<pre>%s</pre>\n<i>Сборка отменена, бот продолжает работу на текущей ветке.</i>",
+				html.EscapeString(targetBranch),
 				html.EscapeString(errMsg),
 			))
 			return nil
 		}
 
-		updateStatus("📥 <b>Выполняю git pull origin...</b>")
-		ctxPull, cancelPull := context.WithTimeout(context.Background(), 30*time.Second)
-		pullOut, pullErr := performGitPull(ctxPull, botDir, flags.Force)
-		cancelPull()
-		if pullErr != nil {
-			errMsg := pullOut
-			if errMsg == "" {
-				errMsg = pullErr.Error()
+		if flags.Pull {
+			updateStatus("📥 <b>Выполняю git pull origin...</b>")
+			ctxPull, cancelPull := context.WithTimeout(context.Background(), 30*time.Second)
+			pullOut, pullErr := performGitPull(ctxPull, botDir, targetBranch, flags.Force)
+			cancelPull()
+			if pullErr != nil {
+				errMsg := pullOut
+				if errMsg == "" {
+					errMsg = pullErr.Error()
+				}
+				updateStatus(fmt.Sprintf(
+					"❌ <b>Ошибка при git pull:</b>\n<pre>%s</pre>\n<i>Сборка отменена, бот продолжает работу.</i>",
+					html.EscapeString(errMsg),
+				))
+				return nil
 			}
-			updateStatus(fmt.Sprintf(
-				"❌ <b>Ошибка при git pull:</b>\n<pre>%s</pre>\n<i>Сборка отменена, бот продолжает работу.</i>",
-				html.EscapeString(errMsg),
-			))
-			return nil
 		}
 	}
 
