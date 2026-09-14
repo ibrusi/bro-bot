@@ -777,10 +777,7 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	}
 
 	if plan != "" {
-		planSnippet := plan
-		if len(planSnippet) > 400 {
-			planSnippet = planSnippet[:400] + "..."
-		}
+		planSnippet := utils.TruncateString(plan, 2500)
 		bldr.WriteString(fmt.Sprintf("\n📋 <b>План реализации:</b>\n<i>%s</i>\n", html.EscapeString(planSnippet)))
 	}
 

@@ -321,6 +321,32 @@ func TestFormatTasksListAndDetailsWithPlan(t *testing.T) {
 	}
 }
 
+func TestFormatTaskDetails_PlanSnippetTruncation(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Build feature Y", dummyRecipient{}, true)
+	task.Status = TaskStatusWaitingApproval
+
+	// 1. Plan with ~550 Russian characters (previously truncated at 400 bytes, which was ~200 Russian chars)
+	longPlan := strings.Repeat("План реализации шага. ", 25)
+	task.Plan = longPlan
+
+	details := FormatTaskDetails(task, true)
+	if !strings.Contains(details, longPlan) {
+		t.Errorf("expected details to contain full 550 char plan without truncation")
+	}
+
+	// 2. Plan longer than 2500 characters
+	veryLongPlan := strings.Repeat("Абвгд12345", 300) // 3000 runes
+	task.Plan = veryLongPlan
+	detailsVeryLong := FormatTaskDetails(task, true)
+	if !strings.Contains(detailsVeryLong, "...") {
+		t.Errorf("expected details to be truncated with '...' for plan > 2500 characters")
+	}
+	if strings.Contains(detailsVeryLong, veryLongPlan) {
+		t.Errorf("expected very long plan to be truncated")
+	}
+}
+
 func TestTaskSessionDurationAndLocking(t *testing.T) {
 	task := &TaskSession{
 		ID:        1,
