@@ -108,6 +108,7 @@ type TaskSession struct {
 	QuestionAskedAt  time.Time
 	AnswerChan       chan string
 	PauseChan        chan struct{}
+	TokenMetrics     *TaskTokenMetrics
 }
 
 // durationLocked возвращает время работы задачи без захвата мьютекса (мьютекс должен быть уже захвачен вызывающим кодом).

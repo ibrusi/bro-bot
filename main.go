@@ -160,6 +160,7 @@ func main() {
 				"• /cancel [id] — остановить задачу\n\n"+
 				"<b>Система и мониторинг:</b>\n"+
 				"• /top (или /ps) — потребление CPU и памяти бота и agy\n"+
+				"• /context [id] — распределение окна контекста модели и agy\n"+
 				"• /tokens — статистика токенов, скорости и кэша\n"+
 				"• /usage — статистика токенов и лимиты\n"+
 				"• /models — список моделей и переключение (/model)\n"+
@@ -270,6 +271,32 @@ func main() {
 
 	b.Handle("/stats", func(c tele.Context) error {
 		msg := tokenTracker.GetTokensCommandMessage()
+		return c.Send(msg, tele.ModeHTML)
+	})
+
+	b.Handle("/context", func(c tele.Context) error {
+		args := c.Args()
+		var target *TaskSession
+		if len(args) > 0 {
+			first := strings.TrimPrefix(args[0], "#")
+			if id, err := strconv.Atoi(first); err == nil {
+				target = taskManager.GetTask(id)
+				if target == nil {
+					return c.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), tele.ModeHTML)
+				}
+			}
+		}
+
+		if target == nil {
+			target = taskManager.GetActiveTask()
+		}
+
+		projectState.RLock()
+		curProj := projectState.currentProject
+		curMod := projectState.currentModel
+		projectState.RUnlock()
+
+		msg := tokenTracker.GetContextCommandMessage(target, curProj, curMod)
 		return c.Send(msg, tele.ModeHTML)
 	})
 
@@ -1301,6 +1328,9 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *TaskSessi
 			syncLegacySession(task)
 
 			metrics := tokenTracker.FinishTask(prURL)
+			task.Lock()
+			task.TokenMetrics = &metrics
+			task.Unlock()
 			statsSummary := metrics.FormatCompletionSummary()
 
 			var compMsg *tele.Message
@@ -1504,6 +1534,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 					task.Lock()
 					task.ConversationID = convID
 					task.Unlock()
+					tokenTracker.SetConversationID(convID)
 				}
 
 				if evt.StepUpdate != nil {
@@ -1512,6 +1543,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *TaskSession
 						tokenTracker.RecordStepUsage(u.StepIndex, *u.Usage)
 					}
 					if u.StepType == "tool" && u.State == "ACTIVE" {
+						tokenTracker.RecordToolCall()
 						desc := formatToolAction(u.ToolName, u.ToolInfo)
 						task.AppendLog(desc)
 					} else if u.StepType == "agent_response" && u.TextDelta != "" {
@@ -2216,6 +2248,7 @@ func getDefaultCommands() []tele.Command {
 		{Text: "resume", Description: "Возобновить задачу: /resume [id] [ответ]"},
 		{Text: "cancel", Description: "Остановить задачу: /cancel [id]"},
 		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},
+		{Text: "context", Description: "Окно контекста модели и agy: /context [id]"},
 		{Text: "top", Description: "CPU и память бота и agy"},
 		{Text: "usage", Description: "Остаток квот и лимиты моделей"},
 		{Text: "models", Description: "Список доступных моделей"},
