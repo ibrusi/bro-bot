@@ -268,9 +268,6 @@ func (t *TokenTracker) RecordResultUsage(usage UsageStats, durationSeconds float
 	t.accumulatedSteps.Add(usage)
 	t.stepDurationTotal += durationSeconds
 	t.currentTask.Turns += numTurns
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
-		t.currentTask.LastStepUsage = usage
-	}
 	t.stepUsages = make(map[int]UsageStats)
 
 	t.currentTask.Usage = t.accumulatedSteps
@@ -646,7 +643,7 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		var metrics TaskTokenMetrics
 		var hasMetrics bool
 
-		if t.currentTask != nil && (taskIsActive || t.currentTask.Project == taskProj) {
+		if taskIsActive && t.currentTask != nil {
 			metrics = *t.currentTask
 			hasMetrics = true
 		} else if taskMetrics != nil {
