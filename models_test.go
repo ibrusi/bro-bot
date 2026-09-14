@@ -49,6 +49,7 @@ func TestResolveModel(t *testing.T) {
 		{"FLASH", "gemini-3.8-flash-medium", true},
 		{"3.8", "gemini-3.8-flash-medium", true},
 		{"pro", "gemini-3.1-pro-high", true},
+		{"default", "gemini-3.1-pro-high", true},
 		{"sonnet", "claude-sonnet-4-6", true},
 		{"claude-sonnet-4.6", "claude-sonnet-4-6", true},
 		{"opus", "claude-opus-4-6-thinking", true},

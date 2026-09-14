@@ -32,11 +32,11 @@ var (
 	modelRegistry *ModelRegistry
 
 	fallbackModels = []ModelInfo{
-		{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)", Description: "⚡ Gemini 3.8 Flash с глубоким рассуждением (High effort)"},
-		{ID: "gemini-3.8-flash-medium", DisplayName: "Gemini 3.8 Flash (Medium)", Description: "⚡ По умолчанию: максимальная скорость и свежая база"},
-		{ID: "gemini-3.8-flash-low", DisplayName: "Gemini 3.8 Flash (Low)", Description: "⚡ Gemini 3.8 Flash в ультрабыстром режиме (Low effort)"},
-		{ID: "gemini-3.1-pro-high", DisplayName: "Gemini 3.1 Pro (High)", Description: "🧠 Флагман: глубокий рефакторинг, архитектура, сложные алгоритмы"},
+		{ID: "gemini-3.1-pro-high", DisplayName: "Gemini 3.1 Pro (High)", Description: "🧠 По умолчанию: флагман, глубокий рефакторинг, архитектура, сложные алгоритмы"},
 		{ID: "gemini-3.1-pro-low", DisplayName: "Gemini 3.1 Pro (Low)", Description: "🧠 Gemini 3.1 Pro: быстрый режим для средних задач"},
+		{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)", Description: "⚡ Gemini 3.8 Flash с глубоким рассуждением (High effort)"},
+		{ID: "gemini-3.8-flash-medium", DisplayName: "Gemini 3.8 Flash (Medium)", Description: "⚡ Максимальная скорость и свежая база"},
+		{ID: "gemini-3.8-flash-low", DisplayName: "Gemini 3.8 Flash (Low)", Description: "⚡ Gemini 3.8 Flash в ультрабыстром режиме (Low effort)"},
 		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6 (Thinking)", Description: "🎯 Claude Sonnet 4.6 (Thinking): сильный агентный кодинг с пошаговым рассуждением"},
 		{ID: "claude-opus-4-6-thinking", DisplayName: "Claude Opus 4.6 (Thinking)", Description: "👑 Claude Opus 4.6 (Thinking): максимальный уровень рассуждений для сложных багов"},
 		{ID: "gpt-oss-120b-medium", DisplayName: "GPT-OSS 120B (Medium)", Description: "🌐 GPT-OSS 120B (Medium): открытая весовая архитектура"},
@@ -49,10 +49,10 @@ var (
 	}
 
 	knownDescriptions = map[string]string{
-		"gemini-3.8-flash-medium":  "⚡ По умолчанию: максимальная скорость и свежая база",
+		"gemini-3.8-flash-medium":  "⚡ Максимальная скорость и свежая база",
 		"gemini-3.8-flash-high":    "⚡ Максимальная точность Flash с повышенным рассуждением",
 		"gemini-3.8-flash-low":     "⚡ Ультрабыстрый режим Flash с минимальной задержкой",
-		"gemini-3.8-flash":         "⚡ По умолчанию: максимальная скорость и свежая база",
+		"gemini-3.8-flash":         "⚡ Максимальная скорость и свежая база",
 		"gemini-3.7-flash-medium":  "⚡ Предыдущая быстрая версия",
 		"gemini-3.7-flash-high":    "⚡ Gemini 3.7 Flash с повышенным рассуждением",
 		"gemini-3.7-flash-low":     "⚡ Gemini 3.7 Flash в ультрабыстром режиме",
@@ -61,22 +61,22 @@ var (
 		"gemini-3.6-flash-high":    "⚡ Gemini 3.6 Flash с повышенным рассуждением",
 		"gemini-3.6-flash-low":     "⚡ Gemini 3.6 Flash в ультрабыстром режиме",
 		"gemini-3.6-flash":         "⚡ Базовая быстрая модель",
-		"gemini-3.1-pro-high":      "🧠 Флагман: глубокий рефакторинг, архитектура, сложные алгоритмы",
+		"gemini-3.1-pro-high":      "🧠 По умолчанию: флагман, глубокий рефакторинг, архитектура, сложные алгоритмы",
 		"gemini-3.1-pro-low":       "🧠 Gemini 3.1 Pro с быстрым рассуждением",
-		"gemini-3.1-pro":           "🧠 Флагман: глубокий рефакторинг, архитектура, сложные алгоритмы",
+		"gemini-3.1-pro":           "🧠 По умолчанию: флагман, глубокий рефакторинг, архитектура, сложные алгоритмы",
 		"claude-sonnet-4-6":        "🎯 Claude Sonnet 4.6 (Thinking): сильный агентный кодинг с пошаговым рассуждением",
 		"claude-opus-4-6-thinking": "👑 Claude Opus 4.6 (Thinking): максимальный уровень рассуждений для сложных багов",
 		"gpt-oss-120b-medium":      "🌐 GPT-OSS 120B (Medium): открытая весовая архитектура",
 	}
 
 	modelOrder = map[string]int{
-		"gemini-3.8-flash-medium":  1,
-		"gemini-3.8-flash":         2,
-		"gemini-3.8-flash-high":    3,
-		"gemini-3.8-flash-low":     4,
-		"gemini-3.1-pro-high":      5,
-		"gemini-3.1-pro":           6,
-		"gemini-3.1-pro-low":       7,
+		"gemini-3.1-pro-high":      1,
+		"gemini-3.1-pro":           2,
+		"gemini-3.1-pro-low":       3,
+		"gemini-3.8-flash-medium":  4,
+		"gemini-3.8-flash":         5,
+		"gemini-3.8-flash-high":    6,
+		"gemini-3.8-flash-low":     7,
 		"claude-sonnet-4-6":        8,
 		"claude-opus-4-6-thinking": 9,
 		"gpt-oss-120b-medium":      10,
@@ -91,6 +91,9 @@ var (
 	}
 
 	baseAliases = map[string]string{
+		// Default
+		"default":           "gemini-3.1-pro-high",
+
 		// Flash 3.8
 		"flash":             "gemini-3.8-flash-medium",
 		"3.8":               "gemini-3.8-flash-medium",
