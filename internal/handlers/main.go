@@ -129,6 +129,7 @@ func Start() {
 				"• /add &lt;id&gt; &lt;текст&gt; — отправить дополнение конкретной задаче\n"+
 				"• /new &lt;текст&gt; — создать новую задачу в текущем проекте\n"+
 				"• /resume [id] [ответ] — возобновить задачу или передать ответ\n"+
+				"• /pause [id] — приостановить задачу\n"+
 				"• /status [id] — подробный статус, логи и очередь правок\n"+
 				"• /cancel [id] — остановить задачу\n\n"+
 				"<b>Система и мониторинг:</b>\n"+
@@ -1457,10 +1458,10 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 				if len(task.RecentLogs) > 0 {
 					lastLine = task.RecentLogs[len(task.RecentLogs)-1]
 				}
-				dur := task.Duration()
 				followupsCount := len(task.PendingFollowups)
 				taskStatus := task.Status
 				task.Unlock()
+				dur := task.Duration()
 
 				tokenSnippet := domain.GlobalTokenTracker.GetLiveStatusSnippet()
 
@@ -2233,6 +2234,7 @@ func getDefaultCommands() []tele.Command {
 		{Text: "add", Description: "Дополнить задачу: /add <id> <текст>"},
 		{Text: "new", Description: "Создать новую задачу: /new <текст>"},
 		{Text: "resume", Description: "Возобновить задачу: /resume [id] [ответ]"},
+		{Text: "pause", Description: "Приостановить задачу: /pause [id]"},
 		{Text: "cancel", Description: "Остановить задачу: /cancel [id]"},
 		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},
 		{Text: "context", Description: "Окно контекста модели и agy: /context [id]"},
