@@ -1,4 +1,4 @@
-package main
+package domain
 
 import (
 	"fmt"
@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
+	"tg-agent-bot/internal/utils"
 	"time"
 
 	tele "gopkg.in/telebot.v3"
@@ -205,7 +207,7 @@ type TaskManager struct {
 	msgToTask    map[int]int // messageID -> taskID
 }
 
-var taskManager = NewTaskManager()
+var GlobalTaskManager = NewTaskManager()
 
 // NewTaskManager создаёт новый менеджер задач.
 func NewTaskManager() *TaskManager {
@@ -391,7 +393,7 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 	}
 
 	if task.Cmd != nil && task.Cmd.Process != nil {
-		_ = task.Cmd.Process.Kill()
+		_ = syscall.Kill(-task.Cmd.Process.Pid, syscall.SIGKILL)
 	}
 	if task.Stdin != nil {
 		_ = task.Stdin.Close()
@@ -615,7 +617,7 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 			status := t.Status
 			prompt := t.InitialPrompt
 			followupsCount := len(t.PendingFollowups)
-			durStr := formatDurationHuman(t.durationLocked())
+			durStr := FormatDurationHuman(t.durationLocked())
 			t.Unlock()
 			focusBadge := "  "
 			if id == activeID {
@@ -624,7 +626,7 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 
 			bldr.WriteString(fmt.Sprintf("%s<b>#%d</b> %s <code>%s</code> — <b>%s</b>\n",
 				focusBadge, id, status.Emoji(), html.EscapeString(proj), status.RussianTitle()))
-			bldr.WriteString(fmt.Sprintf("   📝 <i>«%s»</i>\n", html.EscapeString(truncateString(prompt, 60))))
+			bldr.WriteString(fmt.Sprintf("   📝 <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(prompt, 60))))
 
 			extraInfo := fmt.Sprintf("⏱ <code>%s</code>", durStr)
 			if status == TaskStatusQueued {
@@ -672,7 +674,7 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 
 			bldr.WriteString(fmt.Sprintf("%s<b>#%d</b> %s <code>%s</code> — %s%s\n",
 				focusBadge, id, status.Emoji(), html.EscapeString(proj), status.RussianTitle(), prSnippet))
-			bldr.WriteString(fmt.Sprintf("   📝 <i>«%s»</i>\n", html.EscapeString(truncateString(prompt, 50))))
+			bldr.WriteString(fmt.Sprintf("   📝 <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(prompt, 50))))
 		}
 		bldr.WriteString("\n")
 	}
@@ -700,7 +702,7 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 		if id == activeID {
 			badge = "🎯 "
 		}
-		btnText := fmt.Sprintf("%s#%d %s %s", badge, id, emoji, truncateString(proj, 12))
+		btnText := fmt.Sprintf("%s#%d %s %s", badge, id, emoji, utils.TruncateString(proj, 12))
 		btn := menu.Data(btnText, "task_sel", strconv.Itoa(id))
 		buttons = append(buttons, btn)
 	}
@@ -738,7 +740,7 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	logs := append([]string(nil), task.RecentLogs...)
 	prURL := task.LastPRURL
 	lastQuestion := task.LastQuestion
-	durStr := formatDurationHuman(task.durationLocked())
+	durStr := FormatDurationHuman(task.durationLocked())
 	task.Unlock()
 
 	var bldr strings.Builder
@@ -763,7 +765,7 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	}
 
 	if curPrompt != initialPrompt && curPrompt != "" {
-		bldr.WriteString(fmt.Sprintf("• <b>Текущий шаг:</b> <i>«%s»</i>\n", html.EscapeString(truncateString(curPrompt, 80))))
+		bldr.WriteString(fmt.Sprintf("• <b>Текущий шаг:</b> <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(curPrompt, 80))))
 	}
 
 	if prURL != "" {

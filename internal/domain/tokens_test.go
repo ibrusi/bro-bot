@@ -1,4 +1,4 @@
-package main
+package domain
 
 import (
 	"encoding/json"
@@ -68,9 +68,9 @@ func TestFormatDurationHuman(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		actual := formatDurationHuman(tc.input)
+		actual := FormatDurationHuman(tc.input)
 		if actual != tc.expected {
-			t.Errorf("formatDurationHuman(%v) = %q, expected %q", tc.input, actual, tc.expected)
+			t.Errorf("FormatDurationHuman(%v) = %q, expected %q", tc.input, actual, tc.expected)
 		}
 	}
 }
@@ -237,7 +237,7 @@ func TestFormatToolAction(t *testing.T) {
 			"CommandLine": "git status",
 		},
 	}
-	resCmd := formatToolAction("run_command", infoCmd)
+	resCmd := FormatToolAction("run_command", infoCmd)
 	if !strings.Contains(resCmd, "git status") {
 		t.Errorf("Expected 'git status' in tool action, got %q", resCmd)
 	}
@@ -248,7 +248,7 @@ func TestFormatToolAction(t *testing.T) {
 			"TargetFile": "/path/to/main.go",
 		},
 	}
-	resEdit := formatToolAction("replace_file_content", infoEdit)
+	resEdit := FormatToolAction("replace_file_content", infoEdit)
 	if !strings.Contains(resEdit, "main.go") {
 		t.Errorf("Expected 'main.go' in tool action, got %q", resEdit)
 	}

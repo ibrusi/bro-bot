@@ -1,4 +1,4 @@
-package main
+package models
 
 import (
 	"reflect"
@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 )
-
 
 func TestParseAgyModels(t *testing.T) {
 	raw := `
@@ -111,9 +110,9 @@ func TestBuildAgyModelArgs(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		actual := buildAgyModelArgs(tc.model)
+		actual := BuildAgyModelArgs(tc.model)
 		if !reflect.DeepEqual(actual, tc.expected) {
-			t.Errorf("buildAgyModelArgs(%q) = %v, expected %v", tc.model, actual, tc.expected)
+			t.Errorf("BuildAgyModelArgs(%q) = %v, expected %v", tc.model, actual, tc.expected)
 		}
 	}
 }

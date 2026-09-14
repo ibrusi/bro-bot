@@ -1,9 +1,10 @@
-package main
+package handlers
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+	"tg-agent-bot/internal/config"
 )
 
 func TestParseRepoURL(t *testing.T) {
@@ -176,9 +177,9 @@ func TestCloneDestinationAndActiveProjectUnchanged(t *testing.T) {
 
 	// Set active project
 	initialActiveProject := "existing-repo-1"
-	projectState.Lock()
-	projectState.currentProject = initialActiveProject
-	projectState.Unlock()
+	config.ProjectState.Lock()
+	config.ProjectState.CurrentProject = initialActiveProject
+	config.ProjectState.Unlock()
 
 	// Simulate target resolution in clone command
 	targetName, err := sanitizeProjectName("new-cloned-repo")
@@ -189,7 +190,7 @@ func TestCloneDestinationAndActiveProjectUnchanged(t *testing.T) {
 	cleanRoot := filepath.Clean(tmpProjectsDir)
 	targetPath := filepath.Join(cleanRoot, targetName)
 
-	// Verify targetPath is directly inside projectsRoot (adjacent to existing projects)
+	// Verify targetPath is directly inside config.ProjectsRoot (adjacent to existing projects)
 	if filepath.Dir(targetPath) != cleanRoot {
 		t.Errorf("expected targetPath parent to be %q, got %q", cleanRoot, filepath.Dir(targetPath))
 	}
@@ -198,12 +199,11 @@ func TestCloneDestinationAndActiveProjectUnchanged(t *testing.T) {
 	}
 
 	// Verify active project remains untouched
-	projectState.RLock()
-	currentActive := projectState.currentProject
-	projectState.RUnlock()
+	config.ProjectState.RLock()
+	currentActive := config.ProjectState.CurrentProject
+	config.ProjectState.RUnlock()
 
 	if currentActive != initialActiveProject {
 		t.Errorf("active project changed: got %q, want %q", currentActive, initialActiveProject)
 	}
 }
-
