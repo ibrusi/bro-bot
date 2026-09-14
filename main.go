@@ -161,7 +161,7 @@ func main() {
 				"<b>Система и мониторинг:</b>\n"+
 				"• /top (или /ps) — потребление CPU и памяти бота и agy\n"+
 				"• /tokens — статистика токенов, скорости и кэша\n"+
-				"• /limits — статистика токенов и лимиты\n"+
+				"• /usage — статистика токенов и лимиты\n"+
 				"• /models — список моделей и переключение (/model)\n"+
 				"• /projects — список проектов и переключение (/use)\n"+
 				"• /clone &lt;url&gt; [имя] — клонировать репозиторий по SSH или HTTPS\n"+
@@ -313,7 +313,7 @@ func main() {
 		return c.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", html.EscapeString(resolved)), tele.ModeHTML)
 	})
 
-	b.Handle("/limits", func(c tele.Context) error {
+	handleUsage := func(c tele.Context) error {
 		_ = c.Notify(tele.Typing)
 		statusMsg, _ := b.Send(c.Recipient(), "⏳ <i>Запрашиваю актуальные лимиты и квоты из agy...</i>", tele.ModeHTML)
 
@@ -437,7 +437,9 @@ func main() {
 			}
 		}
 		return c.Send(resultMsg, tele.ModeHTML)
-	})
+	}
+	b.Handle("/usage", handleUsage)
+	b.Handle("/limits", handleUsage)
 
 	b.Handle("/projects", func(c tele.Context) error {
 		entries, err := os.ReadDir(projectsRoot)
@@ -2215,7 +2217,7 @@ func getDefaultCommands() []tele.Command {
 		{Text: "cancel", Description: "Остановить задачу: /cancel [id]"},
 		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},
 		{Text: "top", Description: "CPU и память бота и agy"},
-		{Text: "limits", Description: "Остаток квот и лимиты моделей"},
+		{Text: "usage", Description: "Остаток квот и лимиты моделей"},
 		{Text: "models", Description: "Список доступных моделей"},
 		{Text: "model", Description: "Выбрать модель: /model <имя>"},
 		{Text: "projects", Description: "Список доступных проектов"},

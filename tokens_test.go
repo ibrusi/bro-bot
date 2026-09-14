@@ -200,7 +200,7 @@ func TestTokenTrackerLifecycle(t *testing.T) {
 		t.Errorf("Expected 1 task run, got %s", idleMsg)
 	}
 
-	// 8. Short last task for /limits
+	// 8. Short last task for /usage
 	shortLast := tracker.FormatShortLastTask()
 	if !strings.Contains(shortLast, "1 100") {
 		t.Errorf("Expected 1 100 in short last, got %q", shortLast)
