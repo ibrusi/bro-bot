@@ -266,9 +266,6 @@ func (t *TokenTracker) RecordResultUsage(usage UsageStats, durationSeconds float
 	t.accumulatedSteps.Add(usage)
 	t.stepDurationTotal += durationSeconds
 	t.currentTask.Turns += numTurns
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
-		t.currentTask.LastStepUsage = usage
-	}
 	t.stepUsages = make(map[int]UsageStats)
 
 	t.currentTask.Usage = t.accumulatedSteps
