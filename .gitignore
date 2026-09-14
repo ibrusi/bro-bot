@@ -1,6 +1,6 @@
 # Binaries
-bot
-tg-agent-bot
+/bot
+/tg-agent-bot
 *.exe
 *.exe~
 *.dll
@@ -10,6 +10,7 @@ tg-agent-bot
 # Environment variables
 .env
 .env.*
+!.env.example
 
 # Temporary / backup files
 *.bak
