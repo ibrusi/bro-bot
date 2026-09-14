@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"tg-agent-bot/internal/config"
 	"tg-agent-bot/internal/domain"
 	"tg-agent-bot/internal/models"
@@ -1410,7 +1409,6 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 
 	args := buildAgyArgs(convID, modelName, prompt)
 	cmd := exec.Command("agy", args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
 		"TERM=dumb",
