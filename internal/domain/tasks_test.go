@@ -1,4 +1,4 @@
-package main
+package domain
 
 import (
 	"strings"
@@ -247,47 +247,6 @@ func TestTaskManagerMultiProjectConcurrency(t *testing.T) {
 	}
 }
 
-func TestSyncLegacySession(t *testing.T) {
-	tm := NewTaskManager()
-	t1 := tm.CreateTask("proj-test", "model-test", "test prompt", dummyRecipient{})
-	t1.Status = TaskStatusRunning
-	t1.StartedAt = time.Now()
-	t1.RecentLogs = []string{"step 1", "step 2"}
-	t1.PendingFollowups = []string{"fix 1"}
-	t1.LastPRURL = "https://github.com/test/pr/1"
-
-	syncLegacySession(t1)
-
-	session.Lock()
-	running := session.isRunning
-	proj := session.currentProject
-	logsCount := len(session.recentLogs)
-	pr := session.lastPRURL
-	session.Unlock()
-
-	if !running {
-		t.Errorf("expected session.isRunning to be true")
-	}
-	if proj != "proj-test" {
-		t.Errorf("expected proj-test, got %s", proj)
-	}
-	if logsCount != 2 {
-		t.Errorf("expected 2 logs, got %d", logsCount)
-	}
-	if pr != "https://github.com/test/pr/1" {
-		t.Errorf("expected pr url, got %s", pr)
-	}
-
-	syncLegacySession(nil)
-	session.Lock()
-	runningAfterNil := session.isRunning
-	session.Unlock()
-
-	if runningAfterNil {
-		t.Errorf("expected session.isRunning to be false after nil sync")
-	}
-}
-
 func TestTaskManagerCreateTaskWithPlan(t *testing.T) {
 	tm := NewTaskManager()
 	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Implement feature X", dummyRecipient{}, true)
@@ -402,8 +361,6 @@ func TestTaskManagerLiveQueriesDuringTaskExecution(t *testing.T) {
 	t1.RecentLogs = []string{"initializing...", "running tool test"}
 	t1.Unlock()
 
-	syncLegacySession(t1)
-
 	// Run concurrent queries that would hang if any lock was deadlocked
 	done := make(chan bool)
 	go func() {
@@ -431,7 +388,6 @@ func TestTaskManagerLiveQueriesDuringTaskExecution(t *testing.T) {
 			_, _ = tm.GetRunningWorkerPids()
 
 			// Concurrently collect resource report
-			_ = CollectResourceReport(false)
 		}
 		done <- true
 	}()
@@ -638,4 +594,3 @@ func TestGetActiveTaskWithCompletedAndActiveTasks(t *testing.T) {
 		t.Fatalf("expected fallback task when none are active, got nil")
 	}
 }
-

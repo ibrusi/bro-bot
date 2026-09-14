@@ -1,4 +1,4 @@
-package main
+package system
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"tg-agent-bot/internal/domain"
 	"time"
 
 	tele "gopkg.in/telebot.v3"
@@ -79,7 +80,7 @@ func TestPerformBuildInvalidCode(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Write invalid go file
-	badGo := `package main
+	badGo := `package system
 func main() { syntax error here
 `
 	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(badGo), 0644); err != nil {
@@ -111,7 +112,7 @@ func TestPerformBuildValidCode(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Write valid go file
-	validGo := `package main
+	validGo := `package system
 import "fmt"
 func main() { fmt.Println("hello") }
 `
@@ -261,13 +262,13 @@ func TestIsBotProject(t *testing.T) {
 }
 
 func TestCheckActiveTasksForSystemAction(t *testing.T) {
-	// Сохраняем исходный taskManager и восстанавливаем после теста
-	origTM := taskManager
-	defer func() { taskManager = origTM }()
+	// Сохраняем исходный domain.GlobalTaskManager и восстанавливаем после теста
+	origTM := domain.GlobalTaskManager
+	defer func() { domain.GlobalTaskManager = origTM }()
 
 	// 1. Нет активных задач
-	testTM := NewTaskManager()
-	taskManager = testTM
+	testTM := domain.NewTaskManager()
+	domain.GlobalTaskManager = testTM
 
 	warn, blocked := checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
 	if blocked || warn != "" {
@@ -276,7 +277,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 
 	// 2. Активная задача на проекте бота при /rebuild pull
 	task := testTM.CreateTask("tg-bot-agent", "gemini", "Делаем рефакторинг", tele.ChatID(123))
-	task.Status = TaskStatusRunning
+	task.Status = domain.TaskStatusRunning
 
 	warn, blocked = checkActiveTasksForSystemAction("/rebuild pull", SystemFlags{}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
 	if !blocked {
@@ -290,10 +291,10 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	}
 
 	// 3. Активная задача на другом проекте
-	testTM2 := NewTaskManager()
-	taskManager = testTM2
+	testTM2 := domain.NewTaskManager()
+	domain.GlobalTaskManager = testTM2
 	task2 := testTM2.CreateTask("some-other-project", "gemini", "Фича для сайта", tele.ChatID(123))
-	task2.Status = TaskStatusRunning
+	task2.Status = domain.TaskStatusRunning
 
 	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
 	if !blocked {
@@ -308,7 +309,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	if blocked || warn != "" {
 		t.Errorf("expected Force to allow operation, got blocked=%v, warn=%s", blocked, warn)
 	}
-	if task2.Status != TaskStatusCancelled {
+	if task2.Status != domain.TaskStatusCancelled {
 		t.Errorf("expected task2 to be cancelled by Force, got status %s", task2.Status)
 	}
 }

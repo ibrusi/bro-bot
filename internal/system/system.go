@@ -1,4 +1,4 @@
-package main
+package system
 
 import (
 	"context"
@@ -11,6 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"tg-agent-bot/internal/config"
+	"tg-agent-bot/internal/domain"
+	"tg-agent-bot/internal/utils"
 	"time"
 
 	tele "gopkg.in/telebot.v3"
@@ -119,7 +123,7 @@ func loadAndClearRestartMarker(botDir string) (*RestartMarker, error) {
 	return &marker, nil
 }
 
-func checkAndNotifyRestart(b *tele.Bot, defaultAdminID int64) {
+func CheckAndNotifyRestart(b *tele.Bot, defaultAdminID int64) {
 	time.Sleep(1500 * time.Millisecond)
 
 	botDir := getBotDir()
@@ -343,8 +347,8 @@ func isBotProject(projectName, botDir, projectsRoot string) bool {
 			var projDir string
 			if filepath.IsAbs(cleanProj) {
 				projDir = cleanProj
-			} else if projectsRoot != "" {
-				projDir = filepath.Join(projectsRoot, cleanProj)
+			} else if config.ProjectsRoot != "" {
+				projDir = filepath.Join(config.ProjectsRoot, cleanProj)
 			}
 			if projDir != "" {
 				projRemote := normalizeGitURL(getGitRemoteURL(projDir))
@@ -359,13 +363,13 @@ func isBotProject(projectName, botDir, projectsRoot string) bool {
 }
 
 func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, projectsRoot string) (string, bool) {
-	activeTasks := taskManager.GetActiveOrQueuedTasks()
+	activeTasks := domain.GlobalTaskManager.GetActiveOrQueuedTasks()
 
 	// 1. Ищем активные задачи на проекте самого бота
-	var botTasks []*TaskSession
-	var otherTasks []*TaskSession
+	var botTasks []*domain.TaskSession
+	var otherTasks []*domain.TaskSession
 	for _, t := range activeTasks {
-		if isBotProject(t.Project, botDir, projectsRoot) {
+		if isBotProject(t.Project, botDir, config.ProjectsRoot) {
 			botTasks = append(botTasks, t)
 		} else {
 			otherTasks = append(otherTasks, t)
@@ -406,7 +410,7 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 			countStr,
 			html.EscapeString(tProj),
 			tID,
-			html.EscapeString(truncateString(tPrompt, 100)),
+			html.EscapeString(utils.TruncateString(tPrompt, 100)),
 			html.EscapeString(tStatus),
 			actionDesc,
 			cmdName,
@@ -434,18 +438,18 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 			len(otherTasks),
 			tID,
 			html.EscapeString(tProj),
-			html.EscapeString(truncateString(tPrompt, 100)),
+			html.EscapeString(utils.TruncateString(tPrompt, 100)),
 			html.EscapeString(tStatus),
 			cmdName,
 		), true
 	}
 
 	// 4. Проверка устаревшей сессии (session) на случай фоллбэка
-	session.Lock()
-	legacyRunning := session.isRunning
-	legacyPrompt := session.currentPrompt
-	legacyProj := session.currentProject
-	session.Unlock()
+	config.Session.Lock()
+	legacyRunning := config.Session.IsRunning
+	legacyPrompt := config.Session.CurrentPrompt
+	legacyProj := config.Session.CurrentProject
+	config.Session.Unlock()
 
 	if legacyRunning && !flags.Force {
 		return fmt.Sprintf(
@@ -457,7 +461,7 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 				"<code>%s force</code>\n\n"+
 				"Или отмените текущую задачу командой /cancel.",
 			html.EscapeString(legacyProj),
-			html.EscapeString(truncateString(legacyPrompt, 100)),
+			html.EscapeString(utils.TruncateString(legacyPrompt, 100)),
 			cmdName,
 		), true
 	}
@@ -465,25 +469,25 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 	// 5. Если передан флаг Force — останавливаем все задачи
 	if flags.Force {
 		for _, t := range activeTasks {
-			_, _ = taskManager.CancelTask(t.ID)
+			_, _ = domain.GlobalTaskManager.CancelTask(t.ID)
 		}
 
-		session.Lock()
-		if session.cmd != nil && session.cmd.Process != nil {
-			_ = session.cmd.Process.Kill()
+		config.Session.Lock()
+		if config.Session.Cmd != nil && config.Session.Cmd.Process != nil {
+			_ = syscall.Kill(-config.Session.Cmd.Process.Pid, syscall.SIGKILL)
 		}
-		session.isRunning = false
-		session.waiting = false
-		session.pendingFollowups = nil
-		session.fullOutput.Reset()
-		tokenTracker.CancelTask()
-		session.Unlock()
+		config.Session.IsRunning = false
+		config.Session.Waiting = false
+		config.Session.PendingFollowups = nil
+		config.Session.FullOutput.Reset()
+		domain.GlobalTokenTracker.CancelTask()
+		config.Session.Unlock()
 	}
 
 	return "", false
 }
 
-func handleRebuild(b *tele.Bot, c tele.Context) error {
+func HandleRebuild(b *tele.Bot, c tele.Context) error {
 	systemActionLock.Lock()
 	if isSystemAction {
 		systemActionLock.Unlock()
@@ -506,7 +510,7 @@ func handleRebuild(b *tele.Bot, c tele.Context) error {
 		cmdName = "/rebuild pull"
 	}
 
-	if warnMsg, blocked := checkActiveTasksForSystemAction(cmdName, flags, botDir, projectsRoot); blocked {
+	if warnMsg, blocked := checkActiveTasksForSystemAction(cmdName, flags, botDir, config.ProjectsRoot); blocked {
 		return c.Send(warnMsg, tele.ModeHTML)
 	}
 
@@ -579,7 +583,7 @@ func handleRebuild(b *tele.Bot, c tele.Context) error {
 		updateStatus(fmt.Sprintf(
 			"❌ <b>Ошибка компиляции (билд отклонён):</b>\n<pre>%s</pre>\n\n"+
 				"🛡 <i>Текущий бинарник сохранён без изменений, бот продолжает работу.</i>",
-			html.EscapeString(truncateString(errDetails, 3500)),
+			html.EscapeString(utils.TruncateString(errDetails, 3500)),
 		))
 		return nil
 	}
@@ -611,7 +615,7 @@ func handleRebuild(b *tele.Bot, c tele.Context) error {
 	return nil
 }
 
-func handleRestart(b *tele.Bot, c tele.Context) error {
+func HandleRestart(b *tele.Bot, c tele.Context) error {
 	systemActionLock.Lock()
 	if isSystemAction {
 		systemActionLock.Unlock()
@@ -629,7 +633,7 @@ func handleRestart(b *tele.Bot, c tele.Context) error {
 	flags := parseSystemFlags(c.Args())
 	botDir := getBotDir()
 
-	if warnMsg, blocked := checkActiveTasksForSystemAction("/restart", flags, botDir, projectsRoot); blocked {
+	if warnMsg, blocked := checkActiveTasksForSystemAction("/restart", flags, botDir, config.ProjectsRoot); blocked {
 		return c.Send(warnMsg, tele.ModeHTML)
 	}
 
