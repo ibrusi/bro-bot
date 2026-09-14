@@ -269,6 +269,7 @@ func TestGetDefaultCommands(t *testing.T) {
 		"new",
 		"cancel",
 		"tokens",
+		"context",
 		"top",
 		"usage",
 		"models",

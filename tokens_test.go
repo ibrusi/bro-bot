@@ -253,3 +253,135 @@ func TestFormatToolAction(t *testing.T) {
 		t.Errorf("Expected 'main.go' in tool action, got %q", resEdit)
 	}
 }
+
+func TestModelContextWindow(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected int64
+	}{
+		{"gemini-3.8-flash-high", 1_048_576},
+		{"flash", 1_048_576},
+		{"pro", 1_048_576},
+		{"claude-sonnet-4-6", 200_000},
+		{"claude-opus-4-6-thinking", 200_000},
+		{"opus", 200_000},
+		{"gpt-oss-120b-medium", 131_072},
+		{"120b", 131_072},
+		{"unknown-model", 1_048_576},
+	}
+
+	for _, tc := range tests {
+		actual := ModelContextWindow(tc.model)
+		if actual != tc.expected {
+			t.Errorf("ModelContextWindow(%q) = %d, expected %d", tc.model, actual, tc.expected)
+		}
+	}
+}
+
+func TestFormatContextLimit(t *testing.T) {
+	tests := []struct {
+		input    int64
+		expected string
+	}{
+		{1_048_576, "1.0M"},
+		{200_000, "200k"},
+		{131_072, "131k"},
+		{500, "500"},
+	}
+
+	for _, tc := range tests {
+		actual := FormatContextLimit(tc.input)
+		if actual != tc.expected {
+			t.Errorf("FormatContextLimit(%d) = %q, expected %q", tc.input, actual, tc.expected)
+		}
+	}
+}
+
+func TestRenderContextBar(t *testing.T) {
+	b0 := renderContextBar(0, 10)
+	if b0 != "□□□□□□□□□□" {
+		t.Errorf("renderContextBar(0, 10) = %q, expected all empty", b0)
+	}
+
+	b100 := renderContextBar(100, 10)
+	if b100 != "■■■■■■■■■■" {
+		t.Errorf("renderContextBar(100, 10) = %q, expected all filled", b100)
+	}
+
+	b50 := renderContextBar(50, 10)
+	if b50 != "■■■■■□□□□□" {
+		t.Errorf("renderContextBar(50, 10) = %q, expected half filled", b50)
+	}
+}
+
+func TestGetContextCommandMessageIdle(t *testing.T) {
+	tracker := NewTokenTracker()
+	msg := tracker.GetContextCommandMessage(nil, "my-project", "flash")
+
+	if !strings.Contains(msg, "Контекстное окно модели agy") {
+		t.Errorf("Expected header in idle context message, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "1.0M") {
+		t.Errorf("Expected 1.0M in idle context message, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "my-project") {
+		t.Errorf("Expected project in idle context message, got:\n%s", msg)
+	}
+}
+
+func TestGetContextCommandMessageActiveAndCompleted(t *testing.T) {
+	tracker := NewTokenTracker()
+	tracker.StartTask("tg-agent-bot", "flash", "Implement context")
+	tracker.SetConversationID("conv-uuid-12345")
+	tracker.RecordToolCall()
+
+	tracker.RecordStepUsage(1, UsageStats{
+		InputTokens:     10000,
+		OutputTokens:    500,
+		ThinkingTokens:  200,
+		CacheReadTokens: 4000,
+		TotalTokens:     10500,
+	})
+
+	task := &TaskSession{
+		ID:             1,
+		Project:        "tg-agent-bot",
+		Model:          "gemini-3.8-flash-high",
+		Status:         TaskStatusRunning,
+		ConversationID: "conv-uuid-12345",
+	}
+
+	// 1. Active task
+	activeMsg := tracker.GetContextCommandMessage(task, "tg-agent-bot", "flash")
+	if !strings.Contains(activeMsg, "Контекст активной задачи #1") {
+		t.Errorf("Expected active task header, got:\n%s", activeMsg)
+	}
+	if !strings.Contains(activeMsg, "1.0M") {
+		t.Errorf("Expected 1.0M window, got:\n%s", activeMsg)
+	}
+	if !strings.Contains(activeMsg, "conv-uuid-12345") {
+		t.Errorf("Expected conversation ID, got:\n%s", activeMsg)
+	}
+	if !strings.Contains(activeMsg, "Входной контекст") {
+		t.Errorf("Expected input context section, got:\n%s", activeMsg)
+	}
+	if !strings.Contains(activeMsg, "Кэш промпта") {
+		t.Errorf("Expected cache section, got:\n%s", activeMsg)
+	}
+	if !strings.Contains(activeMsg, "Ответы агента") {
+		t.Errorf("Expected responses section, got:\n%s", activeMsg)
+	}
+
+	// 2. Complete task
+	completed := tracker.FinishTask("https://github.com/org/repo/pull/10")
+	task.Status = TaskStatusCompleted
+	task.TokenMetrics = &completed
+
+	compMsg := tracker.GetContextCommandMessage(task, "tg-agent-bot", "flash")
+	if !strings.Contains(compMsg, "Контекст задачи #1") {
+		t.Errorf("Expected completed task header, got:\n%s", compMsg)
+	}
+	if !strings.Contains(compMsg, "Pull Request") {
+		t.Errorf("Expected PR link, got:\n%s", compMsg)
+	}
+}
