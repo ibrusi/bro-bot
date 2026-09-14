@@ -190,6 +190,22 @@ func Start() {
 	})
 
 	b.Handle("/start", func(c tele.Context) error {
+		args := c.Args()
+		if len(args) > 0 {
+			payload := strings.TrimSpace(args[0])
+			if strings.HasPrefix(payload, "plan_") || strings.HasPrefix(payload, "planfile_") {
+				rawID := strings.TrimPrefix(payload, "planfile_")
+				rawID = strings.TrimPrefix(rawID, "plan_")
+				if id, err := strconv.Atoi(rawID); err == nil {
+					target := domain.GlobalTaskManager.GetTask(id)
+					if target != nil {
+						return sendTaskPlanDocument(c, target)
+					}
+					return c.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), tele.ModeHTML)
+				}
+			}
+		}
+
 		config.ProjectState.RLock()
 		curProj := config.ProjectState.CurrentProject
 		curMod := config.ProjectState.CurrentModel
@@ -253,6 +269,10 @@ func Start() {
 		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Выбрана задача #%d", id)})
 
 		details := domain.FormatTaskDetails(task, true)
+		markup := domain.BuildTaskDetailsMarkup(task)
+		if markup != nil {
+			return c.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), markup, tele.ModeHTML)
+		}
 		return c.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), tele.ModeHTML)
 	})
 
@@ -317,6 +337,10 @@ func Start() {
 			}
 		}
 
+		statusMarkup := domain.BuildTaskDetailsMarkup(target)
+		if statusMarkup != nil {
+			return c.Send(msg, statusMarkup, tele.ModeHTML)
+		}
 		return c.Send(msg, tele.ModeHTML)
 	})
 
@@ -603,6 +627,10 @@ func Start() {
 				return c.Send("💤 Нет активных задач. Создать: <code>/new &lt;текст&gt;</code>", tele.ModeHTML)
 			}
 			details := domain.FormatTaskDetails(active, true)
+			markup := domain.BuildTaskDetailsMarkup(active)
+			if markup != nil {
+				return c.Send(details, markup, tele.ModeHTML)
+			}
 			return c.Send(details, tele.ModeHTML)
 		}
 
@@ -633,6 +661,10 @@ func Start() {
 		syncLegacySession(task)
 
 		details := domain.FormatTaskDetails(task, true)
+		markup := domain.BuildTaskDetailsMarkup(task)
+		if markup != nil {
+			return c.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), markup, tele.ModeHTML)
+		}
 		return c.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), tele.ModeHTML)
 	})
 
@@ -737,6 +769,7 @@ func Start() {
 		var target *domain.TaskSession
 		if len(args) > 0 {
 			first := strings.TrimPrefix(args[0], "#")
+			first = strings.TrimPrefix(first, "_")
 			if id, err := strconv.Atoi(first); err == nil {
 				target = domain.GlobalTaskManager.GetTask(id)
 				if target == nil {
@@ -753,24 +786,7 @@ func Start() {
 			return c.Send("❌ Нет активных задач. Список задач: /tasks", tele.ModeHTML)
 		}
 
-		target.Lock()
-		planText := strings.TrimSpace(target.Plan)
-		id := target.ID
-		proj := target.Project
-		target.Unlock()
-
-		if planText == "" {
-			return c.Send(fmt.Sprintf("ℹ️ У задачи #%d нет сформированного плана.", id), tele.ModeHTML)
-		}
-
-		docName := fmt.Sprintf("plan_task_%d.md", id)
-		doc := &tele.Document{
-			File:     tele.FromReader(strings.NewReader(planText)),
-			FileName: docName,
-			MIME:     "text/markdown",
-			Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", id, proj),
-		}
-		return c.Send(doc)
+		return sendTaskPlanDocument(c, target)
 	})
 
 	b.Handle("/approve", func(c tele.Context) error {
@@ -933,7 +949,6 @@ func Start() {
 		}
 		task.Lock()
 		planText := strings.TrimSpace(task.Plan)
-		proj := task.Project
 		task.Unlock()
 
 		if planText == "" {
@@ -941,14 +956,7 @@ func Start() {
 		}
 
 		_ = c.Respond(&tele.CallbackResponse{Text: "Отправляю файл плана..."})
-		docName := fmt.Sprintf("plan_task_%d.md", id)
-		doc := &tele.Document{
-			File:     tele.FromReader(strings.NewReader(planText)),
-			FileName: docName,
-			MIME:     "text/markdown",
-			Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", id, proj),
-		}
-		return c.Send(doc)
+		return sendTaskPlanDocument(c, task)
 	})
 
 	btnQuestionChoice := tele.Btn{Unique: "q_choice"}
@@ -1312,6 +1320,21 @@ func Start() {
 
 	b.Handle(tele.OnText, func(c tele.Context) error {
 		userText := strings.TrimSpace(c.Text())
+		if strings.HasPrefix(userText, "/planfile_") || strings.HasPrefix(userText, "/plan_") {
+			rawID := strings.TrimPrefix(userText, "/planfile_")
+			rawID = strings.TrimPrefix(rawID, "/plan_")
+			if atIdx := strings.Index(rawID, "@"); atIdx != -1 {
+				rawID = rawID[:atIdx]
+			}
+			if id, err := strconv.Atoi(strings.TrimSpace(rawID)); err == nil {
+				target := domain.GlobalTaskManager.GetTask(id)
+				if target != nil {
+					return sendTaskPlanDocument(c, target)
+				}
+				return c.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), tele.ModeHTML)
+			}
+		}
+
 		if strings.HasPrefix(userText, "/") {
 			return nil
 		}
@@ -1591,6 +1614,8 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 		if len(task.PendingFollowups) == 0 {
 			prURL := task.LastPRURL
 			finalReport := task.FullOutput.String()
+			initialPrompt := task.InitialPrompt
+			hasPlan := task.Plan != ""
 			task.Status = domain.TaskStatusCompleted
 			task.FinishedAt = time.Now()
 			task.Unlock()
@@ -1605,18 +1630,72 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 			domain.GlobalTaskManager.SaveTask(task)
 			statsSummary := metrics.FormatCompletionSummary()
 
-			var compMsg *tele.Message
+			var compBldr strings.Builder
 			if prURL != "" {
-				compMsg, _ = SendSplit(b, recipient, fmt.Sprintf("🎉 <b>Задача #%d выполнена!</b>\n📁 Проект: <code>%s</code>\n🔗 <a href=\"%s\">Открыть Pull Request</a>\n\n%s", taskID, html.EscapeString(projectName), html.EscapeString(prURL), statsSummary), tele.ModeHTML)
+				compBldr.WriteString(fmt.Sprintf("🎉 <b>Задача #%d выполнена!</b>\n📁 Проект: <code>%s</code>\n🔗 <a href=\"%s\">Открыть Pull Request</a>\n", taskID, html.EscapeString(projectName), html.EscapeString(prURL)))
 			} else {
-				compMsg, _ = SendSplit(b, recipient, fmt.Sprintf("✅ <b>Задача #%d завершена!</b> (<code>%s</code>)\n\n%s", taskID, html.EscapeString(projectName), statsSummary), tele.ModeHTML)
+				compBldr.WriteString(fmt.Sprintf("✅ <b>Задача #%d завершена!</b> (<code>%s</code>)\n", taskID, html.EscapeString(projectName)))
+			}
+
+			if initialPrompt != "" {
+				compBldr.WriteString(fmt.Sprintf("📝 <b>Задача:</b> <i>«%s»</i>\n",
+					html.EscapeString(utils.TruncateString(initialPrompt, 200))))
+			}
+
+			if hasPlan {
+				compBldr.WriteString(fmt.Sprintf("📄 <b>План реализации:</b> /planfile_%d\n", taskID))
+			}
+
+			compBldr.WriteString("\n" + statsSummary)
+
+			compMenu := &tele.ReplyMarkup{}
+			var actButtons []tele.Btn
+			if prURL != "" {
+				actButtons = append(actButtons, compMenu.URL("🔗 Открыть PR", prURL))
+			}
+			if hasPlan {
+				actButtons = append(actButtons, compMenu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(taskID)))
+			}
+			if len(actButtons) > 0 {
+				compMenu.Inline(compMenu.Row(actButtons...))
+			} else {
+				compMenu = nil
+			}
+
+			var compMsg *tele.Message
+			if compMenu != nil && len(compMenu.InlineKeyboard) > 0 {
+				compMsg, _ = SendSplit(b, recipient, compBldr.String(), compMenu, tele.ModeHTML)
+			} else {
+				compMsg, _ = SendSplit(b, recipient, compBldr.String(), tele.ModeHTML)
 			}
 			if compMsg != nil {
 				domain.GlobalTaskManager.RegisterMessageTask(compMsg.ID, taskID)
 			}
 
-			if strings.TrimSpace(finalReport) != "" {
-				sendLongMarkdown(b, recipient, finalReport)
+			finalReport = strings.TrimSpace(finalReport)
+			if finalReport != "" {
+				reportRunes := []rune(finalReport)
+				if len(reportRunes) > 1500 {
+					summary := utils.ExtractPlanSummary(finalReport, 1200)
+					summaryHTML := utils.MarkdownToTelegramHTML(summary)
+					_, _ = SendSplit(b, recipient, fmt.Sprintf("📑 <b>Отчет о выполнении задачи #%d:</b>\n\n%s\n\n📄 <i>Полный отчет (%d знаков) прикреплен файлом.</i>", taskID, summaryHTML, len(reportRunes)), tele.ModeHTML)
+
+					docName := fmt.Sprintf("report_task_%d.md", taskID)
+					doc := &tele.Document{
+						File:     tele.FromReader(strings.NewReader(finalReport)),
+						FileName: docName,
+						MIME:     "text/markdown",
+						Caption:  fmt.Sprintf("📄 Полный отчет выполнения задачи #%d (%s)", taskID, projectName),
+					}
+					docMsg, docErr := b.Send(recipient, doc)
+					if docErr != nil {
+						sendLongMarkdown(b, recipient, finalReport)
+					} else if docMsg != nil {
+						domain.GlobalTaskManager.RegisterMessageTask(docMsg.ID, taskID)
+					}
+				} else {
+					sendLongMarkdown(b, recipient, finalReport)
+				}
 			}
 
 			// Запускаем следующую задачу из очереди для этого проекта, если есть
@@ -2126,7 +2205,7 @@ func handleCreateNewTaskWithOptions(b *tele.Bot, c tele.Context, text string, re
 			"⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>:\n\n"+
 				"<i>«%s»</i>\n\n"+
 				"💡 В этом проекте уже выполняется задача. Задача #%d начнется автоматически после ее завершения.%s",
-			task.ID, html.EscapeString(curProj), html.EscapeString(text), task.ID, planNote,
+			task.ID, html.EscapeString(curProj), html.EscapeString(utils.TruncateString(text, 250)), task.ID, planNote,
 		)
 		return c.Send(msg, tele.ModeHTML)
 	}
@@ -2183,12 +2262,12 @@ func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text strin
 
 		if curStatus == domain.TaskStatusQueued {
 			return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
-				taskID, html.EscapeString(proj), html.EscapeString(text)), tele.ModeHTML)
+				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), tele.ModeHTML)
 		} else if curStatus == domain.TaskStatusRunning && cmdIsNil {
 			workDir := filepath.Join(config.ProjectsRoot, proj)
 			go runAgentTaskPipeline(b, c.Recipient(), task, workDir)
 			return c.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с ответом:</b>\n<i>«%s»</i>",
-				taskID, html.EscapeString(proj), html.EscapeString(text)), tele.ModeHTML)
+				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), tele.ModeHTML)
 		}
 
 		return c.Send(fmt.Sprintf("💬 <b>Ответ передан задаче #%d</b> (<code>%s</code>)...", taskID, html.EscapeString(task.Project)), tele.ModeHTML)
@@ -2198,7 +2277,7 @@ func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text strin
 		"📥 <b>Дополнение сохранено в задачу #%d</b> (<code>%s</code>) [#%d в очереди]:\n\n"+
 			"<i>«%s»</i>\n\n"+
 			"Агент завершит текущий шаг и применит эти правки в ветку задачи #%d.",
-		taskID, html.EscapeString(task.Project), qLen, html.EscapeString(text), taskID,
+		taskID, html.EscapeString(task.Project), qLen, html.EscapeString(utils.TruncateString(text, 250)), taskID,
 	)
 	return c.Send(msg, tele.ModeHTML)
 }
@@ -2303,12 +2382,38 @@ func handleRevisePlan(b *tele.Bot, recipient tele.Recipient, taskID int, feedbac
 	return nil
 }
 
-const maxInlinePlanRunes = 2500
+func sendTaskPlanDocument(c tele.Context, task *domain.TaskSession) error {
+	if task == nil {
+		return c.Send("❌ Задача не найдена. Список задач: /tasks", tele.ModeHTML)
+	}
+
+	task.Lock()
+	planText := strings.TrimSpace(task.Plan)
+	id := task.ID
+	proj := task.Project
+	task.Unlock()
+
+	if planText == "" {
+		return c.Send(fmt.Sprintf("ℹ️ У задачи #%d нет сформированного плана.", id), tele.ModeHTML)
+	}
+
+	docName := fmt.Sprintf("plan_task_%d.md", id)
+	doc := &tele.Document{
+		File:     tele.FromReader(strings.NewReader(planText)),
+		FileName: docName,
+		MIME:     "text/markdown",
+		Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", id, proj),
+	}
+	return c.Send(doc)
+}
+
+const maxInlinePlanRunes = 1200
 
 func sendPlanForApproval(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession) {
 	task.Lock()
 	taskID := task.ID
 	projectName := task.Project
+	initialPrompt := task.InitialPrompt
 	planText := strings.TrimSpace(task.Plan)
 	task.Unlock()
 
@@ -2329,77 +2434,55 @@ func sendPlanForApproval(b *tele.Bot, recipient tele.Recipient, task *domain.Tas
 	btnCancel := planMenu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(taskID))
 	rows = append(rows, planMenu.Row(btnApprove, btnCancel))
 
+	btnDoc := planMenu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(taskID))
+	rows = append(rows, planMenu.Row(btnDoc))
+	planMenu.Inline(rows...)
+
 	planRunes := []rune(planText)
 	isLongPlan := len(planRunes) > maxInlinePlanRunes
 
+	var planDisplayHTML string
+	var planNote string
 	if isLongPlan {
-		btnDoc := planMenu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(taskID))
-		rows = append(rows, planMenu.Row(btnDoc))
-	}
-	planMenu.Inline(rows...)
-
-	if isLongPlan {
-		// Длинный план: отправляем резюме + прикрепляем файл .md + подвал с кнопками
-		summary := utils.ExtractPlanSummary(planText, 1800)
-		summaryHTML := utils.MarkdownToTelegramHTML(summary)
-
-		summaryMsgText := fmt.Sprintf(
-			"📋 <b>План реализации задачи #%d</b> (<code>%s</code>):\n\n%s\n\n"+
-				"📄 <i>Полный детальный план (%d знаков) прикреплён файлом ниже.</i>",
-			taskID, html.EscapeString(projectName), summaryHTML, len(planRunes),
-		)
-		sMsg, _ := SendSplit(b, recipient, summaryMsgText, tele.ModeHTML)
-		if sMsg != nil {
-			domain.GlobalTaskManager.RegisterMessageTask(sMsg.ID, taskID)
-		}
-
-		docName := fmt.Sprintf("plan_task_%d.md", taskID)
-		doc := &tele.Document{
-			File:     tele.FromReader(strings.NewReader(planText)),
-			FileName: docName,
-			MIME:     "text/markdown",
-			Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", taskID, projectName),
-		}
-		docMsg, docErr := b.Send(recipient, doc)
-		if docErr != nil {
-			// Если Telegram отклонил отправку документа, используем запасной вариант с текстовым сплитом
-			sendLongMarkdown(b, recipient, planText)
-		} else if docMsg != nil {
-			domain.GlobalTaskManager.RegisterMessageTask(docMsg.ID, taskID)
-		}
-
-		footer := fmt.Sprintf(
-			"👆 <b>План задачи #%d ожидает вашего утверждения:</b>\n\n"+
-				"• Ознакомьтесь с резюме выше и полным планом в файле <code>%s</code>.\n"+
-				"• Нажмите <b>«✅ Утвердить и начать»</b> (или выберите конкретный вариант) либо введите <code>/approve %d</code>.\n"+
-				"• Чтобы внести правки, ответьте (Reply) на это сообщение или введите <code>/add %d &lt;замечания&gt;</code>.\n"+
-				"• Для отмены нажмите <b>«❌ Отменить»</b> или <code>/cancel %d</code>.",
-			taskID, html.EscapeString(docName), taskID, taskID, taskID,
-		)
-		ctlMsg, _ := b.Send(recipient, footer, planMenu, tele.ModeHTML)
-		if ctlMsg != nil {
-			domain.GlobalTaskManager.RegisterMessageTask(ctlMsg.ID, taskID)
-		}
+		summary := utils.ExtractPlanSummary(planText, maxInlinePlanRunes)
+		planDisplayHTML = utils.MarkdownToTelegramHTML(summary)
+		planNote = fmt.Sprintf("\n\n📄 <i>Полный детальный план (%d знаков):</i> /planfile_%d (или кнопка ниже)", len(planRunes), taskID)
 	} else {
-		// Короткий план: отправляем целиком в чат
-		header := fmt.Sprintf("📋 <b>План реализации задачи #%d</b> (<code>%s</code>):\n", taskID, html.EscapeString(projectName))
-		b.Send(recipient, header, tele.ModeHTML)
+		planDisplayHTML = utils.MarkdownToTelegramHTML(planText)
+		planNote = fmt.Sprintf("\n\n📄 <i>Полный план:</i> /planfile_%d", taskID)
+	}
 
-		if planText != "" {
-			sendLongMarkdown(b, recipient, planText)
-		}
+	promptSnippet := utils.TruncateString(initialPrompt, 250)
 
-		footer := fmt.Sprintf(
-			"👆 <b>План задачи #%d ожидает вашего утверждения:</b>\n\n"+
-				"• Нажмите <b>«✅ Утвердить и начать»</b> (или выберите конкретный вариант) либо введите <code>/approve %d</code>.\n"+
-				"• Чтобы внести правки, ответьте (Reply) на это сообщение или введите <code>/add %d &lt;замечания&gt;</code>.\n"+
-				"• Для отмены нажмите <b>«❌ Отменить»</b> или <code>/cancel %d</code>.",
+	msgText := fmt.Sprintf(
+		"📋 <b>План реализации задачи #%d</b> (<code>%s</code>):\n\n"+
+			"📝 <b>Задача:</b> <i>«%s»</i>\n\n"+
+			"%s%s\n\n"+
+			"👆 <b>План ожидает вашего утверждения:</b>\n"+
+			"• Нажмите <b>«✅ Утвердить и начать»</b> (или выберите вариант) либо <code>/approve %d</code>.\n"+
+			"• Для правок отправьте <code>/add %d &lt;замечания&gt;</code> или ответьте на сообщение.\n"+
+			"• Для отмены: <b>«❌ Отменить»</b> или <code>/cancel %d</code>.",
+		taskID, html.EscapeString(projectName),
+		html.EscapeString(promptSnippet),
+		planDisplayHTML, planNote,
+		taskID, taskID, taskID,
+	)
+
+	ctlMsg, err := SendSplit(b, recipient, msgText, planMenu, tele.ModeHTML)
+	if err != nil {
+		plainText := fmt.Sprintf(
+			"📋 План реализации задачи #%d (%s):\n\n"+
+				"Задача: «%s»\n\n"+
+				"%s\n\n"+
+				"Полный план: /planfile_%d\n\n"+
+				"Утвердить: /approve %d | Дополнить: /add %d | Отменить: /cancel %d",
+			taskID, projectName, promptSnippet, utils.StripTelegramHTML(planDisplayHTML),
 			taskID, taskID, taskID, taskID,
 		)
-		ctlMsg, _ := b.Send(recipient, footer, planMenu, tele.ModeHTML)
-		if ctlMsg != nil {
-			domain.GlobalTaskManager.RegisterMessageTask(ctlMsg.ID, taskID)
-		}
+		ctlMsg, _ = SendSplit(b, recipient, plainText, planMenu)
+	}
+	if ctlMsg != nil {
+		domain.GlobalTaskManager.RegisterMessageTask(ctlMsg.ID, taskID)
 	}
 }
 

@@ -3,9 +3,11 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"html"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -465,7 +467,7 @@ func TestPlanMenuForLongPlanIncludesDocumentButton(t *testing.T) {
 	planRunes := []rune(longPlan)
 	isLong := len(planRunes) > maxInlinePlanRunes
 	if !isLong {
-		t.Fatalf("expected longPlan to be > maxInlinePlanRunes (2500), got %d", len(planRunes))
+		t.Fatalf("expected longPlan to be > maxInlinePlanRunes (%d), got %d", maxInlinePlanRunes, len(planRunes))
 	}
 
 	planMenu := &tele.ReplyMarkup{}
@@ -669,4 +671,179 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	}
 }
 
+func TestPlanfileCommandLinkParsing(t *testing.T) {
+	testCases := []struct {
+		input  string
+		wantID int
+		wantOK bool
+	}{
+		{"/planfile_42", 42, true},
+		{"/planfile_100@bot", 100, true},
+		{"/plan_7", 7, true},
+		{"/plan_15@my_tg_bot", 15, true},
+		{"/planfile_abc", 0, false},
+		{"/planfile", 0, false},
+		{"hello", 0, false},
+	}
+
+	for _, tc := range testCases {
+		isPlanCmd := strings.HasPrefix(tc.input, "/planfile_") || strings.HasPrefix(tc.input, "/plan_")
+		if !isPlanCmd {
+			if tc.wantOK {
+				t.Errorf("input %s expected to be recognized as plan command", tc.input)
+			}
+			continue
+		}
+
+		rawID := strings.TrimPrefix(tc.input, "/planfile_")
+		rawID = strings.TrimPrefix(rawID, "/plan_")
+		if atIdx := strings.Index(rawID, "@"); atIdx != -1 {
+			rawID = rawID[:atIdx]
+		}
+		id, err := strconv.Atoi(strings.TrimSpace(rawID))
+		if tc.wantOK {
+			if err != nil || id != tc.wantID {
+				t.Errorf("input %s: got id=%d err=%v, want %d", tc.input, id, err, tc.wantID)
+			}
+		} else {
+			if err == nil {
+				t.Errorf("input %s: expected error, got id=%d", tc.input, id)
+			}
+		}
+	}
+}
+
+func TestStartPlanPayloadParsing(t *testing.T) {
+	testCases := []struct {
+		payload string
+		wantID  int
+		wantOK  bool
+	}{
+		{"plan_42", 42, true},
+		{"planfile_99", 99, true},
+		{"other_payload", 0, false},
+	}
+
+	for _, tc := range testCases {
+		isPlanPayload := strings.HasPrefix(tc.payload, "plan_") || strings.HasPrefix(tc.payload, "planfile_")
+		if !isPlanPayload {
+			if tc.wantOK {
+				t.Errorf("payload %s expected to match", tc.payload)
+			}
+			continue
+		}
+
+		rawID := strings.TrimPrefix(tc.payload, "planfile_")
+		rawID = strings.TrimPrefix(rawID, "plan_")
+		id, err := strconv.Atoi(rawID)
+		if tc.wantOK {
+			if err != nil || id != tc.wantID {
+				t.Errorf("payload %s: got id=%d, want %d", tc.payload, id, tc.wantID)
+			}
+		}
+	}
+}
+
+func TestTaskCompletionMessageWithPlanAndPrompt(t *testing.T) {
+	taskID := 55
+	projectName := "test-proj"
+	prURL := "https://github.com/org/repo/pull/55"
+	initialPrompt := strings.Repeat("Сделай важную фичу в проекте. ", 20) // ~600 chars
+	hasPlan := true
+	statsSummary := "⚡ 1500 токенов"
+
+	var compBldr strings.Builder
+	if prURL != "" {
+		compBldr.WriteString(fmt.Sprintf("🎉 <b>Задача #%d выполнена!</b>\n📁 Проект: <code>%s</code>\n🔗 <a href=\"%s\">Открыть Pull Request</a>\n", taskID, html.EscapeString(projectName), html.EscapeString(prURL)))
+	} else {
+		compBldr.WriteString(fmt.Sprintf("✅ <b>Задача #%d завершена!</b> (<code>%s</code>)\n", taskID, html.EscapeString(projectName)))
+	}
+
+	if initialPrompt != "" {
+		compBldr.WriteString(fmt.Sprintf("📝 <b>Задача:</b> <i>«%s»</i>\n",
+			html.EscapeString(utils.TruncateString(initialPrompt, 200))))
+	}
+
+	if hasPlan {
+		compBldr.WriteString(fmt.Sprintf("📄 <b>План реализации:</b> /planfile_%d\n", taskID))
+	}
+
+	compBldr.WriteString("\n" + statsSummary)
+
+	res := compBldr.String()
+
+	if !strings.Contains(res, "Задача #55 выполнена!") {
+		t.Errorf("expected header in completion message")
+	}
+	if !strings.Contains(res, "/planfile_55") {
+		t.Errorf("expected /planfile_55 in completion message")
+	}
+	if strings.Contains(res, initialPrompt) {
+		t.Errorf("expected initialPrompt to be truncated in completion message")
+	}
+	if !strings.Contains(res, "...") {
+		t.Errorf("expected ellipsis in truncated prompt")
+	}
+
+	// Inline buttons
+	compMenu := &tele.ReplyMarkup{}
+	var actButtons []tele.Btn
+	if prURL != "" {
+		actButtons = append(actButtons, compMenu.URL("🔗 Открыть PR", prURL))
+	}
+	if hasPlan {
+		actButtons = append(actButtons, compMenu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(taskID)))
+	}
+	compMenu.Inline(compMenu.Row(actButtons...))
+
+	if len(compMenu.InlineKeyboard) != 1 || len(compMenu.InlineKeyboard[0]) != 2 {
+		t.Fatalf("expected 1 row with 2 buttons in completion menu")
+	}
+	if !strings.Contains(compMenu.InlineKeyboard[0][1].Text, "Скачать план") {
+		t.Errorf("expected plan download button in completion menu")
+	}
+}
+
+func TestSendPlanForApprovalSingleMessageFormatting(t *testing.T) {
+	taskID := 12
+	projectName := "plan-project"
+	initialPrompt := strings.Repeat("Разработай сложный модуль. ", 15) // ~400 chars
+	planText := strings.Repeat("1. Шаг архитектурного плана.\n", 60) // ~1800 runes
+
+	promptSnippet := utils.TruncateString(initialPrompt, 250)
+	if len([]rune(promptSnippet)) > 250 {
+		t.Errorf("expected prompt snippet to be <= 250 runes")
+	}
+
+	planRunes := []rune(planText)
+	isLong := len(planRunes) > maxInlinePlanRunes
+	if !isLong {
+		t.Fatalf("expected plan to be long (> %d), got %d", maxInlinePlanRunes, len(planRunes))
+	}
+
+	summary := utils.ExtractPlanSummary(planText, maxInlinePlanRunes)
+	summaryHTML := utils.MarkdownToTelegramHTML(summary)
+
+	msgText := fmt.Sprintf(
+		"📋 <b>План реализации задачи #%d</b> (<code>%s</code>):\n\n"+
+			"📝 <b>Задача:</b> <i>«%s»</i>\n\n"+
+			"%s\n\n📄 <i>Полный детальный план (%d знаков):</i> /planfile_%d (или кнопка ниже)",
+		taskID, html.EscapeString(projectName),
+		html.EscapeString(promptSnippet),
+		summaryHTML, len(planRunes), taskID,
+	)
+
+	if !strings.Contains(msgText, "/planfile_12") {
+		t.Errorf("expected plan message to contain /planfile_12 link")
+	}
+	if !strings.Contains(msgText, "Задача:</b> <i>«") {
+		t.Errorf("expected plan message to contain task section")
+	}
+	if strings.Contains(msgText, initialPrompt) {
+		t.Errorf("expected initialPrompt to be truncated in plan message")
+	}
+	if len([]rune(msgText)) > 3000 {
+		t.Errorf("expected plan message to comfortably fit in one Telegram message (<3000 runes), got %d", len([]rune(msgText)))
+	}
+}
 
