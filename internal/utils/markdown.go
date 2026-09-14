@@ -562,3 +562,49 @@ func ExtractPlanVariantOptions(planText string) []string {
 	}
 	return variants
 }
+
+// ExtractPlanSummary формирует краткое резюме плана для отправки в Telegram-сообщении,
+// если полный текст плана слишком велик и прикрепляется файлом.
+func ExtractPlanSummary(planText string, maxRunes int) string {
+	planText = strings.TrimSpace(planText)
+	if planText == "" {
+		return ""
+	}
+	if maxRunes <= 0 {
+		maxRunes = 2000
+	}
+
+	runes := []rune(planText)
+	if len(runes) <= maxRunes {
+		return planText
+	}
+
+	subRunes := runes[:maxRunes]
+	subText := string(subRunes)
+
+	// Ищем логическую границу (конец абзаца, заголовка или списка) в диапазоне от 40% до 100% от maxRunes
+	cutIdx := -1
+	minBound := len(subText) * 4 / 10
+
+	if idx := strings.LastIndex(subText, "\n\n"); idx > minBound {
+		cutIdx = idx
+	} else if idx := strings.LastIndex(subText, "\n#"); idx > minBound {
+		cutIdx = idx
+	} else if idx := strings.LastIndex(subText, "\n"); idx > minBound {
+		cutIdx = idx
+	} else if idx := strings.LastIndex(subText, " "); idx > minBound {
+		cutIdx = idx
+	}
+
+	summary := subText
+	if cutIdx > 0 {
+		summary = strings.TrimSpace(subText[:cutIdx])
+	}
+
+	// Закрываем незакрытые блоки кода (```) в резюме, если они были разорваны срезом
+	if strings.Count(summary, "```")%2 != 0 {
+		summary += "\n```"
+	}
+
+	return summary
+}
