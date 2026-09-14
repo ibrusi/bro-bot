@@ -102,6 +102,17 @@ func Start() {
 		log.Fatal("Некорректный формат QUESTION_TIMEOUT")
 	}
 
+	config.StepTimeout = 30 * time.Minute
+	if envStepTimeout := os.Getenv("STEP_TIMEOUT"); envStepTimeout != "" {
+		if d, err := time.ParseDuration(envStepTimeout); err == nil && d > 0 {
+			config.StepTimeout = d
+		} else if sec, err := strconv.Atoi(envStepTimeout); err == nil && sec > 0 {
+			config.StepTimeout = time.Duration(sec) * time.Second
+		} else {
+			log.Printf("Предупреждение: некорректный формат STEP_TIMEOUT, используется значение по умолчанию %v", config.StepTimeout)
+		}
+	}
+
 	if os.Getenv("BOT_SERVICE_NAME") == "" {
 		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр BOT_SERVICE_NAME не задан")
 	}
@@ -197,6 +208,7 @@ func Start() {
 				"• /add [id] &lt;текст&gt; — отправить дополнение конкретной задаче\n"+
 				"• /new [проект] &lt;текст&gt; — создать новую задачу в текущем проекте\n"+
 				"• /resume [id] [ответ] — возобновить задачу или передать ответ\n"+
+				"• /retry [id] — перезапустить задачу с чистой сессией agy\n"+
 				"• /pause [id] — приостановить задачу\n"+
 				"• /status [id] — подробный статус, логи и очередь правок\n"+
 				"• /cancel [id] — остановить задачу\n\n"+
@@ -1054,14 +1066,36 @@ func Start() {
 			return c.Send(fmt.Sprintf("ℹ️ Задача #%d не находится на паузе (текущий статус: %s).", taskID, status.RussianTitle()))
 		}
 
-		if len(opts) > 0 {
+		if lastQ != "" && len(opts) > 0 {
 			menu := buildQuestionMarkup(task)
 			promptMsg := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Выберите вариант кнопкой или ответьте сообщением в чат:</i>",
 				taskID, html.EscapeString(proj), utils.MarkdownToTelegramHTML(lastQ))
 			return c.Send(promptMsg, menu, tele.ModeHTML)
 		}
 
-		return c.Send(fmt.Sprintf("💡 Чтобы возобновить задачу #%d, отправьте ответ в чат (Reply) или <code>/resume %d &lt;ответ&gt;</code>.", taskID, taskID), tele.ModeHTML)
+		if lastQ != "" {
+			return c.Send(fmt.Sprintf("💡 Задача #%d ждёт ответа на вопрос:\n\n<i>«%s»</i>\n\nОтправьте ответ сообщением в чат или <code>/resume %d &lt;ответ&gt;</code>.",
+				taskID, html.EscapeString(lastQ), taskID), tele.ModeHTML)
+		}
+
+		// Если вопроса не было (например, пауза по таймауту выполнения шага) — возобновляем выполнение
+		resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, "")
+		if err != nil {
+			return c.Send(fmt.Sprintf("❌ Не удалось возобновить задачу #%d: %v", taskID, err), tele.ModeHTML)
+		}
+		syncLegacySession(resumedTask)
+
+		resumedTask.Lock()
+		resStatus := resumedTask.Status
+		resumedTask.Unlock()
+
+		if resStatus == domain.TaskStatusQueued {
+			return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.\nОна запустится автоматически, как только проект освободится.", taskID, html.EscapeString(proj)), tele.ModeHTML)
+		}
+
+		workDir := filepath.Join(config.ProjectsRoot, proj)
+		go runAgentTaskPipeline(b, c.Recipient(), resumedTask, workDir)
+		return c.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с сохранённой сессии agy!</b>", taskID, html.EscapeString(proj)), tele.ModeHTML)
 	})
 
 	b.Handle("/pause", func(c tele.Context) error {
@@ -1187,6 +1221,69 @@ func Start() {
 		workDir := filepath.Join(config.ProjectsRoot, proj)
 		go runAgentTaskPipeline(b, c.Recipient(), resumedTask, workDir)
 		return c.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code>!</b>", targetID, html.EscapeString(proj)), tele.ModeHTML)
+	})
+
+	b.Handle("/retry", func(c tele.Context) error {
+		args := c.Args()
+		var targetID int
+		if len(args) > 0 {
+			idStr := strings.TrimPrefix(args[0], "#")
+			targetID, _ = strconv.Atoi(idStr)
+		}
+		if targetID == 0 {
+			active := domain.GlobalTaskManager.GetActiveTask()
+			if active != nil {
+				targetID = active.ID
+			}
+		}
+		if targetID == 0 {
+			all := domain.GlobalTaskManager.ListTasks()
+			for i := len(all) - 1; i >= 0; i-- {
+				t := all[i]
+				t.Lock()
+				st := t.Status
+				t.Unlock()
+				if st == domain.TaskStatusPaused || st == domain.TaskStatusFailed {
+					targetID = t.ID
+					break
+				}
+			}
+		}
+		if targetID == 0 {
+			return c.Send("❌ Укажите номер задачи. Пример: <code>/retry 2</code>", tele.ModeHTML)
+		}
+
+		task := domain.GlobalTaskManager.GetTask(targetID)
+		if task == nil {
+			return c.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), tele.ModeHTML)
+		}
+
+		task.Lock()
+		if task.Status == domain.TaskStatusRunning || task.Status == domain.TaskStatusPlanning {
+			task.Unlock()
+			return c.Send(fmt.Sprintf("ℹ️ Задача #%d сейчас выполняется. Сначала остановите её: <code>/cancel %d</code>", targetID, targetID), tele.ModeHTML)
+		}
+		proj := task.Project
+		task.ConversationID = ""
+		task.Status = domain.TaskStatusRunning
+		if task.RequiresPlan && !task.PlanApproved {
+			task.Status = domain.TaskStatusPlanning
+		}
+		task.CurrentPrompt = task.InitialPrompt
+		task.LastPRURL = ""
+		task.LastQuestion = ""
+		task.QuestionOptions = nil
+		task.StartedAt = time.Now()
+		task.RecentLogs = nil
+		task.FullOutput.Reset()
+		task.Unlock()
+
+		domain.GlobalTaskManager.ClearTaskConversationID(targetID)
+		syncLegacySession(task)
+
+		workDir := filepath.Join(config.ProjectsRoot, proj)
+		go runAgentTaskPipeline(b, c.Recipient(), task, workDir)
+		return c.Send(fmt.Sprintf("🔄 <b>Задача #%d перезапущена с чистого листа</b> (новая сессия agy в <code>%s</code>).", targetID, html.EscapeString(proj)), tele.ModeHTML)
 	})
 
 	b.Handle("/restart", func(c tele.Context) error {
@@ -1344,21 +1441,25 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 
 		var planningPrompt string
 		if existingPlan == "" {
-			planningPrompt = fmt.Sprintf(
-				"Задача пользователя: %s%s\n\n"+
-					"ВНИМАНИЕ: Сейчас выполняется ЭТАП ПЛАНИРОВАНИЯ.\n"+
-					"НЕ создавай git-ветку, НЕ модифицируй файлы проекта, НЕ делай git commit, НЕ делай git push и НЕ открывай PR.\n"+
-					"Твоя цель сейчас:\n"+
-					"1. Тщательно исследуй кодовую базу и архитектуру проекта.\n"+
-					"2. Сформируй чёткий, пошаговый и структурированный план реализации задачи.\n"+
-					"3. Опиши:\n"+
-					"   - Какие файлы и компоненты будут созданы или изменены.\n"+
-					"   - Ключевые архитектурные решения и интерфейсы.\n"+
-					"   - План тестирования и проверки работоспособности.\n"+
-					"   - Возможные риски, краевые случаи и пути их решения.\n"+
-					"4. Выведи итоговый план в понятном и структурированном виде для пользователя.",
-				task.InitialPrompt, pendingSection,
-			)
+			if task.ConversationID != "" && curPrompt != "" && curPrompt != task.InitialPrompt {
+				planningPrompt = curPrompt
+			} else {
+				planningPrompt = fmt.Sprintf(
+					"Задача пользователя: %s%s\n\n"+
+						"ВНИМАНИЕ: Сейчас выполняется ЭТАП ПЛАНИРОВАНИЯ.\n"+
+						"НЕ создавай git-ветку, НЕ модифицируй файлы проекта, НЕ делай git commit, НЕ делай git push и НЕ открывай PR.\n"+
+						"Твоя цель сейчас:\n"+
+						"1. Тщательно исследуй кодовую базу и архитектуру проекта.\n"+
+						"2. Сформируй чёткий, пошаговый и структурированный план реализации задачи.\n"+
+						"3. Опиши:\n"+
+						"   - Какие файлы и компоненты будут созданы или изменены.\n"+
+						"   - Ключевые архитектурные решения и интерфейсы.\n"+
+						"   - План тестирования и проверки работоспособности.\n"+
+						"   - Возможные риски, краевые случаи и пути их решения.\n"+
+						"4. Выведи итоговый план в понятном и структурированном виде для пользователя.",
+					task.InitialPrompt, pendingSection,
+				)
+			}
 		} else {
 			feedback := curPrompt
 			if feedback == "" {
@@ -1387,10 +1488,10 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 
 			syncLegacySession(task)
 
-			executeStepForTask(b, recipient, task, workDir, planningPrompt, activeModel)
+			res := executeStepForTask(b, recipient, task, workDir, planningPrompt, activeModel)
 
 			task.Lock()
-			if task.Status == domain.TaskStatusCancelled {
+			if task.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
 				task.Unlock()
 				checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
 				return
@@ -1398,13 +1499,23 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 			st := task.Status
 			task.Unlock()
 
-			if st == domain.TaskStatusWaitingInput {
+			if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
 				answer, ok := waitForTaskInput(b, recipient, task, projectName, taskID)
 				if !ok {
 					return
 				}
 				planningPrompt = answer
 				continue
+			}
+
+			if res.Outcome == StepOutcomeTimeout {
+				handleTaskStepTimeout(b, recipient, task, projectName, taskID, true)
+				return
+			}
+
+			if res.Outcome == StepOutcomeError {
+				handleTaskStepError(b, recipient, task, projectName, taskID, res.Error)
+				return
 			}
 
 			break
@@ -1446,10 +1557,10 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 
 		syncLegacySession(task)
 
-		executeStepForTask(b, recipient, task, workDir, currentPrompt, activeModel)
+		res := executeStepForTask(b, recipient, task, workDir, currentPrompt, activeModel)
 
 		task.Lock()
-		if task.Status == domain.TaskStatusCancelled {
+		if task.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
 			task.Unlock()
 			checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
 			return
@@ -1457,13 +1568,23 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 		st := task.Status
 		task.Unlock()
 
-		if st == domain.TaskStatusWaitingInput {
+		if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
 			answer, ok := waitForTaskInput(b, recipient, task, projectName, taskID)
 			if !ok {
 				return
 			}
 			currentPrompt = answer
 			continue
+		}
+
+		if res.Outcome == StepOutcomeTimeout {
+			handleTaskStepTimeout(b, recipient, task, projectName, taskID, false)
+			return
+		}
+
+		if res.Outcome == StepOutcomeError {
+			handleTaskStepError(b, recipient, task, projectName, taskID, res.Error)
+			return
 		}
 
 		task.Lock()
@@ -1527,10 +1648,32 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 	}
 }
 
+type StepOutcome int
+
+const (
+	StepOutcomeSuccess StepOutcome = iota
+	StepOutcomeWaitingInput
+	StepOutcomeTimeout
+	StepOutcomeCancelled
+	StepOutcomeError
+)
+
+type StepResult struct {
+	Outcome      StepOutcome
+	Error        error
+	HasResult    bool
+	ResultStatus string
+	PRURL        string
+}
+
 func buildAgyArgs(convID, modelName, prompt string) []string {
+	stepTimeout := config.StepTimeout
+	if stepTimeout <= 0 {
+		stepTimeout = 30 * time.Minute
+	}
 	args := []string{
 		"--dangerously-skip-permissions",
-		"--print-timeout", "30m",
+		"--print-timeout", stepTimeout.String(),
 		"--output-format", "stream-json",
 	}
 	if convID != "" {
@@ -1541,11 +1684,15 @@ func buildAgyArgs(convID, modelName, prompt string) []string {
 	return args
 }
 
-func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession, workDir, prompt, modelName string) {
+func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession, workDir, prompt, modelName string) StepResult {
 	projectName := task.Project
 	taskID := task.ID
 
 	task.Lock()
+	if task.Status == domain.TaskStatusCancelled {
+		task.Unlock()
+		return StepResult{Outcome: StepOutcomeCancelled}
+	}
 	isPlanning := task.Status == domain.TaskStatusPlanning
 	task.Unlock()
 
@@ -1573,7 +1720,15 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 	task.Unlock()
 
 	args := buildAgyArgs(convID, modelName, prompt)
-	cmd := exec.Command("agy", args...)
+
+	stepTimeout := config.StepTimeout
+	if stepTimeout <= 0 {
+		stepTimeout = 30 * time.Minute
+	}
+	stepCtx, stepCancel := context.WithTimeout(context.Background(), stepTimeout+2*time.Minute)
+	defer stepCancel()
+
+	cmd := exec.CommandContext(stepCtx, "agy", args...)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
 		"TERM=dumb",
@@ -1588,7 +1743,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 		task.Status = domain.TaskStatusFailed
 		task.Unlock()
 		syncLegacySession(task)
-		return
+		return StepResult{Outcome: StepOutcomeError, Error: err}
 	}
 	defer func() { _ = ptmx.Close() }()
 
@@ -1664,6 +1819,10 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 		}
 	}()
 
+	var stepTimedOut bool
+	var hasResult bool
+	var resultStatus string
+
 	go func() {
 		for scanner.Scan() {
 			rawLine := scanner.Text()
@@ -1671,6 +1830,10 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 			cleanLine = strings.TrimSpace(cleanLine)
 			if cleanLine == "" {
 				continue
+			}
+
+			if strings.Contains(cleanLine, "print timeout after") {
+				stepTimedOut = true
 			}
 
 			evt, err := domain.ParseStreamEvent(cleanLine)
@@ -1683,9 +1846,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 					convID = evt.Result.ConversationID
 				}
 				if convID != "" {
-					task.Lock()
-					task.ConversationID = convID
-					task.Unlock()
+					domain.GlobalTaskManager.SetTaskConversationID(taskID, convID)
 					domain.GlobalTokenTracker.SetConversationID(convID)
 				}
 
@@ -1743,6 +1904,8 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 
 				if evt.Result != nil {
 					res := evt.Result
+					hasResult = true
+					resultStatus = res.Status
 					if res.Usage != nil {
 						domain.GlobalTokenTracker.RecordResultUsage(*res.Usage, res.DurationSeconds, res.NumTurns)
 					}
@@ -1804,15 +1967,120 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 
 	<-done
 	close(stopLiveUpdate)
-	_ = cmd.Wait()
+	waitErr := cmd.Wait()
 
 	task.Lock()
 	if task.Stdin != nil {
 		_ = task.Stdin.Close()
 		task.Stdin = nil
 	}
+	isCancelled := (task.Status == domain.TaskStatusCancelled)
+	isWaitingInput := (task.Status == domain.TaskStatusWaitingInput)
+	lastPR := task.LastPRURL
 	task.Unlock()
 	syncLegacySession(task)
+
+	if isCancelled {
+		return StepResult{Outcome: StepOutcomeCancelled, PRURL: lastPR}
+	}
+	if isWaitingInput {
+		return StepResult{
+			Outcome:      StepOutcomeWaitingInput,
+			PRURL:        lastPR,
+			HasResult:    hasResult,
+			ResultStatus: resultStatus,
+		}
+	}
+	if stepTimedOut || stepCtx.Err() == context.DeadlineExceeded {
+		return StepResult{Outcome: StepOutcomeTimeout, Error: waitErr, PRURL: lastPR}
+	}
+	if waitErr != nil && !hasResult {
+		return StepResult{Outcome: StepOutcomeError, Error: waitErr, PRURL: lastPR}
+	}
+	return StepResult{
+		Outcome:      StepOutcomeSuccess,
+		HasResult:    hasResult,
+		ResultStatus: resultStatus,
+		PRURL:        lastPR,
+	}
+}
+
+func handleTaskStepTimeout(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession, projectName string, taskID int, isPlanning bool) {
+	task.Lock()
+	task.Status = domain.TaskStatusPaused
+	convID := task.ConversationID
+	task.Unlock()
+
+	syncLegacySession(task)
+
+	stepTimeout := config.StepTimeout
+	if stepTimeout <= 0 {
+		stepTimeout = 30 * time.Minute
+	}
+
+	phaseName := "выполнения"
+	if isPlanning {
+		phaseName = "планирования"
+	}
+
+	task.AppendLog(fmt.Sprintf("⏸ Превышен таймаут %s (%v). Сессия %s сохранена.", phaseName, stepTimeout, convID))
+
+	resumeMenu := buildResumeMarkup(taskID)
+	timeoutMsg := fmt.Sprintf(
+		"⏸ <b>Задача #%d (<code>%s</code>) приостановлена по таймауту %s (%v).</b>\n\n"+
+			"🧵 <b>Сессия agy:</b> <code>%s</code> (сохранена)\n"+
+			"Очередь проекта освобождена для других задач.\n\n"+
+			"Контекст не потерян! Чтобы продолжить с этого места, нажмите <b>«▶️ Возобновить задачу»</b> или введите <code>/resume %d [указания]</code>.",
+		taskID, html.EscapeString(projectName), phaseName, stepTimeout,
+		html.EscapeString(convID), taskID,
+	)
+
+	if b != nil && recipient != nil {
+		defer func() { _ = recover() }()
+		tMsg, _ := b.Send(recipient, timeoutMsg, resumeMenu, tele.ModeHTML)
+		if tMsg != nil {
+			domain.GlobalTaskManager.RegisterMessageTask(tMsg.ID, taskID)
+		}
+	}
+
+	checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+}
+
+func handleTaskStepError(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession, projectName string, taskID int, err error) {
+	task.Lock()
+	task.Status = domain.TaskStatusFailed
+	task.FinishedAt = time.Now()
+	convID := task.ConversationID
+	task.Unlock()
+
+	syncLegacySession(task)
+
+	errText := "неизвестная ошибка"
+	if err != nil {
+		errText = err.Error()
+	}
+
+	task.AppendLog(fmt.Sprintf("❌ Ошибка выполнения шага: %s", errText))
+
+	retryMenu := buildResumeMarkup(taskID)
+	msg := fmt.Sprintf(
+		"❌ <b>Ошибка выполнения задачи #%d (<code>%s</code>):</b>\n\n"+
+			"<code>%s</code>\n\n"+
+			"🧵 <b>Сессия agy:</b> <code>%s</code>\n\n"+
+			"Попробуйте возобновить: <code>/resume %d</code> или перезапустить с чистого листа: <code>/retry %d</code>.",
+		taskID, html.EscapeString(projectName), html.EscapeString(errText),
+		html.EscapeString(convID), taskID, taskID,
+	)
+
+	if b != nil && recipient != nil {
+		defer func() { _ = recover() }()
+		eMsg, _ := b.Send(recipient, msg, retryMenu, tele.ModeHTML)
+		if eMsg != nil {
+			domain.GlobalTaskManager.RegisterMessageTask(eMsg.ID, taskID)
+		}
+	}
+
+	checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
 }
 
 func handleCreateNewTask(b *tele.Bot, c tele.Context, text string) error {
@@ -2447,6 +2715,7 @@ func getDefaultCommands() []tele.Command {
 		{Text: "add", Description: "[id] <текст> Дополнить задачу текстом"},
 		{Text: "new", Description: "[проект] <текст> Создать новую задачу в проекте"},
 		{Text: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
+		{Text: "retry", Description: "[id] Перезапустить задачу с новой сессией agy"},
 		{Text: "pause", Description: "[id] Приостановить выполнение задачи"},
 		{Text: "cancel", Description: "[id] Остановить задачу"},
 		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},

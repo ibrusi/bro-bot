@@ -251,6 +251,15 @@ func (s *SQLiteStorage) UpdateTaskFinished(ctx context.Context, id int, status s
 	return err
 }
 
+// UpdateTaskConversationID немедленно сохраняет идентификатор сессии agy для задачи.
+func (s *SQLiteStorage) UpdateTaskConversationID(ctx context.Context, id int, conversationID string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET conversation_id = ? WHERE id = ?`, conversationID, id)
+	return err
+}
+
 func scanTaskRow(scanner interface{ Scan(dest ...interface{}) error }) (*TaskRecord, error) {
 	var (
 		task            TaskRecord

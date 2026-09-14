@@ -11,6 +11,7 @@ var (
 	AdminID         int64
 	ProjectsRoot    string
 	QuestionTimeout time.Duration
+	StepTimeout     time.Duration
 	BotDir          string
 	DBPath          string
 )
