@@ -15,25 +15,31 @@ import (
 
 func TestParseSystemFlags(t *testing.T) {
 	tests := []struct {
-		args      []string
-		wantPull  bool
-		wantForce bool
+		args       []string
+		wantPull   bool
+		wantForce  bool
+		wantBranch string
 	}{
-		{args: []string{}, wantPull: false, wantForce: false},
-		{args: []string{"pull"}, wantPull: true, wantForce: false},
-		{args: []string{"-p"}, wantPull: true, wantForce: false},
-		{args: []string{"force"}, wantPull: false, wantForce: true},
-		{args: []string{"-f"}, wantPull: false, wantForce: true},
-		{args: []string{"pull", "force"}, wantPull: true, wantForce: true},
-		{args: []string{"FORCE", "PULL"}, wantPull: true, wantForce: true},
-		{args: []string{"unknown", "arg"}, wantPull: false, wantForce: false},
+		{args: []string{}, wantPull: false, wantForce: false, wantBranch: ""},
+		{args: []string{"pull"}, wantPull: true, wantForce: false, wantBranch: ""},
+		{args: []string{"-p"}, wantPull: true, wantForce: false, wantBranch: ""},
+		{args: []string{"force"}, wantPull: false, wantForce: true, wantBranch: ""},
+		{args: []string{"-f"}, wantPull: false, wantForce: true, wantBranch: ""},
+		{args: []string{"pull", "force"}, wantPull: true, wantForce: true, wantBranch: ""},
+		{args: []string{"FORCE", "PULL"}, wantPull: true, wantForce: true, wantBranch: ""},
+		{args: []string{"branch", "feat/my-branch"}, wantPull: false, wantForce: false, wantBranch: "feat/my-branch"},
+		{args: []string{"-b", "test"}, wantPull: false, wantForce: false, wantBranch: "test"},
+		{args: []string{"--branch", "main"}, wantPull: false, wantForce: false, wantBranch: "main"},
+		{args: []string{"branch=feat/test"}, wantPull: false, wantForce: false, wantBranch: "feat/test"},
+		{args: []string{"--branch=feat/test"}, wantPull: false, wantForce: false, wantBranch: "feat/test"},
+		{args: []string{"unknown", "arg"}, wantPull: false, wantForce: false, wantBranch: ""},
 	}
 
 	for _, tt := range tests {
 		got := parseSystemFlags(tt.args)
-		if got.Pull != tt.wantPull || got.Force != tt.wantForce {
-			t.Errorf("parseSystemFlags(%v) = {Pull: %v, Force: %v}, want {Pull: %v, Force: %v}",
-				tt.args, got.Pull, got.Force, tt.wantPull, tt.wantForce)
+		if got.Pull != tt.wantPull || got.Force != tt.wantForce || got.Branch != tt.wantBranch {
+			t.Errorf("parseSystemFlags(%v) = {Pull: %v, Force: %v, Branch: %v}, want {Pull: %v, Force: %v, Branch: %v}",
+				tt.args, got.Pull, got.Force, got.Branch, tt.wantPull, tt.wantForce, tt.wantBranch)
 		}
 	}
 }
@@ -83,7 +89,10 @@ func TestPerformBuildInvalidCode(t *testing.T) {
 	badGo := `package system
 func main() { syntax error here
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(badGo), 0644); err != nil {
+	if err := os.MkdirAll(filepath.Join(tmpDir, "cmd", "bot"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "cmd", "bot", "main.go"), []byte(badGo), 0644); err != nil {
 		t.Fatal(err)
 	}
 	// Write go.mod
@@ -116,7 +125,10 @@ func TestPerformBuildValidCode(t *testing.T) {
 import "fmt"
 func main() { fmt.Println("hello") }
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(validGo), 0644); err != nil {
+	if err := os.MkdirAll(filepath.Join(tmpDir, "cmd", "bot"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "cmd", "bot", "main.go"), []byte(validGo), 0644); err != nil {
 		t.Fatal(err)
 	}
 	goMod := `module testbot
