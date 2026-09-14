@@ -1,10 +1,14 @@
-package main
+package handlers
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"tg-agent-bot/internal/config"
+	"tg-agent-bot/internal/domain"
+	"tg-agent-bot/internal/models"
+	"tg-agent-bot/internal/utils"
 	"time"
 
 	tele "gopkg.in/telebot.v3"
@@ -24,9 +28,9 @@ func TestInitDefaultProject(t *testing.T) {
 	os.Unsetenv("DEFAULT_PROJECT")
 	initDefaultProject(tmpDir)
 
-	projectState.RLock()
-	cur := projectState.currentProject
-	projectState.RUnlock()
+	config.ProjectState.RLock()
+	cur := config.ProjectState.CurrentProject
+	config.ProjectState.RUnlock()
 
 	if cur != "tg-bot-agent" {
 		t.Errorf("expected tg-bot-agent, got %s", cur)
@@ -37,9 +41,9 @@ func TestInitDefaultProject(t *testing.T) {
 	defer os.Unsetenv("DEFAULT_PROJECT")
 	initDefaultProject(tmpDir)
 
-	projectState.RLock()
-	cur = projectState.currentProject
-	projectState.RUnlock()
+	config.ProjectState.RLock()
+	cur = config.ProjectState.CurrentProject
+	config.ProjectState.RUnlock()
 
 	if cur != "aaa-project" {
 		t.Errorf("expected aaa-project, got %s", cur)
@@ -53,9 +57,9 @@ func TestInitDefaultProject(t *testing.T) {
 	os.Setenv("DEFAULT_PROJECT", "non-existent")
 	initDefaultProject(otherDir)
 
-	projectState.RLock()
-	cur = projectState.currentProject
-	projectState.RUnlock()
+	config.ProjectState.RLock()
+	cur = config.ProjectState.CurrentProject
+	config.ProjectState.RUnlock()
 
 	if cur != "zzz-fallback" {
 		t.Errorf("expected zzz-fallback, got %s", cur)
@@ -63,17 +67,17 @@ func TestInitDefaultProject(t *testing.T) {
 }
 
 func TestInitDefaultModel(t *testing.T) {
-	if modelRegistry == nil {
-		modelRegistry = NewModelRegistry(10 * time.Minute)
+	if models.GlobalModelRegistry == nil {
+		models.GlobalModelRegistry = models.NewModelRegistry(10 * time.Minute)
 	}
 
 	// Case 1: Unset DEFAULT_MODEL -> gemini-3.1-pro-high
 	os.Unsetenv("DEFAULT_MODEL")
 	initDefaultModel()
 
-	projectState.RLock()
-	cur := projectState.currentModel
-	projectState.RUnlock()
+	config.ProjectState.RLock()
+	cur := config.ProjectState.CurrentModel
+	config.ProjectState.RUnlock()
 
 	if cur != "gemini-3.1-pro-high" {
 		t.Errorf("expected default model gemini-3.1-pro-high, got %s", cur)
@@ -84,9 +88,9 @@ func TestInitDefaultModel(t *testing.T) {
 	defer os.Unsetenv("DEFAULT_MODEL")
 	initDefaultModel()
 
-	projectState.RLock()
-	cur = projectState.currentModel
-	projectState.RUnlock()
+	config.ProjectState.RLock()
+	cur = config.ProjectState.CurrentModel
+	config.ProjectState.RUnlock()
 
 	if cur != "gemini-3.8-flash-medium" {
 		t.Errorf("expected gemini-3.8-flash-medium for alias 'flash', got %s", cur)
@@ -96,9 +100,9 @@ func TestInitDefaultModel(t *testing.T) {
 	os.Setenv("DEFAULT_MODEL", "gemini-3.1-pro-high")
 	initDefaultModel()
 
-	projectState.RLock()
-	cur = projectState.currentModel
-	projectState.RUnlock()
+	config.ProjectState.RLock()
+	cur = config.ProjectState.CurrentModel
+	config.ProjectState.RUnlock()
 
 	if cur != "gemini-3.1-pro-high" {
 		t.Errorf("expected gemini-3.1-pro-high, got %s", cur)
@@ -147,14 +151,14 @@ func TestIsConfirmationText(t *testing.T) {
 }
 
 func TestPlanModeState(t *testing.T) {
-	projectState.Lock()
-	origMode := projectState.planMode
-	projectState.planMode = true
-	isPlan := projectState.planMode
-	projectState.planMode = false
-	isPlanFalse := projectState.planMode
-	projectState.planMode = origMode
-	projectState.Unlock()
+	config.ProjectState.Lock()
+	origMode := config.ProjectState.PlanMode
+	config.ProjectState.PlanMode = true
+	isPlan := config.ProjectState.PlanMode
+	config.ProjectState.PlanMode = false
+	isPlanFalse := config.ProjectState.PlanMode
+	config.ProjectState.PlanMode = origMode
+	config.ProjectState.Unlock()
 
 	if !isPlan {
 		t.Errorf("expected planMode to be true")
@@ -200,7 +204,7 @@ func TestBuildAgyArgs(t *testing.T) {
 }
 
 func TestBuildQuestionMarkup(t *testing.T) {
-	task := &TaskSession{
+	task := &domain.TaskSession{
 		ID:              42,
 		QuestionOptions: []string{"Вариант 1", "Вариант 2", "Вариант 3"},
 	}
@@ -267,7 +271,7 @@ func TestPlanApprovalWithVariantsMarkup(t *testing.T) {
 Вариант 1: Использовать Docker
 Вариант 2: Использовать Systemd
 `
-	variants := ExtractPlanVariantOptions(planWithVariants)
+	variants := utils.ExtractPlanVariantOptions(planWithVariants)
 	if len(variants) != 2 {
 		t.Fatalf("expected 2 variants, got %d", len(variants))
 	}
@@ -352,10 +356,10 @@ func TestGetDefaultCommands(t *testing.T) {
 }
 
 func TestPlanApprovalPreservesPendingFollowups(t *testing.T) {
-	tm := NewTaskManager()
+	tm := domain.NewTaskManager()
 	task := tm.CreateTaskWithPlan("test-proj", "flash", "Build feature", dummyRecipient{}, true)
 	task.Lock()
-	task.Status = TaskStatusWaitingApproval
+	task.Status = domain.TaskStatusWaitingApproval
 	task.Plan = "1. Step one\n2. Step two"
 	task.PendingFollowups = []string{"add extra validation", "include unit test"}
 	task.Unlock()
@@ -363,7 +367,7 @@ func TestPlanApprovalPreservesPendingFollowups(t *testing.T) {
 	// Simulate plan approval logic
 	task.Lock()
 	task.PlanApproved = true
-	task.Status = TaskStatusRunning
+	task.Status = domain.TaskStatusRunning
 	task.RecentLogs = nil
 	// Verify that PendingFollowups is NOT cleared
 	followupsCount := len(task.PendingFollowups)
@@ -379,43 +383,45 @@ func TestPlanApprovalPreservesPendingFollowups(t *testing.T) {
 
 func TestWaitForTaskInputPlanningStatusLogic(t *testing.T) {
 	// When task requires plan and plan is not approved
-	task := &TaskSession{
+	task := &domain.TaskSession{
 		ID:           1,
 		RequiresPlan: true,
 		PlanApproved: false,
-		Status:       TaskStatusWaitingInput,
+		Status:       domain.TaskStatusWaitingInput,
 	}
 
 	task.Lock()
 	if task.RequiresPlan && !task.PlanApproved {
-		task.Status = TaskStatusPlanning
+		task.Status = domain.TaskStatusPlanning
 	} else {
-		task.Status = TaskStatusRunning
+		task.Status = domain.TaskStatusRunning
 	}
 	task.Unlock()
 
-	if task.Status != TaskStatusPlanning {
-		t.Errorf("expected status TaskStatusPlanning, got %s", task.Status)
+	if task.Status != domain.TaskStatusPlanning {
+		t.Errorf("expected status domain.TaskStatusPlanning, got %s", task.Status)
 	}
 
 	// When task does not require plan or is approved
-	task2 := &TaskSession{
+	task2 := &domain.TaskSession{
 		ID:           2,
 		RequiresPlan: true,
 		PlanApproved: true,
-		Status:       TaskStatusWaitingInput,
+		Status:       domain.TaskStatusWaitingInput,
 	}
 
 	task2.Lock()
 	if task2.RequiresPlan && !task2.PlanApproved {
-		task2.Status = TaskStatusPlanning
+		task2.Status = domain.TaskStatusPlanning
 	} else {
-		task2.Status = TaskStatusRunning
+		task2.Status = domain.TaskStatusRunning
 	}
 	task2.Unlock()
 
-	if task2.Status != TaskStatusRunning {
-		t.Errorf("expected status TaskStatusRunning, got %s", task2.Status)
+	if task2.Status != domain.TaskStatusRunning {
+		t.Errorf("expected status domain.TaskStatusRunning, got %s", task2.Status)
 	}
 }
 
+type dummyRecipient struct{}
+func (d dummyRecipient) Recipient() string { return "12345" }

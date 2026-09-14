@@ -1,4 +1,4 @@
-package main
+package domain
 
 import (
 	"encoding/json"
@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"tg-agent-bot/internal/models"
+	"tg-agent-bot/internal/utils"
 	"time"
 )
 
@@ -140,7 +142,7 @@ func (m TaskTokenMetrics) TotalTokensPerSecond() float64 {
 // FormatCompletionSummary формирует блок статистики для завершающего сообщения.
 func (m TaskTokenMetrics) FormatCompletionSummary() string {
 	dur := m.EffectiveDuration()
-	durStr := formatDurationHuman(time.Duration(dur * float64(time.Second)))
+	durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 	tps := m.TokensPerSecond()
 
 	var bldr strings.Builder
@@ -183,7 +185,7 @@ type TokenTracker struct {
 	totalDuration     float64
 }
 
-var tokenTracker = NewTokenTracker()
+var GlobalTokenTracker = NewTokenTracker()
 
 func NewTokenTracker() *TokenTracker {
 	return &TokenTracker{
@@ -421,7 +423,7 @@ func (t *TokenTracker) GetLastTaskStatusBlock() string {
 
 	u := t.lastTask.Usage
 	dur := t.lastTask.EffectiveDuration()
-	durStr := formatDurationHuman(time.Duration(dur * float64(time.Second)))
+	durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 	tps := t.lastTask.TokensPerSecond()
 
 	return fmt.Sprintf("📊 <b>Последняя задача (<code>%s</code>):</b>\n"+
@@ -448,7 +450,7 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 	if t.currentTask != nil {
 		cur := *t.currentTask
 		dur := cur.EffectiveDuration()
-		durStr := formatDurationHuman(time.Duration(dur * float64(time.Second)))
+		durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 		tps := cur.TokensPerSecond()
 		totalTps := cur.TotalTokensPerSecond()
 
@@ -482,7 +484,7 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 	if t.lastTask != nil {
 		last := *t.lastTask
 		dur := last.EffectiveDuration()
-		durStr := formatDurationHuman(time.Duration(dur * float64(time.Second)))
+		durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 		tps := last.TokensPerSecond()
 
 		bldr.WriteString("💤 <i>Сейчас нет активных задач.</i>\n\n")
@@ -510,7 +512,7 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 		if t.totalDuration > 0 && t.sessionUsage.OutputTokens > 0 {
 			avgSpeed = float64(t.sessionUsage.OutputTokens) / t.totalDuration
 		}
-		totalDurStr := formatDurationHuman(time.Duration(t.totalDuration * float64(time.Second)))
+		totalDurStr := FormatDurationHuman(time.Duration(t.totalDuration * float64(time.Second)))
 
 		bldr.WriteString("📈 <b>Общая статистика сессии бота:</b>\n")
 		bldr.WriteString(fmt.Sprintf("• Выполнено задач: <code>%d</code>\n", t.totalTasksRun))
@@ -556,7 +558,7 @@ func (t *TokenTracker) FormatShortLastTask() string {
 // ModelContextWindow возвращает размер окна контекста модели в токенах.
 func ModelContextWindow(model string) int64 {
 	m := strings.ToLower(model)
-	if aliased, ok := baseAliases[m]; ok {
+	if aliased, ok := models.BaseAliases[m]; ok {
 		m = aliased
 	}
 	switch {
@@ -752,7 +754,7 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 			formatThousands(freeTokens), freePercent))
 
 		dur := metrics.EffectiveDuration()
-		durStr := formatDurationHuman(time.Duration(dur * float64(time.Second)))
+		durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 		tps := metrics.TokensPerSecond()
 
 		bldr.WriteString("🚀 <b>Динамика сессии:</b>\n")
@@ -853,7 +855,7 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 			formatThousands(freeTokens), freePercent))
 
 		dur := last.EffectiveDuration()
-		durStr := formatDurationHuman(time.Duration(dur * float64(time.Second)))
+		durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 		tps := last.TokensPerSecond()
 
 		bldr.WriteString("🚀 <b>Итоги:</b>\n")
@@ -903,14 +905,14 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 }
 
 // formatToolAction возвращает понятное описание действия инструмента.
-func formatToolAction(name string, info *StreamToolInfo) string {
+func FormatToolAction(name string, info *StreamToolInfo) string {
 	if info == nil || info.Parameters == nil {
 		return fmt.Sprintf("🔧 %s", name)
 	}
 	switch name {
 	case "run_command":
 		if cmd, ok := info.Parameters["CommandLine"].(string); ok && cmd != "" {
-			return fmt.Sprintf("⚡ %s", truncateString(cmd, 70))
+			return fmt.Sprintf("⚡ %s", utils.TruncateString(cmd, 70))
 		}
 	case "replace_file_content":
 		if target, ok := info.Parameters["TargetFile"].(string); ok && target != "" {
@@ -926,11 +928,11 @@ func formatToolAction(name string, info *StreamToolInfo) string {
 		}
 	case "grep_search":
 		if q, ok := info.Parameters["Query"].(string); ok && q != "" {
-			return fmt.Sprintf("🔍 grep: %s", truncateString(q, 50))
+			return fmt.Sprintf("🔍 grep: %s", utils.TruncateString(q, 50))
 		}
 	case "find_by_name":
 		if pat, ok := info.Parameters["Pattern"].(string); ok && pat != "" {
-			return fmt.Sprintf("📁 find: %s", truncateString(pat, 50))
+			return fmt.Sprintf("📁 find: %s", utils.TruncateString(pat, 50))
 		}
 	}
 	return fmt.Sprintf("🔧 %s", name)
@@ -972,7 +974,7 @@ func formatCompact(n int64) string {
 	return fmt.Sprintf("%.1fM", val)
 }
 
-func formatDurationHuman(d time.Duration) string {
+func FormatDurationHuman(d time.Duration) string {
 	d = d.Round(time.Second)
 	totalSec := int64(d.Seconds())
 	if totalSec < 60 {

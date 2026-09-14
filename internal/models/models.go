@@ -1,4 +1,4 @@
-package main
+package models
 
 import (
 	"bufio"
@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"tg-agent-bot/internal/utils"
 	"time"
 )
 
@@ -29,7 +30,8 @@ type ModelRegistry struct {
 }
 
 var (
-	modelRegistry *ModelRegistry
+	BaseAliases   = baseAliases
+	GlobalModelRegistry *ModelRegistry
 
 	fallbackModels = []ModelInfo{
 		{ID: "gemini-3.1-pro-high", DisplayName: "Gemini 3.1 Pro (High)", Description: "🧠 По умолчанию: флагман, глубокий рефакторинг, архитектура, сложные алгоритмы"},
@@ -92,39 +94,39 @@ var (
 
 	baseAliases = map[string]string{
 		// Default
-		"default":           "gemini-3.1-pro-high",
+		"default": "gemini-3.1-pro-high",
 
 		// Flash 3.8
-		"flash":             "gemini-3.8-flash-medium",
-		"3.8":               "gemini-3.8-flash-medium",
-		"3.8-flash":         "gemini-3.8-flash-medium",
-		"gemini-3.8-flash":  "gemini-3.8-flash-medium",
-		"flash-high":        "gemini-3.8-flash-high",
-		"3.8-high":          "gemini-3.8-flash-high",
-		"flash-low":         "gemini-3.8-flash-low",
-		"3.8-low":           "gemini-3.8-flash-low",
+		"flash":            "gemini-3.8-flash-medium",
+		"3.8":              "gemini-3.8-flash-medium",
+		"3.8-flash":        "gemini-3.8-flash-medium",
+		"gemini-3.8-flash": "gemini-3.8-flash-medium",
+		"flash-high":       "gemini-3.8-flash-high",
+		"3.8-high":         "gemini-3.8-flash-high",
+		"flash-low":        "gemini-3.8-flash-low",
+		"3.8-low":          "gemini-3.8-flash-low",
 
 		// Flash 3.7
-		"3.7":               "gemini-3.7-flash-medium",
-		"3.7-flash":         "gemini-3.7-flash-medium",
-		"gemini-3.7-flash":  "gemini-3.7-flash-medium",
-		"3.7-high":          "gemini-3.7-flash-high",
-		"3.7-low":           "gemini-3.7-flash-low",
+		"3.7":              "gemini-3.7-flash-medium",
+		"3.7-flash":        "gemini-3.7-flash-medium",
+		"gemini-3.7-flash": "gemini-3.7-flash-medium",
+		"3.7-high":         "gemini-3.7-flash-high",
+		"3.7-low":          "gemini-3.7-flash-low",
 
 		// Flash 3.6
-		"3.6":               "gemini-3.6-flash-medium",
-		"3.6-flash":         "gemini-3.6-flash-medium",
-		"gemini-3.6-flash":  "gemini-3.6-flash-medium",
-		"3.6-high":          "gemini-3.6-flash-high",
-		"3.6-low":           "gemini-3.6-flash-low",
+		"3.6":              "gemini-3.6-flash-medium",
+		"3.6-flash":        "gemini-3.6-flash-medium",
+		"gemini-3.6-flash": "gemini-3.6-flash-medium",
+		"3.6-high":         "gemini-3.6-flash-high",
+		"3.6-low":          "gemini-3.6-flash-low",
 
 		// Pro 3.1
-		"pro":               "gemini-3.1-pro-high",
-		"3.1":               "gemini-3.1-pro-high",
-		"3.1-pro":           "gemini-3.1-pro-high",
-		"gemini-3.1-pro":    "gemini-3.1-pro-high",
-		"pro-low":           "gemini-3.1-pro-low",
-		"3.1-low":           "gemini-3.1-pro-low",
+		"pro":            "gemini-3.1-pro-high",
+		"3.1":            "gemini-3.1-pro-high",
+		"3.1-pro":        "gemini-3.1-pro-high",
+		"gemini-3.1-pro": "gemini-3.1-pro-high",
+		"pro-low":        "gemini-3.1-pro-low",
+		"3.1-low":        "gemini-3.1-pro-low",
 
 		// Claude Sonnet
 		"sonnet":            "claude-sonnet-4-6",
@@ -265,7 +267,7 @@ func (m *ModelRegistry) RefreshModels(force bool) ([]ModelInfo, error) {
 		return cached, fmt.Errorf("вызов agy models завершился с ошибкой: %w", err)
 	}
 
-	cleanOut := ansiRegex.ReplaceAllString(string(out), "")
+	cleanOut := utils.AnsiRegex.ReplaceAllString(string(out), "")
 	parsed := parseAgyModelsOutput(cleanOut)
 	if len(parsed) == 0 {
 		m.RLock()
@@ -367,7 +369,7 @@ func (m *ModelRegistry) FormatModelsMessage(currentModel string) string {
 	return bldr.String()
 }
 
-func buildAgyModelArgs(modelName string) []string {
+func BuildAgyModelArgs(modelName string) []string {
 	args := []string{"--model", modelName}
 
 	// Модели Claude не поддерживают флаг --effort

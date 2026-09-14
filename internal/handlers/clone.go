@@ -1,4 +1,4 @@
-package main
+package handlers
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"tg-agent-bot/internal/config"
 	"time"
 
 	tele "gopkg.in/telebot.v3"
@@ -181,7 +182,7 @@ func handleCloneCommand(b *tele.Bot, c tele.Context) error {
 		targetName = validatedName
 	}
 
-	cleanRoot := filepath.Clean(projectsRoot)
+	cleanRoot := filepath.Clean(config.ProjectsRoot)
 	if err := os.MkdirAll(cleanRoot, 0755); err != nil {
 		return c.Send(fmt.Sprintf("❌ Ошибка доступа к каталогу проектов: %s", html.EscapeString(err.Error())), tele.ModeHTML)
 	}
@@ -265,9 +266,9 @@ func handleCloneCommand(b *tele.Bot, c tele.Context) error {
 		}
 
 		// Do not switch current project; keep the existing active project
-		projectState.RLock()
-		curProj := projectState.currentProject
-		projectState.RUnlock()
+		config.ProjectState.RLock()
+		curProj := config.ProjectState.CurrentProject
+		config.ProjectState.RUnlock()
 
 		var curProjInfo string
 		if curProj != "" {

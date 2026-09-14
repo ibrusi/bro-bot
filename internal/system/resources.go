@@ -1,4 +1,4 @@
-package main
+package system
 
 import (
 	"bufio"
@@ -12,6 +12,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"tg-agent-bot/internal/config"
+	"tg-agent-bot/internal/domain"
+	"tg-agent-bot/internal/utils"
 	"time"
 )
 
@@ -487,21 +490,21 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 
 	botPid := os.Getpid()
 
-	session.Lock()
-	hasActive := session.isRunning
-	projName := session.currentProject
-	prompt := session.currentPrompt
-	startedAt := session.startedAt
+	config.Session.Lock()
+	hasActive := config.Session.IsRunning
+	projName := config.Session.CurrentProject
+	prompt := config.Session.CurrentPrompt
+	startedAt := config.Session.StartedAt
 	var activeWorkerPid int
-	if session.cmd != nil && session.cmd.Process != nil {
-		activeWorkerPid = session.cmd.Process.Pid
+	if config.Session.Cmd != nil && config.Session.Cmd.Process != nil {
+		activeWorkerPid = config.Session.Cmd.Process.Pid
 	}
-	session.Unlock()
+	config.Session.Unlock()
 
-	activeTask := taskManager.GetActiveTask()
+	activeTask := domain.GlobalTaskManager.GetActiveTask()
 	if activeTask != nil {
 		activeTask.Lock()
-		if activeTask.Status == TaskStatusRunning || activeTask.Status == TaskStatusWaitingInput {
+		if activeTask.Status == domain.TaskStatusRunning || activeTask.Status == domain.TaskStatusWaitingInput {
 			hasActive = true
 			if activeTask.Project != "" {
 				projName = activeTask.Project
@@ -521,7 +524,7 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 		activeTask.Unlock()
 	}
 
-	activePid, otherPids := taskManager.GetRunningWorkerPids()
+	activePid, otherPids := domain.GlobalTaskManager.GetRunningWorkerPids()
 	if activePid > 0 {
 		activeWorkerPid = activePid
 	}
@@ -652,7 +655,7 @@ func FormatResourcesMessage(r ResourcesReport) string {
 			sb.WriteString(fmt.Sprintf("• Проект: <code>%s</code>\n", html.EscapeString(r.ProjectName)))
 		}
 		if r.TaskPrompt != "" {
-			shortPrompt := truncateString(r.TaskPrompt, 80)
+			shortPrompt := utils.TruncateString(r.TaskPrompt, 80)
 			sb.WriteString(fmt.Sprintf("• Задача: <i>%s</i>\n", html.EscapeString(shortPrompt)))
 		}
 	} else if r.HasActiveTask {
