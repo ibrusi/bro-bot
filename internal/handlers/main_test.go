@@ -20,7 +20,7 @@ import (
 func TestInitDefaultProject(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Case 1: Multiple dirs exist including tg-bot-agent (which is alphabetically after aaa-project)
+	// Case 1: DEFAULT_PROJECT unset -> picks first found dir (aaa-project)
 	if err := os.Mkdir(filepath.Join(tmpDir, "aaa-project"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -35,12 +35,12 @@ func TestInitDefaultProject(t *testing.T) {
 	cur := config.ProjectState.CurrentProject
 	config.ProjectState.RUnlock()
 
-	if cur != "tg-bot-agent" {
-		t.Errorf("expected tg-bot-agent, got %s", cur)
+	if cur != "aaa-project" {
+		t.Errorf("expected aaa-project, got %s", cur)
 	}
 
 	// Case 2: Custom DEFAULT_PROJECT env var
-	os.Setenv("DEFAULT_PROJECT", "aaa-project")
+	os.Setenv("DEFAULT_PROJECT", "tg-bot-agent")
 	defer os.Unsetenv("DEFAULT_PROJECT")
 	initDefaultProject(tmpDir)
 
@@ -48,11 +48,11 @@ func TestInitDefaultProject(t *testing.T) {
 	cur = config.ProjectState.CurrentProject
 	config.ProjectState.RUnlock()
 
-	if cur != "aaa-project" {
-		t.Errorf("expected aaa-project, got %s", cur)
+	if cur != "tg-bot-agent" {
+		t.Errorf("expected tg-bot-agent, got %s", cur)
 	}
 
-	// Case 3: Neither custom nor tg-bot-agent exists -> fallback to first dir
+	// Case 3: Neither custom nor existing -> fallback to first dir
 	otherDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(otherDir, "zzz-fallback"), 0755); err != nil {
 		t.Fatal(err)
@@ -74,32 +74,20 @@ func TestInitDefaultModel(t *testing.T) {
 		models.GlobalModelRegistry = models.NewModelRegistry(10 * time.Minute)
 	}
 
-	// Case 1: Unset DEFAULT_MODEL -> gemini-3.1-pro-high
-	os.Unsetenv("DEFAULT_MODEL")
+	// Case 1: Custom DEFAULT_MODEL with alias
+	os.Setenv("DEFAULT_MODEL", "flash")
+	defer os.Unsetenv("DEFAULT_MODEL")
 	initDefaultModel()
 
 	config.ProjectState.RLock()
 	cur := config.ProjectState.CurrentModel
 	config.ProjectState.RUnlock()
 
-	if cur != "gemini-3.1-pro-high" {
-		t.Errorf("expected default model gemini-3.1-pro-high, got %s", cur)
-	}
-
-	// Case 2: Custom DEFAULT_MODEL with alias
-	os.Setenv("DEFAULT_MODEL", "flash")
-	defer os.Unsetenv("DEFAULT_MODEL")
-	initDefaultModel()
-
-	config.ProjectState.RLock()
-	cur = config.ProjectState.CurrentModel
-	config.ProjectState.RUnlock()
-
 	if cur != "gemini-3.8-flash-medium" {
 		t.Errorf("expected gemini-3.8-flash-medium for alias 'flash', got %s", cur)
 	}
 
-	// Case 3: Custom explicit DEFAULT_MODEL
+	// Case 2: Custom explicit DEFAULT_MODEL
 	os.Setenv("DEFAULT_MODEL", "gemini-3.1-pro-high")
 	initDefaultModel()
 
@@ -110,6 +98,21 @@ func TestInitDefaultModel(t *testing.T) {
 	if cur != "gemini-3.1-pro-high" {
 		t.Errorf("expected gemini-3.1-pro-high, got %s", cur)
 	}
+}
+
+func TestInitDefaultModel_Unset(t *testing.T) {
+	if os.Getenv("BE_CRASHER") == "1" {
+		os.Unsetenv("DEFAULT_MODEL")
+		initDefaultModel()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestInitDefaultModel_Unset")
+	cmd.Env = append(os.Environ(), "BE_CRASHER=1", "DEFAULT_MODEL=")
+	err := cmd.Run()
+	if e, ok := err.(*exec.ExitError); ok && !e.Success() {
+		return
+	}
+	t.Fatalf("process ran with err %v, want exit status 1", err)
 }
 
 func TestIsConfirmationText(t *testing.T) {
