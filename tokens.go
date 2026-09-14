@@ -641,7 +641,7 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		var metrics TaskTokenMetrics
 		var hasMetrics bool
 
-		if t.currentTask != nil && (taskIsActive || t.currentTask.Project == taskProj) {
+		if taskIsActive && t.currentTask != nil {
 			metrics = *t.currentTask
 			hasMetrics = true
 		} else if taskMetrics != nil {
