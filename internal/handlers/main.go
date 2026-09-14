@@ -18,9 +18,11 @@ import (
 	"tg-agent-bot/internal/config"
 	"tg-agent-bot/internal/domain"
 	"tg-agent-bot/internal/models"
+	"tg-agent-bot/internal/storage"
 	"tg-agent-bot/internal/system"
 	"tg-agent-bot/internal/utils"
 	"time"
+
 
 	"github.com/creack/pty"
 	tele "gopkg.in/telebot.v3"
@@ -104,12 +106,57 @@ func Start() {
 		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр BOT_SERVICE_NAME не задан")
 	}
 
+	botDir := os.Getenv("BOT_DIR")
+	if botDir == "" {
+		botDir = "/home/deploy/tg-agent-bot"
+	}
+	config.BotDir = botDir
+
+	dbPath := os.Getenv("SQLITE_DB_PATH")
+	if dbPath == "" {
+		dbPath = filepath.Join(botDir, "data", "bot.db")
+	}
+	config.DBPath = dbPath
+
+	sqliteStorage, err := storage.NewSQLiteStorage(dbPath)
+	if err != nil {
+		log.Fatalf("Не удалось инициализировать SQLite базу данных: %v", err)
+	}
+	domain.GlobalTaskManager.InitWithStorage(sqliteStorage)
+
 	models.GlobalModelRegistry = models.NewModelRegistry(10 * time.Minute)
 
 	initDefaultProject(config.ProjectsRoot)
 	initDefaultModel()
 
+	// Восстанавливаем сохраненные настройки из базы данных
+	ctx := context.Background()
+	if savedProj, err := sqliteStorage.GetSetting(ctx, "current_project"); err == nil && savedProj != "" {
+		projPath := filepath.Join(config.ProjectsRoot, savedProj)
+		if fi, err := os.Stat(projPath); err == nil && fi.IsDir() {
+			config.ProjectState.Lock()
+			config.ProjectState.CurrentProject = savedProj
+			config.ProjectState.Unlock()
+			log.Printf("Восстановлен активный проект из SQLite: %s", savedProj)
+		}
+	}
+	if savedModel, err := sqliteStorage.GetSetting(ctx, "current_model"); err == nil && savedModel != "" {
+		config.ProjectState.Lock()
+		config.ProjectState.CurrentModel = savedModel
+		config.ProjectState.Unlock()
+		log.Printf("Восстановлена активная модель из SQLite: %s", savedModel)
+	}
+	if savedPlanMode, err := sqliteStorage.GetSetting(ctx, "plan_mode"); err == nil && savedPlanMode != "" {
+		if pm, err := strconv.ParseBool(savedPlanMode); err == nil {
+			config.ProjectState.Lock()
+			config.ProjectState.PlanMode = pm
+			config.ProjectState.Unlock()
+			log.Printf("Восстановлен PlanMode из SQLite: %v", pm)
+		}
+	}
+
 	b, err := tele.NewBot(tele.Settings{
+
 		Token:  botToken,
 		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
 	})
@@ -334,7 +381,12 @@ func Start() {
 		config.ProjectState.CurrentModel = resolved
 		config.ProjectState.Unlock()
 
+		if s := domain.GlobalTaskManager.Storage(); s != nil {
+			_ = s.SetSetting(context.Background(), "current_model", resolved)
+		}
+
 		return c.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", html.EscapeString(resolved)), tele.ModeHTML)
+
 	})
 
 	handleUsage := func(c tele.Context) error {
@@ -519,7 +571,12 @@ func Start() {
 		config.ProjectState.CurrentProject = target
 		config.ProjectState.Unlock()
 
+		if s := domain.GlobalTaskManager.Storage(); s != nil {
+			_ = s.SetSetting(context.Background(), "current_project", target)
+		}
+
 		return c.Send(fmt.Sprintf("✅ Проект переключен на: <code>%s</code>", html.EscapeString(target)), tele.ModeHTML)
+
 	})
 
 	b.Handle("/clone", func(c tele.Context) error {
@@ -652,9 +709,14 @@ func Start() {
 		newMode := config.ProjectState.PlanMode
 		config.ProjectState.Unlock()
 
+		if s := domain.GlobalTaskManager.Storage(); s != nil {
+			_ = s.SetSetting(context.Background(), "plan_mode", strconv.FormatBool(newMode))
+		}
+
 		if newMode {
 			return c.Send("✅ <b>Режим обязательного планирования ВКЛЮЧЕН.</b>\nВсе новые задачи будут сначала составлять план и ожидать вашего утверждения.", tele.ModeHTML)
 		}
+
 		return c.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nНовые задачи будут сразу приступать к реализации (для плана используйте <code>/plan &lt;задача&gt;</code>).", tele.ModeHTML)
 	})
 
@@ -775,7 +837,12 @@ func Start() {
 		newMode := config.ProjectState.PlanMode
 		config.ProjectState.Unlock()
 
+		if s := domain.GlobalTaskManager.Storage(); s != nil {
+			_ = s.SetSetting(context.Background(), "plan_mode", strconv.FormatBool(newMode))
+		}
+
 		if newMode {
+
 			_ = c.Respond(&tele.CallbackResponse{Text: "Режим планирования включен"})
 			return c.Send("✅ <b>Режим обязательного планирования ВКЛЮЧЕН.</b>\nВсе новые задачи будут сначала формировать план и ожидать вашего утверждения.", tele.ModeHTML)
 		}
@@ -1413,6 +1480,8 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 			task.Lock()
 			task.TokenMetrics = &metrics
 			task.Unlock()
+			domain.GlobalTaskManager.SaveTaskMetrics(taskID, &metrics)
+			domain.GlobalTaskManager.SaveTask(task)
 			statsSummary := metrics.FormatCompletionSummary()
 
 			var compMsg *tele.Message
@@ -1435,7 +1504,8 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 		}
 
 		followups := task.PendingFollowups
-		task.PendingFollowups = nil
+		task.ClearPendingFollowups()
+
 
 		var bldr strings.Builder
 		bldr.WriteString("ВНИМАНИЕ: Продолжай работу в ТЕКУЩЕЙ ветке git (НЕ создавай новую ветку, НЕ делай checkout в main). ")
@@ -2230,11 +2300,7 @@ func syncLegacySession(task *domain.TaskSession) {
 	}
 
 	task.Lock()
-	defer task.Unlock()
-
 	config.Session.Lock()
-	defer config.Session.Unlock()
-
 	config.Session.IsRunning = (task.Status == domain.TaskStatusRunning || task.Status == domain.TaskStatusWaitingInput || task.Status == domain.TaskStatusPlanning)
 	config.Session.Waiting = (task.Status == domain.TaskStatusWaitingInput || task.Status == domain.TaskStatusWaitingApproval)
 	config.Session.StartedAt = task.StartedAt
@@ -2247,7 +2313,12 @@ func syncLegacySession(task *domain.TaskSession) {
 	config.Session.LastTokensUsed = task.LastTokensUsed
 	config.Session.Cmd = task.Cmd
 	config.Session.Stdin = task.Stdin
+	config.Session.Unlock()
+	task.Unlock()
+
+	domain.GlobalTaskManager.SaveTask(task)
 }
+
 
 func isQuestionText(s string) bool {
 	s = strings.TrimSpace(s)

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,12 +12,14 @@ import (
 	"tg-agent-bot/internal/config"
 	"tg-agent-bot/internal/domain"
 	"tg-agent-bot/internal/models"
+	"tg-agent-bot/internal/storage"
 	"tg-agent-bot/internal/utils"
 	"time"
 
 	"github.com/creack/pty"
 	tele "gopkg.in/telebot.v3"
 )
+
 
 func TestInitDefaultProject(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -518,3 +521,65 @@ func TestPlanSummaryFormattingForTelegram(t *testing.T) {
 		t.Errorf("expected HTML to contain formatted header, got: %s", htmlText)
 	}
 }
+
+func TestSyncLegacySessionSavesToSQLite(t *testing.T) {
+	s, err := storage.NewSQLiteStorage(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create sqlite: %v", err)
+	}
+	defer s.Close()
+
+	domain.GlobalTaskManager.InitWithStorage(s)
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlan("test-sync-proj", "flash", "Build sqlite feature", dummyRecipient{}, true)
+
+	task.Lock()
+	task.Status = domain.TaskStatusWaitingApproval
+	task.Plan = "### My Detailed SQLite Plan\n- Step 1: Storage\n- Step 2: Domain\n- Step 3: Handlers"
+	task.PlanApproved = false
+	task.LastPRURL = "https://github.com/pull/99"
+	task.Unlock()
+
+	// Вызов syncLegacySession синхронизирует состояние задачи в SQLite
+	syncLegacySession(task)
+
+	rec, err := s.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask from sqlite failed: %v", err)
+	}
+	if rec == nil {
+		t.Fatalf("task was not found in sqlite")
+	}
+	if rec.Status != string(domain.TaskStatusWaitingApproval) {
+		t.Errorf("expected status %s, got %s", domain.TaskStatusWaitingApproval, rec.Status)
+	}
+	if rec.Plan != task.Plan {
+		t.Errorf("expected plan %q, got %q", task.Plan, rec.Plan)
+	}
+	if rec.LastPRURL != "https://github.com/pull/99" {
+		t.Errorf("expected LastPRURL https://github.com/pull/99, got %s", rec.LastPRURL)
+	}
+}
+
+func TestHandlersSQLiteSettingsPersistence(t *testing.T) {
+	s, err := storage.NewSQLiteStorage(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create sqlite: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	_ = s.SetSetting(ctx, "current_project", "my-persisted-project")
+	_ = s.SetSetting(ctx, "current_model", "sonnet")
+	_ = s.SetSetting(ctx, "plan_mode", "true")
+
+	p, _ := s.GetSetting(ctx, "current_project")
+	m, _ := s.GetSetting(ctx, "current_model")
+	pm, _ := s.GetSetting(ctx, "plan_mode")
+
+	if p != "my-persisted-project" || m != "sonnet" || pm != "true" {
+		t.Errorf("settings mismatch: p=%q, m=%q, pm=%q", p, m, pm)
+	}
+}
+

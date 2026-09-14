@@ -11,4 +11,7 @@ var (
 	AdminID         int64
 	ProjectsRoot    string
 	QuestionTimeout time.Duration
+	BotDir          string
+	DBPath          string
 )
+
