@@ -136,10 +136,13 @@ go build -o bot ./cmd/bot
 
 ## ⚙️ Конфигурация (.env)
 
-Создайте файл `.env` в корне каталога бота на основе примера `.env.example`:
+Создайте файл `.env` в корне каталога бота на основе шаблона `.env-template` (или `.env.example`):
 
 ```bash
-cp .env.example .env
+cp .env-template .env
+# или
+# cp .env.example .env
+
 nano .env
 ```
 
