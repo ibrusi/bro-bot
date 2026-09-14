@@ -123,25 +123,27 @@ func Start() {
 				"<b>Задачи:</b>\n"+
 				"• /tasks — список задач и быстрое переключение\n"+
 				"• /task &lt;id&gt; [текст] — переключить фокус на задачу или дополнить её\n"+
-				"• /plan &lt;текст&gt; — составить план и утвердить перед реализацией\n"+
+				"• /plan [проект] &lt;текст&gt; — составить план и утвердить перед реализацией\n"+
 				"• /planmode [on|off] — включить обязательный план для всех задач\n"+
 				"• /approve [id] — утвердить план задачи и начать реализацию\n"+
-				"• /add &lt;id&gt; &lt;текст&gt; — отправить дополнение конкретной задаче\n"+
-				"• /new &lt;текст&gt; — создать новую задачу в текущем проекте\n"+
+				"• /add [id] &lt;текст&gt; — отправить дополнение конкретной задаче\n"+
+				"• /new [проект] &lt;текст&gt; — создать новую задачу в текущем проекте\n"+
 				"• /resume [id] [ответ] — возобновить задачу или передать ответ\n"+
 				"• /pause [id] — приостановить задачу\n"+
 				"• /status [id] — подробный статус, логи и очередь правок\n"+
 				"• /cancel [id] — остановить задачу\n\n"+
 				"<b>Система и мониторинг:</b>\n"+
-				"• /top (или /ps) — потребление CPU и памяти бота и agy\n"+
-				"• /context [id] — распределение окна контекста модели и agy\n"+
-				"• /tokens — статистика токенов, скорости и кэша\n"+
-				"• /usage — статистика токенов и лимиты\n"+
-				"• /models — список моделей и переключение (/model)\n"+
-				"• /projects — список проектов и переключение (/use)\n"+
-				"• /clone &lt;url&gt; [имя] — клонировать репозиторий по SSH или HTTPS\n"+
+				"• /top (или /ps) — потребление CPU и памяти\n"+
+				"• /context [id] — распределение окна контекста\n"+
+				"• /tokens (или /stats) — статистика токенов, скорости и кэша\n"+
+				"• /usage (или /limits) — статистика токенов и лимиты\n"+
+				"• /models — список доступных моделей\n"+
+				"• /model [имя] — переключить активную модель\n"+
+				"• /projects — список доступных проектов\n"+
+				"• /use &lt;имя&gt; — переключить активный проект\n"+
+				"• /clone &lt;url&gt; [имя] — клонировать репозиторий\n"+
 				"• /restart, /rebuild — управление процессом бота\n\n"+
-				"💡 <i>Отправьте задачу сообщением в чат. Для предварительного плана используйте /plan &lt;задача&gt;. Дополнения можно отправлять через /add &lt;id&gt; &lt;текст&gt; или ответом на сообщения бота.</i>",
+				"💡 <i>Отправьте задачу сообщением в чат. Для предварительного плана используйте /plan &lt;задача&gt;. Дополнения можно отправлять через /add [id] &lt;текст&gt; или ответом на сообщения бота.</i>",
 			html.EscapeString(curProj),
 			html.EscapeString(curMod),
 		)
@@ -2225,28 +2227,28 @@ func formatResetDuration(resetTimeStr string) string {
 // getDefaultCommands возвращает список команд для регистрации в Telegram (меню подсказок).
 func getDefaultCommands() []tele.Command {
 	return []tele.Command{
-		{Text: "status", Description: "Статус текущей задачи, лог и очередь"},
+		{Text: "status", Description: "[id] Статус текущей задачи, логи и очередь"},
 		{Text: "tasks", Description: "Список всех задач и переключение"},
-		{Text: "task", Description: "Переключить задачу: /task <id> [текст]"},
-		{Text: "plan", Description: "Составить план: /plan [проект] <задача>"},
-		{Text: "planmode", Description: "Режим плана: /planmode [on|off]"},
-		{Text: "approve", Description: "Утвердить план: /approve [id]"},
-		{Text: "add", Description: "Дополнить задачу: /add <id> <текст>"},
-		{Text: "new", Description: "Создать новую задачу: /new <текст>"},
-		{Text: "resume", Description: "Возобновить задачу: /resume [id] [ответ]"},
-		{Text: "pause", Description: "Приостановить задачу: /pause [id]"},
-		{Text: "cancel", Description: "Остановить задачу: /cancel [id]"},
+		{Text: "task", Description: "<id> [текст] Переключить фокус на задачу или дополнить её"},
+		{Text: "plan", Description: "[проект] <текст> Составить план для новой задачи"},
+		{Text: "planmode", Description: "[on|off] Включить/выключить обязательный план"},
+		{Text: "approve", Description: "[id] Утвердить план и начать реализацию"},
+		{Text: "add", Description: "[id] <текст> Дополнить задачу текстом"},
+		{Text: "new", Description: "[проект] <текст> Создать новую задачу в проекте"},
+		{Text: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
+		{Text: "pause", Description: "[id] Приостановить выполнение задачи"},
+		{Text: "cancel", Description: "[id] Остановить задачу"},
 		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},
-		{Text: "context", Description: "Окно контекста модели и agy: /context [id]"},
-		{Text: "top", Description: "CPU и память бота и agy"},
-		{Text: "usage", Description: "Остаток квот и лимиты моделей"},
+		{Text: "context", Description: "[id] Распределение окна контекста модели"},
+		{Text: "top", Description: "Мониторинг CPU и памяти бота и agy"},
+		{Text: "usage", Description: "Остаток квот и лимиты аккаунта"},
 		{Text: "models", Description: "Список доступных моделей"},
-		{Text: "model", Description: "Выбрать модель: /model <имя>"},
+		{Text: "model", Description: "[имя] Переключить активную модель"},
 		{Text: "projects", Description: "Список доступных проектов"},
-		{Text: "use", Description: "Переключить проект: /use <имя>"},
-		{Text: "clone", Description: "Клонировать репозиторий: /clone <url> [имя]"},
+		{Text: "use", Description: "<имя> Переключить активный проект"},
+		{Text: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
 		{Text: "restart", Description: "Перезапустить бота"},
-		{Text: "rebuild", Description: "Собрать билд и перезапустить"},
-		{Text: "start", Description: "Справка и активный проект"},
+		{Text: "rebuild", Description: "Собрать свежий билд и перезапустить"},
+		{Text: "start", Description: "Главное меню и справка по командам"},
 	}
 }
