@@ -877,7 +877,7 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 	// 3. Если задачи ещё не запускались в этой сессии бота
 	mod := defaultModel
 	if mod == "" {
-		mod = "gemini-3.8-flash-high"
+		mod = "gemini-3.1-pro-high"
 	}
 	windowLimit := ModelContextWindow(mod)
 	windowLimitStr := FormatContextLimit(windowLimit)

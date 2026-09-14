@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tele "gopkg.in/telebot.v3"
 )
@@ -58,6 +59,49 @@ func TestInitDefaultProject(t *testing.T) {
 
 	if cur != "zzz-fallback" {
 		t.Errorf("expected zzz-fallback, got %s", cur)
+	}
+}
+
+func TestInitDefaultModel(t *testing.T) {
+	if modelRegistry == nil {
+		modelRegistry = NewModelRegistry(10 * time.Minute)
+	}
+
+	// Case 1: Unset DEFAULT_MODEL -> gemini-3.1-pro-high
+	os.Unsetenv("DEFAULT_MODEL")
+	initDefaultModel()
+
+	projectState.RLock()
+	cur := projectState.currentModel
+	projectState.RUnlock()
+
+	if cur != "gemini-3.1-pro-high" {
+		t.Errorf("expected default model gemini-3.1-pro-high, got %s", cur)
+	}
+
+	// Case 2: Custom DEFAULT_MODEL with alias
+	os.Setenv("DEFAULT_MODEL", "flash")
+	defer os.Unsetenv("DEFAULT_MODEL")
+	initDefaultModel()
+
+	projectState.RLock()
+	cur = projectState.currentModel
+	projectState.RUnlock()
+
+	if cur != "gemini-3.8-flash-medium" {
+		t.Errorf("expected gemini-3.8-flash-medium for alias 'flash', got %s", cur)
+	}
+
+	// Case 3: Custom explicit DEFAULT_MODEL
+	os.Setenv("DEFAULT_MODEL", "gemini-3.1-pro-high")
+	initDefaultModel()
+
+	projectState.RLock()
+	cur = projectState.currentModel
+	projectState.RUnlock()
+
+	if cur != "gemini-3.1-pro-high" {
+		t.Errorf("expected gemini-3.1-pro-high, got %s", cur)
 	}
 }
 

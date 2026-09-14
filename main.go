@@ -111,9 +111,7 @@ func main() {
 	modelRegistry = NewModelRegistry(10 * time.Minute)
 
 	initDefaultProject(projectsRoot)
-	projectState.Lock()
-	projectState.currentModel = "gemini-3.8-flash-medium"
-	projectState.Unlock()
+	initDefaultModel()
 
 	b, err := tele.NewBot(tele.Settings{
 		Token:  botToken,
@@ -1141,6 +1139,21 @@ func initDefaultProject(root string) {
 			break
 		}
 	}
+}
+
+func initDefaultModel() {
+	defaultModel := os.Getenv("DEFAULT_MODEL")
+	if defaultModel == "" {
+		defaultModel = "gemini-3.1-pro-high"
+	} else if modelRegistry != nil {
+		if resolved, ok := modelRegistry.ResolveModel(defaultModel); ok {
+			defaultModel = resolved
+		}
+	}
+	projectState.Lock()
+	projectState.currentModel = defaultModel
+	projectState.Unlock()
+	log.Printf("Инициализирована модель по умолчанию: %s", defaultModel)
 }
 
 
