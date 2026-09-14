@@ -508,7 +508,7 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 	return bldr.String()
 }
 
-// FormatShortLastTask возвращает компактную строчку для команды /limits.
+// FormatShortLastTask возвращает компактную строчку для команды /usage.
 func (t *TokenTracker) FormatShortLastTask() string {
 	t.RLock()
 	defer t.RUnlock()

@@ -270,7 +270,7 @@ func TestGetDefaultCommands(t *testing.T) {
 		"cancel",
 		"tokens",
 		"top",
-		"limits",
+		"usage",
 		"models",
 		"model",
 		"projects",
