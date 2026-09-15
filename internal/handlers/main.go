@@ -1262,9 +1262,6 @@ func Start() {
 			return c.Send(fmt.Sprintf("❓ Задача #%d ждёт ответа. Выберите вариант или отправьте: <code>/resume %d &lt;ответ&gt;</code>", targetID, targetID), menu, tele.ModeHTML)
 		}
 
-		if status != domain.TaskStatusPaused && status != domain.TaskStatusFailed && status != domain.TaskStatusCancelled {
-			return c.Send(fmt.Sprintf("ℹ️ Задача #%d не может быть возобновлена (текущий статус: %s).", targetID, status.RussianTitle()))
-		}
 
 		resumedTask, err := domain.GlobalTaskManager.ResumeTask(targetID, answer)
 		if err != nil {

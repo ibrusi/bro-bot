@@ -623,7 +623,9 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 	return task, nil
 }
 
-// ResumeTask возобновляет задачу, находившуюся в статусе паузы, ожидания ввода, ошибки или отмены.
+// ResumeTask возобновляет задачу из любого статуса.
+// Для задач с активным процессом (Running, Planning, WaitingApproval, Queued, Completed)
+// автоматически убивает текущий процесс и ресетит Cmd/Stdin перед перезапуском.
 func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 	tm.Lock()
 
@@ -634,11 +636,19 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 	}
 
 	task.Lock()
-	if task.Status != TaskStatusPaused && task.Status != TaskStatusWaitingInput && task.Status != TaskStatusFailed && task.Status != TaskStatusCancelled {
-		statusTitle := task.Status.RussianTitle()
-		task.Unlock()
-		tm.Unlock()
-		return task, fmt.Errorf("задача #%d не может быть возобновлена (текущий статус: %s)", id, statusTitle)
+
+	// Для задач с активным процессом — убиваем текущий процесс и ресетим Cmd/Stdin
+	if task.Status == TaskStatusRunning || task.Status == TaskStatusPlanning ||
+		task.Status == TaskStatusWaitingApproval || task.Status == TaskStatusQueued ||
+		task.Status == TaskStatusCompleted {
+		if task.Cmd != nil && task.Cmd.Process != nil {
+			_ = syscall.Kill(-task.Cmd.Process.Pid, syscall.SIGKILL)
+			task.Cmd = nil
+		}
+		if task.Stdin != nil {
+			_ = task.Stdin.Close()
+			task.Stdin = nil
+		}
 	}
 
 	// Если задача всё ещё ждёт ввода в живом пайплайне
