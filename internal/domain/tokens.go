@@ -87,10 +87,19 @@ type StreamToolInfo struct {
 type StreamResult struct {
 	ConversationID  string      `json:"conversation_id"`
 	Status          string      `json:"status"`
+	Error           string      `json:"error,omitempty"`
 	Response        string      `json:"response"`
 	DurationSeconds float64     `json:"duration_seconds"`
 	NumTurns        int         `json:"num_turns"`
 	Usage           *UsageStats `json:"usage"`
+}
+
+// IsError возвращает true, если результат содержит статус ошибки или текст ошибки.
+func (r *StreamResult) IsError() bool {
+	if r == nil {
+		return false
+	}
+	return strings.EqualFold(r.Status, "ERROR") || strings.TrimSpace(r.Error) != ""
 }
 
 // TaskTokenMetrics хранит полные метрики токенов задачи или шага.

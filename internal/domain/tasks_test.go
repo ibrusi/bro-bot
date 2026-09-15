@@ -832,6 +832,27 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 	if !strings.Contains(resumedExec.CurrentPrompt, "утвержденному плану") {
 		t.Fatalf("expected default implementation prompt, got: %s", resumedExec.CurrentPrompt)
 	}
+
+	// 3. Задача со статусом TaskStatusFailed должна успешно возобновляться
+	failedTask := tm.CreateTaskWithPlan("proj-failed", "m", "Failed task", dummyRecipient{}, false)
+	failedTask.Lock()
+	failedTask.Status = TaskStatusFailed
+	failedTask.FinishedAt = time.Now()
+	failedTask.Unlock()
+
+	resumedFailed, err := tm.ResumeTask(failedTask.ID, "Fix the previous error and continue")
+	if err != nil {
+		t.Fatalf("ResumeTask failed for TaskStatusFailed: %v", err)
+	}
+	if resumedFailed.Status != TaskStatusRunning {
+		t.Fatalf("expected status Running for resumed failed task, got %s", resumedFailed.Status)
+	}
+	if resumedFailed.CurrentPrompt != "Fix the previous error and continue" {
+		t.Fatalf("expected custom prompt, got: %s", resumedFailed.CurrentPrompt)
+	}
+	if !resumedFailed.FinishedAt.IsZero() {
+		t.Fatalf("expected FinishedAt to be reset to zero time, got %v", resumedFailed.FinishedAt)
+	}
 }
 
 
