@@ -1519,6 +1519,15 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 	projectName := task.Project
 	taskID := task.ID
 
+	task.Lock()
+	trackModel := task.Model
+	trackPrompt := task.CurrentPrompt
+	if trackPrompt == "" {
+		trackPrompt = task.InitialPrompt
+	}
+	task.Unlock()
+	domain.GlobalTokenTracker.StartTaskIfNotActive(projectName, trackModel, trackPrompt)
+
 	// ЭТАП 1: Планирование (если требуется и ещё не утверждён)
 	task.Lock()
 	needsPlanning := task.RequiresPlan && !task.PlanApproved
