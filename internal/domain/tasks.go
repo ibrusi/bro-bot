@@ -341,6 +341,13 @@ func (tm *TaskManager) InitWithStorage(s storage.Storage) {
 						CacheReadTokens: m.CacheReadTokens,
 						TotalTokens:     m.TotalTokens,
 					},
+					LastStepUsage: UsageStats{
+						InputTokens:     m.LastStepInputTokens,
+						OutputTokens:    m.LastStepOutputTokens,
+						ThinkingTokens:  m.LastStepThinkingTokens,
+						CacheReadTokens: m.LastStepCacheReadTokens,
+						TotalTokens:     m.LastStepTotalTokens,
+					},
 				}
 			}
 
@@ -880,18 +887,23 @@ func (tm *TaskManager) SaveTaskMetrics(taskID int, metrics *TaskTokenMetrics) {
 	}
 
 	rec := &storage.TokenMetricsRecord{
-		TaskID:          taskID,
-		InputTokens:     metrics.Usage.InputTokens,
-		OutputTokens:    metrics.Usage.OutputTokens,
-		ThinkingTokens:  metrics.Usage.ThinkingTokens,
-		CacheReadTokens: metrics.Usage.CacheReadTokens,
-		TotalTokens:     metrics.Usage.TotalTokens,
-		DurationSeconds: metrics.EffectiveDuration(),
-		Turns:           metrics.Turns,
-		ToolCallsCount:  metrics.ToolCallsCount,
-		Model:           metrics.Model,
-		PRURL:           metrics.PRURL,
-		ConversationID:  metrics.ConversationID,
+		TaskID:                  taskID,
+		InputTokens:             metrics.Usage.InputTokens,
+		OutputTokens:            metrics.Usage.OutputTokens,
+		ThinkingTokens:          metrics.Usage.ThinkingTokens,
+		CacheReadTokens:         metrics.Usage.CacheReadTokens,
+		TotalTokens:             metrics.Usage.TotalTokens,
+		DurationSeconds:         metrics.EffectiveDuration(),
+		Turns:                   metrics.Turns,
+		ToolCallsCount:          metrics.ToolCallsCount,
+		Model:                   metrics.Model,
+		PRURL:                   metrics.PRURL,
+		ConversationID:          metrics.ConversationID,
+		LastStepInputTokens:     metrics.LastStepUsage.InputTokens,
+		LastStepOutputTokens:    metrics.LastStepUsage.OutputTokens,
+		LastStepThinkingTokens:  metrics.LastStepUsage.ThinkingTokens,
+		LastStepCacheReadTokens: metrics.LastStepUsage.CacheReadTokens,
+		LastStepTotalTokens:     metrics.LastStepUsage.TotalTokens,
 	}
 	_ = s.SaveMetrics(context.Background(), rec)
 }

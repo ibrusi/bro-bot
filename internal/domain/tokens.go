@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"tg-agent-bot/internal/models"
+	"tg-agent-bot/internal/storage"
 	"tg-agent-bot/internal/utils"
 	"time"
 )
@@ -179,6 +180,15 @@ func (m TaskTokenMetrics) FormatCompletionSummary() string {
 	if m.Usage.CacheReadTokens > 0 {
 		bldr.WriteString(fmt.Sprintf("• 💾 <b>Кэш промпта:</b> <code>%s</code> (%.1f%% экономии)\n",
 			formatThousands(m.Usage.CacheReadTokens), m.Usage.CacheHitRate()))
+	}
+	if m.LastStepUsage.InputTokens > 0 || m.LastStepUsage.OutputTokens > 0 {
+		window := ModelContextWindow(m.Model)
+		actCtx := m.LastStepUsage.InputTokens + m.LastStepUsage.CacheReadTokens + m.LastStepUsage.OutputTokens
+		if window > 0 && actCtx > 0 {
+			pct := (float64(actCtx) / float64(window)) * 100.0
+			bldr.WriteString(fmt.Sprintf("• 📏 <b>Окно контекста:</b> <code>%s / %s</code> (<b>%.1f%%</b>)\n",
+				formatCompact(actCtx), FormatContextLimit(window), pct))
+		}
 	}
 	return bldr.String()
 }
@@ -641,6 +651,74 @@ func renderContextBar(percent float64, length int) string {
 	return strings.Repeat("■", filled) + strings.Repeat("□", empty)
 }
 
+// resolveStepUsageForContext вычисляет метрики заполнения контекстного окна модели,
+// отдавая приоритет метрикам последнего шага сессии agy.
+func resolveStepUsageForContext(metrics TaskTokenMetrics, convID string, windowLimit int64) (
+	promptTokens, cacheTokens, outputTokens, thinkingTokens, totalPromptTokens, activeContextTokens int64,
+	usedPercent float64,
+) {
+	var hasStepMetrics bool
+
+	// 1. Проверяем, сохранены ли метрики последнего шага (LastStepUsage)
+	if metrics.LastStepUsage.InputTokens > 0 || metrics.LastStepUsage.OutputTokens > 0 {
+		promptTokens = metrics.LastStepUsage.InputTokens
+		cacheTokens = metrics.LastStepUsage.CacheReadTokens
+		outputTokens = metrics.LastStepUsage.OutputTokens
+		thinkingTokens = metrics.LastStepUsage.ThinkingTokens
+		hasStepMetrics = true
+	} else if convID != "" {
+		// 2. Если в объекте метрик LastStepUsage пуст, пробуем прочитать последний шаг из локальной БД agy
+		inp, out, think, cache, _, ok := storage.ExtractConversationLastStepUsage(convID)
+		if ok && (inp > 0 || out > 0) {
+			promptTokens = inp
+			cacheTokens = cache
+			outputTokens = out
+			thinkingTokens = think
+			hasStepMetrics = true
+		}
+	}
+
+	// 3. Безопасный Fallback при отсутствии пошаговой телеметрии
+	if !hasStepMetrics {
+		if metrics.Turns > 1 {
+			// Кумулятивные метрики делим на количество итераций (turns) для адекватной оценки шага
+			promptTokens = metrics.Usage.InputTokens / int64(metrics.Turns)
+			cacheTokens = metrics.Usage.CacheReadTokens / int64(metrics.Turns)
+			outputTokens = metrics.Usage.OutputTokens / int64(metrics.Turns)
+			thinkingTokens = metrics.Usage.ThinkingTokens / int64(metrics.Turns)
+		} else {
+			promptTokens = metrics.Usage.InputTokens
+			outputTokens = metrics.Usage.OutputTokens
+			thinkingTokens = metrics.Usage.ThinkingTokens
+			if metrics.Usage.InputTokens+metrics.Usage.CacheReadTokens <= windowLimit {
+				cacheTokens = metrics.Usage.CacheReadTokens
+			}
+		}
+	}
+
+	totalPromptTokens = promptTokens + cacheTokens
+	activeContextTokens = totalPromptTokens + outputTokens
+	if activeContextTokens <= 0 {
+		activeContextTokens = metrics.Usage.TotalTokens
+	}
+
+	if windowLimit > 0 {
+		usedPercent = (float64(activeContextTokens) / float64(windowLimit)) * 100.0
+	}
+
+	// Защита от выхода за 100% при оценке на основе суммарных кумулятивных метрик
+	if usedPercent > 100.0 && !hasStepMetrics {
+		usedPercent = 100.0
+		activeContextTokens = windowLimit
+		totalPromptTokens = windowLimit - outputTokens
+		if totalPromptTokens < 0 {
+			totalPromptTokens = 0
+		}
+	}
+
+	return
+}
+
 // GetContextCommandMessage формирует подробный отчёт об использовании контекстного окна agy.
 func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProject, defaultModel string) string {
 	var (
@@ -712,30 +790,9 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 			return bldr.String()
 		}
 
-		var promptTokens int64
-		var cacheTokens int64
-		var outputTokens int64
-		var thinkingTokens int64
+		_, cacheTokens, outputTokens, thinkingTokens, totalPromptTokens, activeContextTokens, usedPercent :=
+			resolveStepUsageForContext(metrics, taskConvID, windowLimit)
 
-		if metrics.LastStepUsage.InputTokens > 0 || metrics.LastStepUsage.OutputTokens > 0 {
-			promptTokens = metrics.LastStepUsage.InputTokens
-			cacheTokens = metrics.LastStepUsage.CacheReadTokens
-			outputTokens = metrics.LastStepUsage.OutputTokens
-			thinkingTokens = metrics.LastStepUsage.ThinkingTokens
-		} else {
-			promptTokens = metrics.Usage.InputTokens
-			cacheTokens = metrics.Usage.CacheReadTokens
-			outputTokens = metrics.Usage.OutputTokens
-			thinkingTokens = metrics.Usage.ThinkingTokens
-		}
-
-		totalPromptTokens := promptTokens + cacheTokens
-		activeContextTokens := totalPromptTokens + outputTokens
-		if activeContextTokens <= 0 {
-			activeContextTokens = metrics.Usage.TotalTokens
-		}
-
-		usedPercent := (float64(activeContextTokens) / float64(windowLimit)) * 100.0
 		freeTokens := windowLimit - activeContextTokens
 		if freeTokens < 0 {
 			freeTokens = 0
@@ -819,30 +876,9 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		windowLimit := ModelContextWindow(mod)
 		windowLimitStr := FormatContextLimit(windowLimit)
 
-		var promptTokens int64
-		var cacheTokens int64
-		var outputTokens int64
-		var thinkingTokens int64
+		_, cacheTokens, outputTokens, thinkingTokens, totalPromptTokens, activeContextTokens, usedPercent :=
+			resolveStepUsageForContext(last, last.ConversationID, windowLimit)
 
-		if last.LastStepUsage.InputTokens > 0 || last.LastStepUsage.OutputTokens > 0 {
-			promptTokens = last.LastStepUsage.InputTokens
-			cacheTokens = last.LastStepUsage.CacheReadTokens
-			outputTokens = last.LastStepUsage.OutputTokens
-			thinkingTokens = last.LastStepUsage.ThinkingTokens
-		} else {
-			promptTokens = last.Usage.InputTokens
-			cacheTokens = last.Usage.CacheReadTokens
-			outputTokens = last.Usage.OutputTokens
-			thinkingTokens = last.Usage.ThinkingTokens
-		}
-
-		totalPromptTokens := promptTokens + cacheTokens
-		activeContextTokens := totalPromptTokens + outputTokens
-		if activeContextTokens <= 0 {
-			activeContextTokens = last.Usage.TotalTokens
-		}
-
-		usedPercent := (float64(activeContextTokens) / float64(windowLimit)) * 100.0
 		freeTokens := windowLimit - activeContextTokens
 		if freeTokens < 0 {
 			freeTokens = 0

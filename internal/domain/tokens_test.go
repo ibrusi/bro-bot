@@ -386,6 +386,94 @@ func TestGetContextCommandMessageActiveAndCompleted(t *testing.T) {
 	}
 }
 
+func TestGetContextCommandMessage_Task4Scenario(t *testing.T) {
+	tracker := NewTokenTracker()
+
+	task := &TaskSession{
+		ID:             4,
+		Project:        "tg-bot-agent",
+		Model:          "gemini-3.8-flash-high",
+		Status:         TaskStatusCompleted,
+		ConversationID: "3fac122e-6fca-4987-a072-b2c88051ac5e",
+		TokenMetrics: &TaskTokenMetrics{
+			Project:         "tg-bot-agent",
+			Model:           "gemini-3.8-flash-high",
+			PRURL:           "https://github.com/ibrusi/tg-bot-agent/pull/35",
+			ConversationID:  "3fac122e-6fca-4987-a072-b2c88051ac5e",
+			DurationSeconds: 1687.0,
+			Turns:           4,
+			ToolCallsCount:  6,
+			Usage: UsageStats{
+				InputTokens:     2814924,
+				OutputTokens:    122747,
+				ThinkingTokens:  75642,
+				CacheReadTokens: 22423778,
+				TotalTokens:     2937671,
+			},
+			LastStepUsage: UsageStats{
+				InputTokens:     3706,
+				OutputTokens:    1660,
+				ThinkingTokens:  1566,
+				CacheReadTokens: 118134,
+				TotalTokens:     5366,
+			},
+		},
+	}
+
+	msg := tracker.GetContextCommandMessage(task, "tg-bot-agent", "gemini-3.8-flash-high")
+
+	// Verify that the context window reflects the 123.5k tokens (11.8%), NOT 25.4M / 2418%!
+	if strings.Contains(msg, "2418") || strings.Contains(msg, "25.4M") {
+		t.Errorf("Context message incorrectly exceeded 100%% with cumulative cache:\n%s", msg)
+	}
+	if !strings.Contains(msg, "11.8%") {
+		t.Errorf("Expected 11.8%% context window occupancy, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "124k / 1.0M") && !strings.Contains(msg, "123.5k / 1.0M") {
+		t.Errorf("Expected ~124k / 1.0M active context, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "118 134") {
+		t.Errorf("Expected cache tokens 118 134, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "Кумулятивно за задачу: <code>2 937 671</code>") {
+		t.Errorf("Expected cumulative total tokens to be displayed separately, got:\n%s", msg)
+	}
+}
+
+func TestGetContextCommandMessage_FallbackNeverExceeds100(t *testing.T) {
+	tracker := NewTokenTracker()
+
+	// Task with NO LastStepUsage and massive cumulative usage across 10 turns
+	task := &TaskSession{
+		ID:      5,
+		Project: "tg-bot-agent",
+		Model:   "gemini-3.8-flash-high",
+		Status:  TaskStatusCompleted,
+		TokenMetrics: &TaskTokenMetrics{
+			Project: "tg-bot-agent",
+			Model:   "gemini-3.8-flash-high",
+			Turns:   10,
+			Usage: UsageStats{
+				InputTokens:     2000000,
+				OutputTokens:    100000,
+				CacheReadTokens: 30000000,
+				TotalTokens:     2100000,
+			},
+			LastStepUsage: UsageStats{}, // empty
+		},
+	}
+
+	msg := tracker.GetContextCommandMessage(task, "tg-bot-agent", "gemini-3.8-flash-high")
+
+	if strings.Contains(msg, "30.0M") || strings.Contains(msg, "32.0M") {
+		t.Errorf("Fallback summed cumulative cache into context window:\n%s", msg)
+	}
+	// Verify it never exceeds 100%
+	if strings.Contains(msg, "200%") || strings.Contains(msg, "3000%") {
+		t.Errorf("Context message exceeded 100%% on fallback:\n%s", msg)
+	}
+}
+
 func TestParseStreamEvent_ErrorResult(t *testing.T) {
 	errJSON := `{"event":"result","result":{"conversation_id":"err-123","status":"ERROR","error":"invalid model selection: model xyz not found","response":"","duration_seconds":1.5,"num_turns":0}}`
 	evt, err := ParseStreamEvent(errJSON)
