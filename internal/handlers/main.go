@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -1201,7 +1202,7 @@ func Start() {
 				t.Lock()
 				st := t.Status
 				t.Unlock()
-				if st == domain.TaskStatusPaused || st == domain.TaskStatusWaitingInput {
+				if st == domain.TaskStatusPaused || st == domain.TaskStatusWaitingInput || st == domain.TaskStatusFailed {
 					targetID = t.ID
 					break
 				}
@@ -1261,8 +1262,8 @@ func Start() {
 			return c.Send(fmt.Sprintf("❓ Задача #%d ждёт ответа. Выберите вариант или отправьте: <code>/resume %d &lt;ответ&gt;</code>", targetID, targetID), menu, tele.ModeHTML)
 		}
 
-		if status != domain.TaskStatusPaused {
-			return c.Send(fmt.Sprintf("ℹ️ Задача #%d не находится на паузе (текущий статус: %s).", targetID, status.RussianTitle()))
+		if status != domain.TaskStatusPaused && status != domain.TaskStatusFailed {
+			return c.Send(fmt.Sprintf("ℹ️ Задача #%d не находится на паузе или в ошибке (текущий статус: %s).", targetID, status.RussianTitle()))
 		}
 
 		resumedTask, err := domain.GlobalTaskManager.ResumeTask(targetID, answer)
@@ -1599,6 +1600,10 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 		}
 
 		planText := strings.TrimSpace(task.FullOutput.String())
+		if isLikelyErrorMessage(planText) {
+			handleTaskStepError(b, recipient, task, projectName, taskID, errors.New(planText))
+			return
+		}
 		if planText == "" {
 			planText = "Агент не сформировал подробный план. Вы можете дополнить задачу замечаниями или утвердить её."
 		}
@@ -1817,6 +1822,67 @@ func buildAgyArgs(convID, modelName, prompt string) []string {
 	return args
 }
 
+// isLikelyErrorMessage определяет, является ли полученный текст сырой ошибкой CLI или API, а не планом задачи.
+func isLikelyErrorMessage(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	isErrPrefix := strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "fatal:") ||
+		strings.HasPrefix(lower, "panic:") || strings.Contains(lower, "eligibility check failed") ||
+		strings.Contains(lower, "operation not permitted")
+	if isErrPrefix {
+		// Если в тексте нет структуры плана (заголовков markdown '#' или этапов/шагов)
+		if !strings.Contains(trimmed, "#") && !strings.Contains(lower, "план") && !strings.Contains(lower, "архитектур") {
+			return true
+		}
+	}
+	return false
+}
+
+// extractStepErrorMessage извлекает содержательный текст ошибки из результата agy, логов шага или вывода процесса.
+func extractStepErrorMessage(task *domain.TaskSession, resultError string, waitErr error) string {
+	if strings.TrimSpace(resultError) != "" {
+		return strings.TrimSpace(resultError)
+	}
+
+	if task != nil {
+		task.Lock()
+		recentLogs := append([]string(nil), task.RecentLogs...)
+		fullOutput := task.FullOutput.String()
+		task.Unlock()
+
+		// 1. Поиск смысловой строки ошибки в RecentLogs с конца
+		for i := len(recentLogs) - 1; i >= 0; i-- {
+			line := strings.TrimSpace(recentLogs[i])
+			lower := strings.ToLower(line)
+			if strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "fatal:") ||
+				strings.Contains(lower, "eligibility check failed") || strings.Contains(lower, "operation not permitted") ||
+				strings.Contains(lower, "invalid model selection") {
+				return line
+			}
+		}
+
+		// 2. Поиск в FullOutput построчно с конца
+		lines := strings.Split(fullOutput, "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := strings.TrimSpace(lines[i])
+			lower := strings.ToLower(line)
+			if strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "fatal:") ||
+				strings.Contains(lower, "eligibility check failed") || strings.Contains(lower, "operation not permitted") ||
+				strings.Contains(lower, "invalid model selection") {
+				return line
+			}
+		}
+	}
+
+	if waitErr != nil {
+		return waitErr.Error()
+	}
+	return "неизвестная ошибка выполнения"
+}
+
 // evaluateStepCompletion determines the outcome and question state of a completed task step.
 func evaluateStepCompletion(
 	isPlanning bool,
@@ -1991,6 +2057,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 	var stepTimedOut bool
 	var hasResult bool
 	var resultStatus string
+	var resultError string
 	var hasAskQuestionToolCall bool
 	var pendingQuestionText string
 	var pendingQuestionOptions []string
@@ -2063,6 +2130,9 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 					res := evt.Result
 					hasResult = true
 					resultStatus = res.Status
+					if res.Error != "" {
+						resultError = res.Error
+					}
 					if res.Usage != nil {
 						domain.GlobalTokenTracker.RecordResultUsage(*res.Usage, res.DurationSeconds, res.NumTurns)
 					}
@@ -2119,8 +2189,17 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 	if stepTimedOut || stepCtx.Err() == context.DeadlineExceeded {
 		return StepResult{Outcome: StepOutcomeTimeout, Error: waitErr, PRURL: lastPR}
 	}
-	if waitErr != nil && !hasResult {
-		return StepResult{Outcome: StepOutcomeError, Error: waitErr, PRURL: lastPR}
+
+	hasError := (hasResult && (strings.EqualFold(resultStatus, "ERROR") || strings.TrimSpace(resultError) != "")) || waitErr != nil
+	if hasError {
+		errText := extractStepErrorMessage(task, resultError, waitErr)
+		return StepResult{
+			Outcome:      StepOutcomeError,
+			Error:        errors.New(errText),
+			HasResult:    hasResult,
+			ResultStatus: resultStatus,
+			PRURL:        lastPR,
+		}
 	}
 
 	// Оцениваем результат шага и детекцию вопросов
@@ -2229,8 +2308,11 @@ func handleTaskStepError(b *tele.Bot, recipient tele.Recipient, task *domain.Tas
 	syncLegacySession(task)
 
 	errText := "неизвестная ошибка"
-	if err != nil {
-		errText = err.Error()
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		errText = strings.TrimSpace(err.Error())
+	}
+	if len([]rune(errText)) > 1200 {
+		errText = string([]rune(errText)[:1200]) + "..."
 	}
 
 	task.AppendLog(fmt.Sprintf("❌ Ошибка выполнения шага: %s", errText))

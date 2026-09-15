@@ -385,3 +385,23 @@ func TestGetContextCommandMessageActiveAndCompleted(t *testing.T) {
 		t.Errorf("Expected PR link, got:\n%s", compMsg)
 	}
 }
+
+func TestParseStreamEvent_ErrorResult(t *testing.T) {
+	errJSON := `{"event":"result","result":{"conversation_id":"err-123","status":"ERROR","error":"invalid model selection: model xyz not found","response":"","duration_seconds":1.5,"num_turns":0}}`
+	evt, err := ParseStreamEvent(errJSON)
+	if err != nil {
+		t.Fatalf("unexpected error parsing error result: %v", err)
+	}
+	if evt.Result == nil {
+		t.Fatalf("expected Result to be non-nil")
+	}
+	if !evt.Result.IsError() {
+		t.Errorf("expected IsError to return true for ERROR status")
+	}
+	if evt.Result.Error != "invalid model selection: model xyz not found" {
+		t.Errorf("expected error message to match, got %q", evt.Result.Error)
+	}
+	if evt.Result.Status != "ERROR" {
+		t.Errorf("expected status 'ERROR', got %q", evt.Result.Status)
+	}
+}

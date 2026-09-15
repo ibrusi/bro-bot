@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -990,6 +991,126 @@ func TestTaskWaitingInputResumeAndDeliver(t *testing.T) {
 	}
 	if prompt != "Синий" {
 		t.Errorf("expected CurrentPrompt 'Синий', got %q", prompt)
+	}
+}
+
+func TestIsLikelyErrorMessage(t *testing.T) {
+	cases := []struct {
+		text     string
+		expected bool
+	}{
+		{
+			text:     "error: Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location.",
+			expected: true,
+		},
+		{
+			text:     "fatal: unable to access repository: operation not permitted",
+			expected: true,
+		},
+		{
+			text:     "error: invalid model selection (--model \"foo\"): not recognized",
+			expected: true,
+		},
+		{
+			text:     "panic: runtime error: invalid memory address or nil pointer dereference",
+			expected: true,
+		},
+		{
+			text:     "# План реализации\n1. Добавить обработку error в сетевом клиенте.\n2. Архитектура: клиент-сервер.",
+			expected: false,
+		},
+		{
+			text:     "1. Исследование кода.\n2. Доработка методов для логирования fatal errors.\n3. План тестирования.",
+			expected: false,
+		},
+		{
+			text:     "",
+			expected: false,
+		},
+	}
+
+	for _, c := range cases {
+		got := isLikelyErrorMessage(c.text)
+		if got != c.expected {
+			t.Errorf("isLikelyErrorMessage(%q) = %v, expected %v", c.text, got, c.expected)
+		}
+	}
+}
+
+func TestExtractStepErrorMessage(t *testing.T) {
+	tm := domain.NewTaskManager()
+	task := tm.CreateTask("test-proj", "flash", "Test extract error", dummyRecipient{})
+
+	// 1. При наличии resultError возвращается именно он
+	got1 := extractStepErrorMessage(task, "result error message from agy", errors.New("exit status 1"))
+	if got1 != "result error message from agy" {
+		t.Errorf("expected result error, got %q", got1)
+	}
+
+	// 2. При отсутствии resultError, поиск в RecentLogs
+	task.Lock()
+	task.RecentLogs = []string{
+		"⚡ git status",
+		"error: Eligibility check failed: Your current account is not eligible",
+	}
+	task.Unlock()
+	got2 := extractStepErrorMessage(task, "", errors.New("exit status 1"))
+	if got2 != "error: Eligibility check failed: Your current account is not eligible" {
+		t.Errorf("expected recent log error, got %q", got2)
+	}
+
+	// 3. При отсутствии в RecentLogs, поиск в FullOutput
+	task.Lock()
+	task.RecentLogs = []string{"⚡ ls -la"}
+	task.FullOutput.Reset()
+	task.FullOutput.WriteString("some normal log\nerror: invalid model selection: model xyz\n")
+	task.Unlock()
+	got3 := extractStepErrorMessage(task, "", errors.New("exit status 1"))
+	if got3 != "error: invalid model selection: model xyz" {
+		t.Errorf("expected fullOutput error, got %q", got3)
+	}
+
+	// 4. Если ничего не найдено, возвращается waitErr
+	task.Lock()
+	task.RecentLogs = nil
+	task.FullOutput.Reset()
+	task.FullOutput.WriteString("just some text\nno error markers here\n")
+	task.Unlock()
+	got4 := extractStepErrorMessage(task, "", errors.New("process killed unexpectedly"))
+	if got4 != "process killed unexpectedly" {
+		t.Errorf("expected waitErr error, got %q", got4)
+	}
+}
+
+func TestExecuteStepErrorEvaluation(t *testing.T) {
+	// Эмуляция завершения executeStepForTask при ошибках
+	tm := domain.NewTaskManager()
+	task := tm.CreateTask("test-proj", "flash", "Task with error", dummyRecipient{})
+
+	// Случай: hasResult = true, но status = "ERROR" и waitErr != nil
+	resultStatus := "ERROR"
+	resultError := "error: quota exceeded"
+	hasResult := true
+	waitErr := errors.New("exit status 1")
+
+	hasError := (hasResult && (strings.EqualFold(resultStatus, "ERROR") || strings.TrimSpace(resultError) != "")) || waitErr != nil
+	if !hasError {
+		t.Fatalf("expected hasError to be true when resultStatus is ERROR")
+	}
+
+	errText := extractStepErrorMessage(task, resultError, waitErr)
+	res := StepResult{
+		Outcome:      StepOutcomeError,
+		Error:        errors.New(errText),
+		HasResult:    hasResult,
+		ResultStatus: resultStatus,
+	}
+
+	if res.Outcome != StepOutcomeError {
+		t.Errorf("expected StepOutcomeError, got %v", res.Outcome)
+	}
+	if res.Error.Error() != "error: quota exceeded" {
+		t.Errorf("expected 'error: quota exceeded', got %q", res.Error.Error())
 	}
 }
 

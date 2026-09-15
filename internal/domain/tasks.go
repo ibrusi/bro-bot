@@ -627,11 +627,11 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 	}
 
 	task.Lock()
-	if task.Status != TaskStatusPaused && task.Status != TaskStatusWaitingInput {
+	if task.Status != TaskStatusPaused && task.Status != TaskStatusWaitingInput && task.Status != TaskStatusFailed {
 		statusTitle := task.Status.RussianTitle()
 		task.Unlock()
 		tm.Unlock()
-		return task, fmt.Errorf("задача #%d не находится на паузе (текущий статус: %s)", id, statusTitle)
+		return task, fmt.Errorf("задача #%d не находится на паузе или в ошибке (текущий статус: %s)", id, statusTitle)
 	}
 
 	// Если задача всё ещё ждёт ввода в живом пайплайне
@@ -703,6 +703,7 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 			task.Status = TaskStatusRunning
 		}
 		task.StartedAt = time.Now()
+		task.FinishedAt = time.Time{}
 		task.RecentLogs = nil
 	}
 	task.Unlock()
