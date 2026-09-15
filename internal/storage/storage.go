@@ -44,6 +44,12 @@ type TokenMetricsRecord struct {
 	PRURL           string
 	ConversationID  string
 	CreatedAt       time.Time
+
+	LastStepInputTokens     int64
+	LastStepOutputTokens    int64
+	LastStepThinkingTokens  int64
+	LastStepCacheReadTokens int64
+	LastStepTotalTokens     int64
 }
 
 // AggregateMetrics содержит суммарную статистику всех исторических задач.

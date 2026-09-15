@@ -439,8 +439,10 @@ func (s *SQLiteStorage) SaveMetrics(ctx context.Context, m *TokenMetricsRecord) 
 	query := `
 		INSERT INTO task_metrics (
 			task_id, input_tokens, output_tokens, thinking_tokens, cache_read_tokens,
-			total_tokens, duration_seconds, turns, tool_calls_count, model, pr_url, conversation_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			total_tokens, duration_seconds, turns, tool_calls_count, model, pr_url, conversation_id,
+			last_step_input_tokens, last_step_output_tokens, last_step_thinking_tokens,
+			last_step_cache_read_tokens, last_step_total_tokens
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(task_id) DO UPDATE SET
 			input_tokens = excluded.input_tokens,
 			output_tokens = excluded.output_tokens,
@@ -452,7 +454,12 @@ func (s *SQLiteStorage) SaveMetrics(ctx context.Context, m *TokenMetricsRecord) 
 			tool_calls_count = excluded.tool_calls_count,
 			model = excluded.model,
 			pr_url = excluded.pr_url,
-			conversation_id = excluded.conversation_id;
+			conversation_id = excluded.conversation_id,
+			last_step_input_tokens = excluded.last_step_input_tokens,
+			last_step_output_tokens = excluded.last_step_output_tokens,
+			last_step_thinking_tokens = excluded.last_step_thinking_tokens,
+			last_step_cache_read_tokens = excluded.last_step_cache_read_tokens,
+			last_step_total_tokens = excluded.last_step_total_tokens;
 	`
 
 	_, err := s.db.ExecContext(ctx, query,
@@ -468,6 +475,11 @@ func (s *SQLiteStorage) SaveMetrics(ctx context.Context, m *TokenMetricsRecord) 
 		m.Model,
 		m.PRURL,
 		m.ConversationID,
+		m.LastStepInputTokens,
+		m.LastStepOutputTokens,
+		m.LastStepThinkingTokens,
+		m.LastStepCacheReadTokens,
+		m.LastStepTotalTokens,
 	)
 	return err
 }
@@ -477,7 +489,9 @@ func (s *SQLiteStorage) GetMetrics(ctx context.Context, taskID int) (*TokenMetri
 	query := `
 		SELECT task_id, input_tokens, output_tokens, thinking_tokens, cache_read_tokens,
 		       total_tokens, duration_seconds, turns, tool_calls_count, model, pr_url,
-		       conversation_id, created_at
+		       conversation_id, created_at,
+		       last_step_input_tokens, last_step_output_tokens, last_step_thinking_tokens,
+		       last_step_cache_read_tokens, last_step_total_tokens
 		FROM task_metrics WHERE task_id = ?;
 	`
 	row := s.db.QueryRowContext(ctx, query, taskID)
@@ -497,6 +511,11 @@ func (s *SQLiteStorage) GetMetrics(ctx context.Context, taskID int) (*TokenMetri
 		&m.PRURL,
 		&m.ConversationID,
 		&m.CreatedAt,
+		&m.LastStepInputTokens,
+		&m.LastStepOutputTokens,
+		&m.LastStepThinkingTokens,
+		&m.LastStepCacheReadTokens,
+		&m.LastStepTotalTokens,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -505,6 +524,136 @@ func (s *SQLiteStorage) GetMetrics(ctx context.Context, taskID int) (*TokenMetri
 		return nil, err
 	}
 	return &m, nil
+}
+
+// ExtractConversationLastStepUsage читает метрики последнего шага агента напрямую из БД agy.
+func ExtractConversationLastStepUsage(convID string) (inputTokens, outputTokens, thinkingTokens, cacheReadTokens, totalTokens int64, ok bool) {
+	if convID == "" {
+		return 0, 0, 0, 0, 0, false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return 0, 0, 0, 0, 0, false
+	}
+	dbPath := filepath.Join(home, ".gemini", "antigravity-cli", "conversations", convID+".db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return 0, 0, 0, 0, 0, false
+	}
+
+	convDB, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		return 0, 0, 0, 0, 0, false
+	}
+	defer convDB.Close()
+
+	var meta []byte
+	// Шаг агента (step_type = 15) с метаданными
+	err = convDB.QueryRow("SELECT metadata FROM steps WHERE step_type = 15 AND metadata IS NOT NULL ORDER BY idx DESC LIMIT 1").Scan(&meta)
+	if err != nil || len(meta) == 0 {
+		return 0, 0, 0, 0, 0, false
+	}
+
+	return parseUsageFromStepMetadata(meta)
+}
+
+func parseUsageFromStepMetadata(meta []byte) (inputTokens, outputTokens, thinkingTokens, cacheReadTokens, totalTokens int64, ok bool) {
+	i := 0
+	for i < len(meta) {
+		key, next, err := readVarint(meta, i)
+		if err != nil {
+			break
+		}
+		i = next
+		fn := key >> 3
+		wt := key & 7
+		if wt == 0 {
+			_, next, err := readVarint(meta, i)
+			if err != nil {
+				break
+			}
+			i = next
+		} else if wt == 2 {
+			length, next, err := readVarint(meta, i)
+			if err != nil {
+				break
+			}
+			i = next
+			if i+int(length) > len(meta) {
+				break
+			}
+			data := meta[i : i+int(length)]
+			i += int(length)
+
+			// field 9 is the UsageMetadata message
+			if fn == 9 {
+				j := 0
+				for j < len(data) {
+					k, nextJ, err := readVarint(data, j)
+					if err != nil {
+						break
+					}
+					j = nextJ
+					subFn := k >> 3
+					subWt := k & 7
+					if subWt == 0 {
+						v, nextJ, err := readVarint(data, j)
+						if err != nil {
+							break
+						}
+						j = nextJ
+						switch subFn {
+						case 2:
+							inputTokens = int64(v)
+						case 3:
+							outputTokens = int64(v)
+						case 5:
+							cacheReadTokens = int64(v)
+						case 10:
+							thinkingTokens = int64(v)
+						}
+					} else if subWt == 2 {
+						subLen, nextJ, err := readVarint(data, j)
+						if err != nil {
+							break
+						}
+						j = nextJ + int(subLen)
+					} else if subWt == 1 {
+						j += 8
+					} else if subWt == 5 {
+						j += 4
+					} else {
+						break
+					}
+				}
+				totalTokens = inputTokens + outputTokens
+				return inputTokens, outputTokens, thinkingTokens, cacheReadTokens, totalTokens, true
+			}
+		} else if wt == 1 {
+			i += 8
+		} else if wt == 5 {
+			i += 4
+		} else {
+			break
+		}
+	}
+	return 0, 0, 0, 0, 0, false
+}
+
+func readVarint(data []byte, offset int) (uint64, int, error) {
+	var val uint64
+	var shift uint
+	for i := offset; i < len(data); i++ {
+		b := data[i]
+		val |= uint64(b&0x7f) << shift
+		if b&0x80 == 0 {
+			return val, i + 1, nil
+		}
+		shift += 7
+		if shift >= 64 {
+			return 0, 0, fmt.Errorf("varint overflow")
+		}
+	}
+	return 0, 0, fmt.Errorf("unexpected EOF reading varint")
 }
 
 // GetAggregateMetrics возвращает суммарные метрики по всем историческим задачам.

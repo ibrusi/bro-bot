@@ -262,6 +262,51 @@ func TestStorageMetricsAndAggregate(t *testing.T) {
 	}
 }
 
+func TestStorageMetricsLastStep(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	taskID, _ := s.CreateTask(ctx, &TaskRecord{Project: "tg-bot-agent", Model: "gemini-3.8-flash-high", Status: "completed"})
+
+	m := &TokenMetricsRecord{
+		TaskID:                  taskID,
+		InputTokens:             2814924,
+		OutputTokens:            122747,
+		ThinkingTokens:          75642,
+		CacheReadTokens:         22423778,
+		TotalTokens:             2937671,
+		DurationSeconds:         1687.0,
+		Turns:                   4,
+		ToolCallsCount:          6,
+		Model:                   "gemini-3.8-flash-high",
+		PRURL:                   "https://github.com/ibrusi/tg-bot-agent/pull/35",
+		ConversationID:          "3fac122e-6fca-4987-a072-b2c88051ac5e",
+		LastStepInputTokens:     3706,
+		LastStepOutputTokens:    1660,
+		LastStepThinkingTokens:  1566,
+		LastStepCacheReadTokens: 118134,
+		LastStepTotalTokens:     5366,
+	}
+
+	if err := s.SaveMetrics(ctx, m); err != nil {
+		t.Fatalf("SaveMetrics failed: %v", err)
+	}
+
+	got, err := s.GetMetrics(ctx, taskID)
+	if err != nil {
+		t.Fatalf("GetMetrics failed: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected non-nil metrics")
+	}
+
+	if got.LastStepInputTokens != 3706 || got.LastStepOutputTokens != 1660 ||
+		got.LastStepThinkingTokens != 1566 || got.LastStepCacheReadTokens != 118134 ||
+		got.LastStepTotalTokens != 5366 {
+		t.Errorf("LastStep metrics mismatch: got %+v", got)
+	}
+}
+
 func TestStorageMessageMapping(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()

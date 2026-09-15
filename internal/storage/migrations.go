@@ -102,6 +102,17 @@ CREATE TABLE IF NOT EXISTS telegram_messages (
 CREATE INDEX IF NOT EXISTS idx_telegram_messages_task_id ON telegram_messages(task_id);
 `,
 	},
+	{
+		version: 2,
+		name:    "add_last_step_metrics_to_task_metrics",
+		sql: `
+ALTER TABLE task_metrics ADD COLUMN last_step_input_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE task_metrics ADD COLUMN last_step_output_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE task_metrics ADD COLUMN last_step_thinking_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE task_metrics ADD COLUMN last_step_cache_read_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE task_metrics ADD COLUMN last_step_total_tokens INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {
@@ -150,5 +161,59 @@ func runMigrations(ctx context.Context, db *sql.DB) error {
 		log.Printf("Migration %d (%s) applied successfully", m.version, m.name)
 	}
 
+	backfillHistoricalTaskMetrics(ctx, db)
+
 	return nil
+}
+
+func backfillHistoricalTaskMetrics(ctx context.Context, db *sql.DB) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT task_id, conversation_id
+		FROM task_metrics
+		WHERE last_step_input_tokens = 0 AND last_step_output_tokens = 0 AND conversation_id != ''
+	`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type updateItem struct {
+		taskID int
+		in     int64
+		out    int64
+		think  int64
+		cache  int64
+		total  int64
+	}
+	var updates []updateItem
+
+	for rows.Next() {
+		var tid int
+		var convID string
+		if err := rows.Scan(&tid, &convID); err == nil && convID != "" {
+			in, out, think, cache, total, ok := ExtractConversationLastStepUsage(convID)
+			if ok {
+				updates = append(updates, updateItem{
+					taskID: tid,
+					in:     in,
+					out:    out,
+					think:  think,
+					cache:  cache,
+					total:  total,
+				})
+			}
+		}
+	}
+
+	for _, u := range updates {
+		_, _ = db.ExecContext(ctx, `
+			UPDATE task_metrics SET
+				last_step_input_tokens = ?,
+				last_step_output_tokens = ?,
+				last_step_thinking_tokens = ?,
+				last_step_cache_read_tokens = ?,
+				last_step_total_tokens = ?
+			WHERE task_id = ?
+		`, u.in, u.out, u.think, u.cache, u.total, u.taskID)
+	}
 }
