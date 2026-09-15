@@ -231,6 +231,28 @@ func (t *TokenTracker) StartTask(project, model, prompt string) {
 	t.stepDurationTotal = 0
 }
 
+// StartTaskIfNotActive инициализирует отслеживание, если текущая задача не установлена.
+// Полезно при возобновлении задачи, которая была приостановлена (и currentTask == nil).
+func (t *TokenTracker) StartTaskIfNotActive(project, model, prompt string) {
+	t.Lock()
+	defer t.Unlock()
+
+	if t.currentTask != nil {
+		return
+	}
+
+	t.currentTask = &TaskTokenMetrics{
+		Project:   project,
+		Model:     model,
+		Prompt:    prompt,
+		StartedAt: time.Now(),
+		Usage:     UsageStats{},
+	}
+	t.stepUsages = make(map[int]UsageStats)
+	t.accumulatedSteps = UsageStats{}
+	t.stepDurationTotal = 0
+}
+
 // StartNextStep сохраняет накопленные метрики предыдущего шага в рамках одной задачи (followups).
 func (t *TokenTracker) StartNextStep(model string) {
 	t.Lock()
