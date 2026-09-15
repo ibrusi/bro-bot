@@ -19,14 +19,17 @@ import (
 	"tg-agent-bot/internal/config"
 	"tg-agent-bot/internal/domain"
 	"tg-agent-bot/internal/models"
+	"tg-agent-bot/internal/ports"
 	"tg-agent-bot/internal/storage"
 	"tg-agent-bot/internal/system"
 	"tg-agent-bot/internal/utils"
 	"time"
 
-
-	"github.com/creack/pty"
 	tele "gopkg.in/telebot.v3"
+)
+
+var (
+	Agent ports.AgentFramework
 )
 
 type AgyQuotaResponse struct {
@@ -451,11 +454,11 @@ func Start() {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			out, err := exec.CommandContext(ctx, "agy", "-p", "/quota", "--output-format", "json").CombinedOutput()
+			out, err := Agent.GetQuota(ctx)
 			cleanOut := utils.AnsiRegex.ReplaceAllString(string(out), "")
 			quotaRaw = strings.TrimSpace(cleanOut)
 			if err != nil {
-				textOut, textErr := exec.CommandContext(ctx, "agy", "-p", "/quota").CombinedOutput()
+				textOut, textErr := Agent.GetQuotaText(ctx)
 				if textErr == nil && len(textOut) > 0 {
 					quotaRaw = strings.TrimSpace(utils.AnsiRegex.ReplaceAllString(string(textOut), ""))
 				}
@@ -469,7 +472,7 @@ func Start() {
 
 		go func() {
 			defer wg.Done()
-			out, err := exec.CommandContext(ctx, "agy", "-p", "/credits", "--output-format", "json").CombinedOutput()
+			out, err := Agent.GetCredits(ctx)
 			cleanOut := utils.AnsiRegex.ReplaceAllString(string(out), "")
 			if err != nil {
 				creditsErr = err
@@ -1845,24 +1848,6 @@ type StepResult struct {
 	PRURL        string
 }
 
-func buildAgyArgs(convID, modelName, prompt string) []string {
-	stepTimeout := config.StepTimeout
-	if stepTimeout <= 0 {
-		stepTimeout = 30 * time.Minute
-	}
-	args := []string{
-		"--dangerously-skip-permissions",
-		"--print-timeout", stepTimeout.String(),
-		"--output-format", "stream-json",
-	}
-	if convID != "" {
-		args = append(args, "--conversation", convID)
-	}
-	args = append(args, models.BuildAgyModelArgs(modelName)...)
-	args = append(args, "-p", prompt)
-	return args
-}
-
 // isLikelyErrorMessage определяет, является ли полученный текст сырой ошибкой CLI или API, а не планом задачи.
 func isLikelyErrorMessage(text string) bool {
 	trimmed := strings.TrimSpace(text)
@@ -2012,7 +1997,12 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 	convID := task.ConversationID
 	task.Unlock()
 
-	args := buildAgyArgs(convID, modelName, prompt)
+	args := ports.ExecuteArgs{
+		ConversationID: convID,
+		ModelName:      modelName,
+		Prompt:         prompt,
+		WorkDir:        workDir,
+	}
 
 	stepTimeout := config.StepTimeout
 	if stepTimeout <= 0 {
@@ -2021,32 +2011,24 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 	stepCtx, stepCancel := context.WithTimeout(context.Background(), stepTimeout+2*time.Minute)
 	defer stepCancel()
 
-	cmd := exec.CommandContext(stepCtx, "agy", args...)
-	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(),
-		"TERM=dumb",
-		"NO_COLOR=1",
-		"CI=true",
-	)
-
-	ptmx, err := pty.Start(cmd)
+	agentProcess, err := Agent.ExecuteTask(stepCtx, args)
 	if err != nil {
-		SendSplit(b, recipient, fmt.Sprintf("❌ Ошибка запуска PTY для задачи #%d: %v", taskID, err))
+		SendSplit(b, recipient, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, err))
 		task.Lock()
 		task.Status = domain.TaskStatusFailed
 		task.Unlock()
 		syncLegacySession(task)
 		return StepResult{Outcome: StepOutcomeError, Error: err}
 	}
-	defer func() { _ = ptmx.Close() }()
+	defer func() { _ = agentProcess.Close() }()
 
 	task.Lock()
-	task.Cmd = cmd
-	task.Stdin = ptmx
+	task.Cmd = agentProcess.GetCmd()
+	task.Stdin = agentProcess.Stdin()
 	task.Unlock()
 	syncLegacySession(task)
 
-	scanner := bufio.NewScanner(ptmx)
+	scanner := bufio.NewScanner(agentProcess.Stdout())
 	scanBuf := make([]byte, 64*1024)
 	scanner.Buffer(scanBuf, 10*1024*1024)
 	done := make(chan struct{})
@@ -2232,7 +2214,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 
 	<-done
 	close(stopLiveUpdate)
-	waitErr := cmd.Wait()
+	waitErr := agentProcess.Wait()
 
 	task.Lock()
 	if task.Stdin != nil {
