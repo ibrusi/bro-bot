@@ -130,6 +130,8 @@ func Start() {
 	}
 	config.DBPath = dbPath
 
+	config.ScriptsDir = os.Getenv("SCRIPTS_DIR")
+
 	sqliteStorage, err := storage.NewSQLiteStorage(dbPath)
 	if err != nil {
 		log.Fatalf("Не удалось инициализировать SQLite базу данных: %v", err)
@@ -1369,6 +1371,35 @@ func Start() {
 	b.Handle("/ps", handleResources)
 	b.Handle("/resources", handleResources)
 	b.Handle("/res", handleResources)
+
+	b.Handle("/script", func(c tele.Context) error {
+		args := c.Args()
+		if len(args) == 0 {
+			return c.Send("Пожалуйста, укажите название скрипта: /script <name>")
+		}
+		scriptName := args[0]
+		if config.ScriptsDir == "" {
+			return c.Send("Директория скриптов не настроена (SCRIPTS_DIR)")
+		}
+		scriptPath := filepath.Join(config.ScriptsDir, scriptName)
+		if !strings.HasPrefix(filepath.Clean(scriptPath), filepath.Clean(config.ScriptsDir)) {
+			return c.Send("Недопустимое имя скрипта")
+		}
+		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+			return c.Send(fmt.Sprintf("Скрипт %s не найден в %s", scriptName, config.ScriptsDir))
+		}
+		
+		cmd := exec.Command(scriptPath)
+		out, err := cmd.CombinedOutput()
+		msg := fmt.Sprintf("Результат выполнения %s:\n\n%s", scriptName, string(out))
+		if err != nil {
+			msg += fmt.Sprintf("\nОшибка: %v", err)
+		}
+		for _, chunk := range utils.SplitMessageByMode(msg, "", 3800) {
+			_ = c.Send(chunk)
+		}
+		return nil
+	})
 
 	b.Handle(tele.OnText, func(c tele.Context) error {
 		userText := strings.TrimSpace(c.Text())
