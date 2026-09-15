@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"html"
 	"log"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
+	"tg-agent-bot/internal/ports"
 	"tg-agent-bot/internal/utils"
 	"time"
 )
@@ -19,6 +19,8 @@ type ModelInfo struct {
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
 }
+
+var Agent ports.AgentFramework
 
 type ModelRegistry struct {
 	sync.RWMutex
@@ -258,13 +260,19 @@ func (m *ModelRegistry) RefreshModels(force bool) ([]ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "agy", "models")
-	out, err := cmd.Output()
+	var out []byte
+	var err error
+	if Agent != nil {
+		out, err = Agent.GetModels(ctx)
+	} else {
+		err = fmt.Errorf("Agent is not configured")
+	}
+
 	if err != nil {
 		m.RLock()
 		cached := m.models
 		m.RUnlock()
-		return cached, fmt.Errorf("вызов agy models завершился с ошибкой: %w", err)
+		return cached, fmt.Errorf("вызов получения моделей завершился с ошибкой: %w", err)
 	}
 
 	cleanOut := utils.AnsiRegex.ReplaceAllString(string(out), "")

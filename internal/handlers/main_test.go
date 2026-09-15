@@ -182,41 +182,6 @@ func TestPlanModeState(t *testing.T) {
 	}
 }
 
-func TestBuildAgyArgs(t *testing.T) {
-	// Case 1: Without conversation ID
-	args1 := buildAgyArgs("", "flash", "Hello")
-	for i, arg := range args1 {
-		if arg == "--conversation" {
-			t.Errorf("expected no --conversation flag, got at index %d", i)
-		}
-	}
-
-	// Case 2: With conversation ID
-	args2 := buildAgyArgs("conv-uuid-12345", "flash", "Hello")
-	hasConv := false
-	for i, arg := range args2 {
-		if arg == "--conversation" && i+1 < len(args2) && args2[i+1] == "conv-uuid-12345" {
-			hasConv = true
-			break
-		}
-	}
-	if !hasConv {
-		t.Errorf("expected --conversation conv-uuid-12345 in args, got: %v", args2)
-	}
-
-	// Check prompt
-	hasPrompt := false
-	for i, arg := range args2 {
-		if arg == "-p" && i+1 < len(args2) && args2[i+1] == "Hello" {
-			hasPrompt = true
-			break
-		}
-	}
-	if !hasPrompt {
-		t.Errorf("expected -p Hello in args, got: %v", args2)
-	}
-}
-
 func TestBuildQuestionMarkup(t *testing.T) {
 	task := &domain.TaskSession{
 		ID:              42,
@@ -588,35 +553,6 @@ func TestHandlersSQLiteSettingsPersistence(t *testing.T) {
 	}
 }
 
-func TestBuildAgyArgsWithStepTimeout(t *testing.T) {
-	origTimeout := config.StepTimeout
-	defer func() { config.StepTimeout = origTimeout }()
-
-	config.StepTimeout = 45 * time.Minute
-	args := buildAgyArgs("conv-xyz-789", "gemini-3.1-pro-high", "Test prompt")
-
-	hasTimeout := false
-	for i, arg := range args {
-		if arg == "--print-timeout" && i+1 < len(args) && args[i+1] == "45m0s" {
-			hasTimeout = true
-			break
-		}
-	}
-	if !hasTimeout {
-		t.Errorf("expected --print-timeout 45m0s in args, got: %v", args)
-	}
-
-	hasConv := false
-	for i, arg := range args {
-		if arg == "--conversation" && i+1 < len(args) && args[i+1] == "conv-xyz-789" {
-			hasConv = true
-			break
-		}
-	}
-	if !hasConv {
-		t.Errorf("expected --conversation conv-xyz-789 in args, got: %v", args)
-	}
-}
 
 func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	memStore, err := storage.NewSQLiteStorage(":memory:")
