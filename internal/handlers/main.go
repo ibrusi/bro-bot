@@ -130,7 +130,11 @@ func Start() {
 	}
 	config.DBPath = dbPath
 
-	config.ScriptsDir = os.Getenv("SCRIPTS_DIR")
+	scriptsDir := os.Getenv("SCRIPTS_DIR")
+	if scriptsDir == "" {
+		scriptsDir = filepath.Join(botDir, "scripts")
+	}
+	config.ScriptsDir = scriptsDir
 
 	sqliteStorage, err := storage.NewSQLiteStorage(dbPath)
 	if err != nil {
