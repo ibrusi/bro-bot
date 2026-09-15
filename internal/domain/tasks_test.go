@@ -137,13 +137,20 @@ func TestTaskManagerAddFollowup(t *testing.T) {
 		t.Fatalf("expected task 2 queue len 1, got %d", qLenT2)
 	}
 
-	// Try adding to cancelled task
+	// Try adding to cancelled task — should resume it
 	t1.Lock()
 	t1.Status = TaskStatusCancelled
+	t1.FinishedAt = time.Now()
 	t1.Unlock()
-	_, _, _, err = tm.AddFollowup(1, "will fail")
-	if err == nil {
-		t.Fatalf("expected error adding to cancelled task")
+	resumedT1, _, isAnswer, err := tm.AddFollowup(1, "resume after cancel")
+	if err != nil {
+		t.Fatalf("expected no error adding to cancelled task (should resume), got: %v", err)
+	}
+	if !isAnswer {
+		t.Fatalf("expected isAnswer=true when resuming cancelled task via AddFollowup")
+	}
+	if resumedT1.Status != TaskStatusRunning && resumedT1.Status != TaskStatusQueued {
+		t.Fatalf("expected resumed cancelled task to be Running or Queued, got %s", resumedT1.Status)
 	}
 }
 
@@ -853,6 +860,73 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 	if !resumedFailed.FinishedAt.IsZero() {
 		t.Fatalf("expected FinishedAt to be reset to zero time, got %v", resumedFailed.FinishedAt)
 	}
+
+	// 4. Задача со статусом TaskStatusCancelled должна успешно возобновляться
+	cancelledTask := tm.CreateTaskWithPlan("proj-cancelled", "m", "Cancelled task", dummyRecipient{}, false)
+	cancelledTask.Lock()
+	cancelledTask.Status = TaskStatusCancelled
+	cancelledTask.FinishedAt = time.Now()
+	cancelledTask.ConversationID = "conv-cancelled-123"
+	cancelledTask.Unlock()
+
+	resumedCancelled, err := tm.ResumeTask(cancelledTask.ID, "Continue the cancelled task")
+	if err != nil {
+		t.Fatalf("ResumeTask failed for TaskStatusCancelled: %v", err)
+	}
+	if resumedCancelled.Status != TaskStatusRunning {
+		t.Fatalf("expected status Running for resumed cancelled task, got %s", resumedCancelled.Status)
+	}
+	if resumedCancelled.CurrentPrompt != "Continue the cancelled task" {
+		t.Fatalf("expected custom prompt, got: %s", resumedCancelled.CurrentPrompt)
+	}
+	if !resumedCancelled.FinishedAt.IsZero() {
+		t.Fatalf("expected FinishedAt to be reset to zero time, got %v", resumedCancelled.FinishedAt)
+	}
+	if resumedCancelled.ConversationID != "conv-cancelled-123" {
+		t.Fatalf("expected ConversationID to be preserved, got '%s'", resumedCancelled.ConversationID)
+	}
+
+	// 5. Возобновление отменённой задачи без ответа — должен сгенерировать дефолтный промпт
+	cancelledTask2 := tm.CreateTaskWithPlan("proj-cancelled2", "m", "Another cancelled", dummyRecipient{}, false)
+	cancelledTask2.Lock()
+	cancelledTask2.Status = TaskStatusCancelled
+	cancelledTask2.FinishedAt = time.Now()
+	cancelledTask2.ConversationID = "conv-cancelled-456"
+	cancelledTask2.Unlock()
+
+	resumedCancelled2, err := tm.ResumeTask(cancelledTask2.ID, "")
+	if err != nil {
+		t.Fatalf("ResumeTask failed for cancelled task without answer: %v", err)
+	}
+	if resumedCancelled2.Status != TaskStatusRunning {
+		t.Fatalf("expected status Running, got %s", resumedCancelled2.Status)
+	}
+	if resumedCancelled2.CurrentPrompt == "" {
+		t.Fatalf("expected non-empty default prompt for cancelled task resumed without answer")
+	}
 }
 
+func TestAddFollowupResumeCancelledTask(t *testing.T) {
+	tm := NewTaskManager()
 
+	task := tm.CreateTask("proj-followup-cancel", "m1", "task to cancel and resume", dummyRecipient{})
+	task.Lock()
+	task.Status = TaskStatusCancelled
+	task.FinishedAt = time.Now()
+	task.ConversationID = "conv-followup-cancel"
+	task.Unlock()
+
+	resumed, _, isAnswer, err := tm.AddFollowup(task.ID, "Resume via followup")
+	if err != nil {
+		t.Fatalf("AddFollowup failed for cancelled task: %v", err)
+	}
+	if !isAnswer {
+		t.Errorf("expected isAnswer to be true for cancelled task followup")
+	}
+	if resumed.Status != TaskStatusRunning {
+		t.Errorf("expected status Running after followup on cancelled task, got %s", resumed.Status)
+	}
+	if resumed.CurrentPrompt != "Resume via followup" {
+		t.Errorf("expected CurrentPrompt to be 'Resume via followup', got '%s'", resumed.CurrentPrompt)
+	}
+}

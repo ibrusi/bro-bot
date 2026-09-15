@@ -623,7 +623,7 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 	return task, nil
 }
 
-// ResumeTask возобновляет задачу, находившуюся в статусе паузы или ожидания ввода.
+// ResumeTask возобновляет задачу, находившуюся в статусе паузы, ожидания ввода, ошибки или отмены.
 func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 	tm.Lock()
 
@@ -634,11 +634,11 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 	}
 
 	task.Lock()
-	if task.Status != TaskStatusPaused && task.Status != TaskStatusWaitingInput && task.Status != TaskStatusFailed {
+	if task.Status != TaskStatusPaused && task.Status != TaskStatusWaitingInput && task.Status != TaskStatusFailed && task.Status != TaskStatusCancelled {
 		statusTitle := task.Status.RussianTitle()
 		task.Unlock()
 		tm.Unlock()
-		return task, fmt.Errorf("задача #%d не находится на паузе или в ошибке (текущий статус: %s)", id, statusTitle)
+		return task, fmt.Errorf("задача #%d не может быть возобновлена (текущий статус: %s)", id, statusTitle)
 	}
 
 	// Если задача всё ещё ждёт ввода в живом пайплайне
@@ -783,14 +783,14 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 	}
 
 	task.Lock()
-	if task.Status == TaskStatusCompleted || task.Status == TaskStatusCancelled {
+	if task.Status == TaskStatusCompleted {
 		statusTitle := task.Status.RussianTitle()
 		task.Unlock()
 		return task, 0, false, fmt.Errorf("задача #%d уже %s", id, statusTitle)
 	}
 
-	// Если задача на паузе — возобновляем её с переданным ответом
-	if task.Status == TaskStatusPaused {
+	// Если задача на паузе или отменена — возобновляем её с переданным ответом
+	if task.Status == TaskStatusPaused || task.Status == TaskStatusCancelled {
 		task.Unlock()
 		resumedTask, err := tm.ResumeTask(id, text)
 		return resumedTask, 0, true, err
