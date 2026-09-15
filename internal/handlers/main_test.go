@@ -1114,4 +1114,133 @@ func TestExecuteStepErrorEvaluation(t *testing.T) {
 	}
 }
 
+func TestIsAgyPrintTimeoutLine(t *testing.T) {
+	cases := []struct {
+		name     string
+		line     string
+		expected bool
+	}{
+		{
+			name:     "Real agy CLI timeout banner with partial output",
+			line:     "[agy] print timeout after 30m0s with turn in progress; returning partial output",
+			expected: true,
+		},
+		{
+			name:     "Real agy CLI timeout banner short",
+			line:     "[agy] print timeout after 5m0s",
+			expected: true,
+		},
+		{
+			name:     "Real Print mode CLI prefix",
+			line:     "Print mode: print timeout after 15m with turn in progress after 20 polls (printed=10)",
+			expected: true,
+		},
+		{
+			name:     "Stream JSON event containing print timeout after in agent response text delta",
+			line:     `{"event":"step_update","step_update":{"conversation_id":"c1","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"if strings.Contains(cleanLine, \"print timeout after\") {"}}`,
+			expected: false,
+		},
+		{
+			name:     "Stream JSON event containing print timeout after in tool call view_file content",
+			line:     `{"event":"step_update","step_update":{"conversation_id":"c1","step_index":2,"state":"DONE","step_type":"tool","tool_name":"view_file","tool_info":{"name":"view_file","parameters":{"path":"main.go"},"content":"check print timeout after"}}`,
+			expected: false,
+		},
+		{
+			name:     "Stream JSON result event",
+			line:     `{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"All done"}}`,
+			expected: false,
+		},
+		{
+			name:     "Git diff in plain output containing print timeout after",
+			line:     `+			if strings.Contains(cleanLine, "print timeout after") {`,
+			expected: false,
+		},
+		{
+			name:     "User text discussing timeout in log",
+			line:     `проверь, пожалуйста, print timeout after выполнение`,
+			expected: false,
+		},
+		{
+			name:     "Empty line",
+			line:     "",
+			expected: false,
+		},
+		{
+			name:     "Whitespace only",
+			line:     "   \t\n  ",
+			expected: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isAgyPrintTimeoutLine(tc.line)
+			if got != tc.expected {
+				t.Errorf("isAgyPrintTimeoutLine(%q) = %v, expected %v", tc.line, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestStepTimeoutSimulation(t *testing.T) {
+	// 1. Проверяем, что стрим с JSON-событиями, содержащими "print timeout after", НЕ приводит к stepTimedOut = true
+	jsonStreamWithTimeoutCode := []string{
+		`{"event":"init","conversation_id":"conv-test-1","init":{"tools":["view_file"]}}`,
+		`{"event":"step_update","step_update":{"step_index":1,"step_type":"agent_response","text_delta":"Examining main.go for print timeout after logic"}}`,
+		`{"event":"result","result":{"conversation_id":"conv-test-1","status":"SUCCESS","response":"# План реализации\n1. Шаг"}}`,
+	}
+
+	var stepTimedOut bool
+	for _, rawLine := range jsonStreamWithTimeoutCode {
+		cleanLine := utils.AnsiRegex.ReplaceAllString(rawLine, "")
+		cleanLine = strings.TrimSpace(cleanLine)
+		if cleanLine == "" {
+			continue
+		}
+
+		evt, err := domain.ParseStreamEvent(cleanLine)
+		if err == nil && evt != nil {
+			continue
+		}
+
+		if isAgyPrintTimeoutLine(cleanLine) {
+			stepTimedOut = true
+		}
+	}
+
+	if stepTimedOut {
+		t.Fatalf("expected stepTimedOut to be FALSE when stream JSON contains 'print timeout after'")
+	}
+
+	// 2. Проверяем, что реальный терминальный баннер agy о таймауте приводит к stepTimedOut = true
+	terminalOutputWithTimeout := []string{
+		`{"event":"init","conversation_id":"conv-test-2","init":{"tools":["view_file"]}}`,
+		`[agy] print timeout after 30m0s with turn in progress; returning partial output`,
+		`{"event":"result","result":{"conversation_id":"conv-test-2","status":"SUCCESS","response":""}}`,
+	}
+
+	var realTimedOut bool
+	for _, rawLine := range terminalOutputWithTimeout {
+		cleanLine := utils.AnsiRegex.ReplaceAllString(rawLine, "")
+		cleanLine = strings.TrimSpace(cleanLine)
+		if cleanLine == "" {
+			continue
+		}
+
+		evt, err := domain.ParseStreamEvent(cleanLine)
+		if err == nil && evt != nil {
+			continue
+		}
+
+		if isAgyPrintTimeoutLine(cleanLine) {
+			realTimedOut = true
+		}
+	}
+
+	if !realTimedOut {
+		t.Fatalf("expected realTimedOut to be TRUE when terminal output contains [agy] print timeout banner")
+	}
+}
+
+
 
