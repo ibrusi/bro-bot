@@ -14,5 +14,6 @@ var (
 	StepTimeout     time.Duration
 	BotDir          string
 	DBPath          string
+	ScriptsDir      string
 )
 
