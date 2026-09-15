@@ -1883,6 +1883,23 @@ func extractStepErrorMessage(task *domain.TaskSession, resultError string, waitE
 	return "неизвестная ошибка выполнения"
 }
 
+// isAgyPrintTimeoutLine проверяет, является ли строка системным терминальным сообщением CLI agy о таймауте print mode,
+// исключая JSON-события стрима (где эта фраза может встретиться в просматриваемом коде, дифах или ответах).
+func isAgyPrintTimeoutLine(rawLine string) bool {
+	trimmed := strings.TrimSpace(rawLine)
+	if trimmed == "" {
+		return false
+	}
+	// JSON-строки стрима гарантированно не являются системным баннером CLI agy о таймауте
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		return false
+	}
+	// Сообщение CLI agy при превышении --print-timeout имеет строгий префикс:
+	// "[agy] print timeout after" или "Print mode: print timeout after"
+	return strings.HasPrefix(trimmed, "[agy] print timeout after") ||
+		strings.HasPrefix(trimmed, "Print mode: print timeout after")
+}
+
 // evaluateStepCompletion determines the outcome and question state of a completed task step.
 func evaluateStepCompletion(
 	isPlanning bool,
@@ -2071,10 +2088,6 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 				continue
 			}
 
-			if strings.Contains(cleanLine, "print timeout after") {
-				stepTimedOut = true
-			}
-
 			evt, err := domain.ParseStreamEvent(cleanLine)
 			if err == nil && evt != nil {
 				convID := evt.ConversationID
@@ -2150,6 +2163,11 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 				continue
 			}
 
+			// Проверка на системный таймаут agy ТОЛЬКО для не-JSON строк терминального вывода
+			if isAgyPrintTimeoutLine(cleanLine) {
+				stepTimedOut = true
+			}
+
 			// Fallback для текстового вывода или не-JSON строк
 			task.AppendLog(cleanLine)
 			task.Lock()
@@ -2164,6 +2182,9 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 				task.LastTokensUsed = strings.TrimSpace(t[1])
 			}
 			task.Unlock()
+		}
+		if scanErr := scanner.Err(); scanErr != nil {
+			log.Printf("Предупреждение: ошибка сканера вывода agy для задачи #%d: %v", taskID, scanErr)
 		}
 		close(done)
 	}()
@@ -2185,6 +2206,10 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 
 	if isCancelled {
 		return StepResult{Outcome: StepOutcomeCancelled, PRURL: lastPR}
+	}
+	// Если PR уже успешно создан в git и получен URL, шаг считается успешно завершённым
+	if lastPR != "" {
+		return StepResult{Outcome: StepOutcomeSuccess, PRURL: lastPR, HasResult: hasResult, ResultStatus: resultStatus}
 	}
 	if stepTimedOut || stepCtx.Err() == context.DeadlineExceeded {
 		return StepResult{Outcome: StepOutcomeTimeout, Error: waitErr, PRURL: lastPR}
