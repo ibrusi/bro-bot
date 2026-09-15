@@ -608,3 +608,71 @@ func ExtractPlanSummary(planText string, maxRunes int) string {
 
 	return summary
 }
+
+// IsFinalResponseAQuestion определяет, завершился ли финальный ответ агента вопросом пользователю.
+// Проверяются только последние строки завершённого ответа, исключая списки задач, блоки кода и заголовки.
+func IsFinalResponseAQuestion(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+
+	lines := strings.Split(text, "\n")
+	var lastLine string
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		if l != "" {
+			lastLine = l
+			break
+		}
+	}
+
+	if lastLine == "" {
+		return false
+	}
+
+	// Исключаем блоки кода и markdown-заголовки
+	if strings.HasPrefix(lastLine, "```") || strings.HasPrefix(lastLine, "#") {
+		return false
+	}
+
+	lower := strings.ToLower(lastLine)
+	if strings.HasSuffix(lastLine, "?") {
+		return true
+	}
+
+	if strings.Contains(lower, "какой вариант") ||
+		strings.Contains(lower, "как поступить") ||
+		strings.Contains(lower, "подтвердите выбор") ||
+		strings.Contains(lower, "подтвердите, как") ||
+		strings.Contains(lower, "выберите вариант") ||
+		strings.Contains(lower, "do you want to") ||
+		strings.Contains(lower, "what would you like") ||
+		strings.Contains(lower, "which option") {
+		return true
+	}
+
+	return false
+}
+
+// ExtractQuestionFromResponse извлекает завершающий блок вопроса из ответа агента.
+func ExtractQuestionFromResponse(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+
+	if len([]rune(text)) <= 500 {
+		return text
+	}
+
+	paragraphs := strings.Split(text, "\n\n")
+	for i := len(paragraphs) - 1; i >= 0; i-- {
+		p := strings.TrimSpace(paragraphs[i])
+		if p != "" {
+			return p
+		}
+	}
+
+	return text
+}

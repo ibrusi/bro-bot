@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -846,4 +847,150 @@ func TestSendPlanForApprovalSingleMessageFormatting(t *testing.T) {
 		t.Errorf("expected plan message to comfortably fit in one Telegram message (<3000 runes), got %d", len([]rune(msgText)))
 	}
 }
+
+func TestEvaluateStepCompletion_PlanningImmunity(t *testing.T) {
+	// 1. Text plan containing questions, question marks, and options should NOT trigger waiting_input
+	planWithQuestions := `# План реализации
+1. Анализ проблемы:
+   - Стоит ли использовать redis или in-memory cache?
+   - Какой таймаут выбрать?
+2. Архитектура:
+   - Вариант 1: SQLite
+   - Вариант 2: Postgres
+Что вы думаете по поводу этого плана? Подтвердите выбор.`
+
+	outcome, isQ, qText, qOpts := evaluateStepCompletion(true, false, "", nil, "", planWithQuestions)
+	if outcome != StepOutcomeSuccess {
+		t.Errorf("expected StepOutcomeSuccess for plan with questions, got %v", outcome)
+	}
+	if isQ {
+		t.Errorf("expected isQuestion=false for plan text with question marks, got true")
+	}
+	if qText != "" || qOpts != nil {
+		t.Errorf("expected empty question text/opts, got text=%q, opts=%v", qText, qOpts)
+	}
+
+	// 2. Planning phase with explicit ask_question tool call should trigger waiting_input
+	toolQText := "Выберите базовую ветку для фичи"
+	toolOpts := []string{"main", "develop"}
+	outcome2, isQ2, qText2, qOpts2 := evaluateStepCompletion(true, true, toolQText, toolOpts, "", "thinking...")
+	if outcome2 != StepOutcomeWaitingInput {
+		t.Errorf("expected StepOutcomeWaitingInput for ask_question tool call during planning, got %v", outcome2)
+	}
+	if !isQ2 {
+		t.Errorf("expected isQuestion=true for ask_question tool call")
+	}
+	if qText2 != toolQText {
+		t.Errorf("expected qText=%q, got %q", toolQText, qText2)
+	}
+	if len(qOpts2) != 2 || qOpts2[0] != "main" || qOpts2[1] != "develop" {
+		t.Errorf("expected qOpts %v, got %v", toolOpts, qOpts2)
+	}
+}
+
+func TestEvaluateStepCompletion_ExecutionWithPR(t *testing.T) {
+	// Even if output text ends with a question mark, having a PR URL guarantees StepOutcomeSuccess
+	respWithQuestion := "Задача выполнена, PR создан. Хотите внести дополнительные изменения?"
+	prURL := "https://github.com/org/repo/pull/123"
+
+	outcome, isQ, _, _ := evaluateStepCompletion(false, false, "", nil, prURL, respWithQuestion)
+	if outcome != StepOutcomeSuccess {
+		t.Errorf("expected StepOutcomeSuccess when PR URL is present, got %v", outcome)
+	}
+	if isQ {
+		t.Errorf("expected isQuestion=false when PR URL is present, got true")
+	}
+}
+
+func TestEvaluateStepCompletion_ExecutionQuestions(t *testing.T) {
+	// 1. Ask question tool call without PR
+	toolQ := "Какой порт использовать для сервиса?"
+	toolOpts := []string{"8080", "3000"}
+	outcome1, isQ1, qText1, qOpts1 := evaluateStepCompletion(false, true, toolQ, toolOpts, "", "")
+	if outcome1 != StepOutcomeWaitingInput || !isQ1 || qText1 != toolQ || len(qOpts1) != 2 {
+		t.Errorf("expected StepOutcomeWaitingInput with tool question, got outcome=%v isQ=%v text=%q opts=%v",
+			outcome1, isQ1, qText1, qOpts1)
+	}
+
+	// 2. Final response ending with question without PR
+	questionResp := "Я реализовал логику валидации. Нужно ли также добавить интеграционные тесты?"
+	outcome2, isQ2, qText2, _ := evaluateStepCompletion(false, false, "", nil, "", questionResp)
+	if outcome2 != StepOutcomeWaitingInput || !isQ2 {
+		t.Errorf("expected StepOutcomeWaitingInput for final response question, got outcome=%v isQ=%v", outcome2, isQ2)
+	}
+	if !strings.Contains(qText2, "Нужно ли также добавить интеграционные тесты?") {
+		t.Errorf("expected question text to contain question sentence, got %q", qText2)
+	}
+
+	// 3. Normal completion without question without PR
+	normalResp := "Все изменения успешно внесены и скомпилированы. Код готов к ревью."
+	outcome3, isQ3, _, _ := evaluateStepCompletion(false, false, "", nil, "", normalResp)
+	if outcome3 != StepOutcomeSuccess || isQ3 {
+		t.Errorf("expected StepOutcomeSuccess for normal completion, got outcome=%v isQ=%v", outcome3, isQ3)
+	}
+}
+
+func TestTaskWaitingInputResumeAndDeliver(t *testing.T) {
+	tm := domain.NewTaskManager()
+	task := tm.CreateTask("test-proj", "flash", "Test question answer flow", dummyRecipient{})
+
+	task.Lock()
+	task.Status = domain.TaskStatusWaitingInput
+	task.LastQuestion = "Какой цвет выбрать?"
+	task.QuestionOptions = []string{"Красный", "Синий"}
+	task.Unlock()
+
+	// 1. DeliverAnswer with active Stdin
+	pr, pw := io.Pipe()
+	task.Lock()
+	task.Stdin = pw
+	task.Unlock()
+
+	readDone := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, _ := pr.Read(buf)
+		readDone <- string(buf[:n])
+	}()
+
+	task.DeliverAnswer("Красный")
+	gotLine := <-readDone
+	if gotLine != "Красный\n" {
+		t.Errorf("expected 'Красный\\n' written to stdin, got %q", gotLine)
+	}
+
+	// Check that AnswerChan also received it
+	select {
+	case ans := <-task.AnswerChan:
+		if ans != "Красный" {
+			t.Errorf("expected 'Красный' on AnswerChan, got %q", ans)
+		}
+	default:
+		t.Errorf("expected answer on AnswerChan")
+	}
+
+	// 2. ResumeTask when Cmd is nil
+	task.Lock()
+	task.Cmd = nil
+	task.Status = domain.TaskStatusWaitingInput
+	task.Unlock()
+
+	resumedTask, err := tm.ResumeTask(task.ID, "Синий")
+	if err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+
+	resumedTask.Lock()
+	st := resumedTask.Status
+	prompt := resumedTask.CurrentPrompt
+	resumedTask.Unlock()
+
+	if st != domain.TaskStatusRunning {
+		t.Errorf("expected status TaskStatusRunning after resume, got %s", st)
+	}
+	if prompt != "Синий" {
+		t.Errorf("expected CurrentPrompt 'Синий', got %q", prompt)
+	}
+}
+
 
