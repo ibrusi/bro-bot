@@ -56,10 +56,12 @@ type ProcessResourceInfo struct {
 	Command     string
 }
 
-type ClaudeAgentInfo struct {
+type AgentCLIInfo struct {
 	Installed bool
 	Version   string
 }
+
+type ClaudeAgentInfo = AgentCLIInfo
 
 type ResourcesReport struct {
 	Host              HostLoadStats
@@ -71,6 +73,8 @@ type ResourcesReport struct {
 	ActiveWorker      *ProcessResourceInfo
 	OtherWorkers      []ProcessResourceInfo
 	ClaudeWorkers     []ProcessResourceInfo
+	AgyVersion        string
+	AgyInstalled      bool
 	ClaudeVersion     string
 	ClaudeInstalled   bool
 	HasActiveTask     bool
@@ -462,32 +466,32 @@ func findSystemClaudePids() []int {
 }
 
 var (
-	claudeInfoLock   sync.RWMutex
-	cachedClaudeInfo *ClaudeAgentInfo
-	cachedClaudeTime time.Time
+	cliInfoLock   sync.RWMutex
+	cachedCLIInfo = make(map[string]*AgentCLIInfo)
+	cachedCLITime = make(map[string]time.Time)
 )
 
-func queryClaudeInfo() ClaudeAgentInfo {
-	claudeInfoLock.RLock()
-	if cachedClaudeInfo != nil && time.Since(cachedClaudeTime) < 5*time.Minute {
-		info := *cachedClaudeInfo
-		claudeInfoLock.RUnlock()
-		return info
+func queryAgentCLI(binName string) AgentCLIInfo {
+	cliInfoLock.RLock()
+	if info, ok := cachedCLIInfo[binName]; ok && time.Since(cachedCLITime[binName]) < 5*time.Minute {
+		res := *info
+		cliInfoLock.RUnlock()
+		return res
 	}
-	claudeInfoLock.RUnlock()
+	cliInfoLock.RUnlock()
 
-	claudeInfoLock.Lock()
-	defer claudeInfoLock.Unlock()
+	cliInfoLock.Lock()
+	defer cliInfoLock.Unlock()
 
-	if cachedClaudeInfo != nil && time.Since(cachedClaudeTime) < 5*time.Minute {
-		return *cachedClaudeInfo
+	if info, ok := cachedCLIInfo[binName]; ok && time.Since(cachedCLITime[binName]) < 5*time.Minute {
+		return *info
 	}
 
-	info := ClaudeAgentInfo{}
-	path, err := exec.LookPath("claude")
+	info := AgentCLIInfo{}
+	path, err := exec.LookPath(binName)
 	if err != nil {
-		cachedClaudeInfo = &info
-		cachedClaudeTime = time.Now()
+		cachedCLIInfo[binName] = &info
+		cachedCLITime[binName] = time.Now()
 		return info
 	}
 	info.Installed = true
@@ -498,14 +502,31 @@ func queryClaudeInfo() ClaudeAgentInfo {
 	cmd := exec.CommandContext(ctx, path, "--version")
 	out, err := cmd.Output()
 	if err == nil {
-		info.Version = strings.TrimSpace(string(out))
+		ver := strings.TrimSpace(string(out))
+		if ver != "" {
+			if binName == "agy" && !strings.Contains(strings.ToLower(ver), "agy") {
+				info.Version = "agy " + ver
+			} else {
+				info.Version = ver
+			}
+		} else {
+			info.Version = binName
+		}
 	} else {
-		info.Version = "Claude Code"
+		info.Version = binName
 	}
 
-	cachedClaudeInfo = &info
-	cachedClaudeTime = time.Now()
+	cachedCLIInfo[binName] = &info
+	cachedCLITime[binName] = time.Now()
 	return info
+}
+
+func queryClaudeInfo() AgentCLIInfo {
+	return queryAgentCLI("claude")
+}
+
+func queryAgyInfo() AgentCLIInfo {
+	return queryAgentCLI("agy")
 }
 
 func collectProcessInfo(pid int, role string, psMap map[int]psMetric, topCpuMap map[int]float64) *ProcessResourceInfo {
@@ -679,6 +700,7 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 		}
 	}
 
+	agyInfo := queryAgyInfo()
 	claudeInfo := queryClaudeInfo()
 
 	var taskElapsed time.Duration
@@ -696,6 +718,8 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 		ActiveWorker:      activeWorkerInfo,
 		OtherWorkers:      otherWorkers,
 		ClaudeWorkers:     claudeWorkers,
+		AgyVersion:        agyInfo.Version,
+		AgyInstalled:      agyInfo.Installed,
 		ClaudeVersion:     claudeInfo.Version,
 		ClaudeInstalled:   claudeInfo.Installed,
 		HasActiveTask:     hasActive,
@@ -703,6 +727,77 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 		TaskPrompt:        prompt,
 		TaskElapsed:       taskElapsed,
 		GeneratedAt:       time.Now(),
+	}
+}
+
+type agentSectionConfig struct {
+	AgentName    string
+	Icon         string
+	IsActive     bool
+	Installed    bool
+	Version      string
+	WorkerActive bool
+	Worker       *ProcessResourceInfo
+	OtherWorkers []ProcessResourceInfo
+	ProjectName  string
+	TaskPrompt   string
+	TaskElapsed  time.Duration
+}
+
+func formatAgentResourceSection(sb *strings.Builder, cfg agentSectionConfig) {
+	activeTag := ""
+	if cfg.IsActive {
+		activeTag = " — 🟢 <i>активен</i>"
+	}
+	sb.WriteString(fmt.Sprintf("\n%s <b>Агент задач (%s)%s:</b>\n", cfg.Icon, html.EscapeString(cfg.AgentName), activeTag))
+
+	if cfg.WorkerActive && cfg.Worker != nil {
+		sb.WriteString(fmt.Sprintf("• PID: <code>%d</code> | Состояние: ⚡️ <b>выполняет задачу</b>\n", cfg.Worker.PID))
+		sb.WriteString(fmt.Sprintf("• Память (RSS): <b>%s</b> (<code>%.1f%%</code> RAM)\n",
+			formatBytes(cfg.Worker.MemoryBytes), cfg.Worker.MemoryPct))
+		sb.WriteString(fmt.Sprintf("• Нагрузка CPU: <b>%.1f%%</b>\n", cfg.Worker.CPUPercent))
+		if cfg.Worker.Elapsed != "" {
+			sb.WriteString(fmt.Sprintf("• Время процесса: <code>%s</code>\n", cfg.Worker.Elapsed))
+		} else if cfg.TaskElapsed > 0 {
+			sb.WriteString(fmt.Sprintf("• Время шага: <code>%s</code>\n", cfg.TaskElapsed))
+		}
+		if cfg.ProjectName != "" {
+			sb.WriteString(fmt.Sprintf("• Проект: <code>%s</code>\n", html.EscapeString(cfg.ProjectName)))
+		}
+		if cfg.TaskPrompt != "" {
+			shortPrompt := utils.TruncateString(cfg.TaskPrompt, 80)
+			sb.WriteString(fmt.Sprintf("• Задача: <i>%s</i>\n", html.EscapeString(shortPrompt)))
+		}
+	} else if cfg.WorkerActive {
+		sb.WriteString("• Состояние: ⚙️ <i>Инициализация или запуск процесса...</i>\n")
+		if cfg.ProjectName != "" {
+			sb.WriteString(fmt.Sprintf("• Проект: <code>%s</code>\n", html.EscapeString(cfg.ProjectName)))
+		}
+	} else {
+		sb.WriteString("• Состояние: 💤 <i>Простаивает (нет активных задач)</i>\n")
+	}
+
+	if cfg.Installed {
+		versionStr := cfg.Version
+		if versionStr == "" {
+			if cfg.AgentName == "claude" {
+				versionStr = "Claude Code CLI"
+			} else {
+				versionStr = cfg.AgentName + " CLI"
+			}
+		}
+		sb.WriteString(fmt.Sprintf("• CLI: <code>%s</code> (🟢 <i>готов к работе</i>)\n", html.EscapeString(versionStr)))
+	} else {
+		sb.WriteString("• CLI: 🔴 <i>не найден в PATH</i>\n")
+	}
+
+	// Other processes
+	if len(cfg.OtherWorkers) > 0 {
+		sb.WriteString(fmt.Sprintf("• Фоновые процессы %s: <code>%d</code> шт.\n", cfg.AgentName, len(cfg.OtherWorkers)))
+		for _, other := range cfg.OtherWorkers {
+			sb.WriteString(fmt.Sprintf("  ↳ PID <code>%d</code>: RAM <b>%s</b>, CPU <b>%.1f%%</b>, аптайм <code>%s</code>\n",
+				other.PID, formatBytes(other.MemoryBytes), other.CPUPercent, other.Elapsed))
+		}
 	}
 }
 
@@ -759,97 +854,43 @@ func FormatResourcesMessage(r ResourcesReport) string {
 
 	// 4. Agent Worker Process (agy)
 	agyWorkerActive := r.HasActiveTask && (r.ActiveWorkerAgent == "" || r.ActiveWorkerAgent == "agy")
-	agyActiveTag := ""
-	if r.ActiveAgent == "agy" || r.ActiveAgent == "" {
-		agyActiveTag = " — 🟢 <i>активен</i>"
+	var agyWorker *ProcessResourceInfo
+	if agyWorkerActive {
+		agyWorker = r.ActiveWorker
 	}
-	sb.WriteString(fmt.Sprintf("\n🧠 <b>Агент задач (agy)%s:</b>\n", agyActiveTag))
-	if agyWorkerActive && r.ActiveWorker != nil {
-		sb.WriteString(fmt.Sprintf("• PID: <code>%d</code> | Состояние: ⚡️ <b>выполняет задачу</b>\n", r.ActiveWorker.PID))
-		sb.WriteString(fmt.Sprintf("• Память (RSS): <b>%s</b> (<code>%.1f%%</code> RAM)\n",
-			formatBytes(r.ActiveWorker.MemoryBytes), r.ActiveWorker.MemoryPct))
-		sb.WriteString(fmt.Sprintf("• Нагрузка CPU: <b>%.1f%%</b>\n", r.ActiveWorker.CPUPercent))
-		if r.ActiveWorker.Elapsed != "" {
-			sb.WriteString(fmt.Sprintf("• Время процесса: <code>%s</code>\n", r.ActiveWorker.Elapsed))
-		} else if r.TaskElapsed > 0 {
-			sb.WriteString(fmt.Sprintf("• Время шага: <code>%s</code>\n", r.TaskElapsed))
-		}
-		if r.ProjectName != "" {
-			sb.WriteString(fmt.Sprintf("• Проект: <code>%s</code>\n", html.EscapeString(r.ProjectName)))
-		}
-		if r.TaskPrompt != "" {
-			shortPrompt := utils.TruncateString(r.TaskPrompt, 80)
-			sb.WriteString(fmt.Sprintf("• Задача: <i>%s</i>\n", html.EscapeString(shortPrompt)))
-		}
-	} else if agyWorkerActive {
-		sb.WriteString("• Состояние: ⚙️ <i>Инициализация или запуск процесса...</i>\n")
-		if r.ProjectName != "" {
-			sb.WriteString(fmt.Sprintf("• Проект: <code>%s</code>\n", html.EscapeString(r.ProjectName)))
-		}
-	} else {
-		sb.WriteString("• Состояние: 💤 <i>Простаивает (нет активных задач)</i>\n")
-	}
-
-	// Other agy processes
-	if len(r.OtherWorkers) > 0 {
-		sb.WriteString(fmt.Sprintf("• Фоновые процессы agy: <code>%d</code> шт.\n", len(r.OtherWorkers)))
-		for _, other := range r.OtherWorkers {
-			sb.WriteString(fmt.Sprintf("  ↳ PID <code>%d</code>: RAM <b>%s</b>, CPU <b>%.1f%%</b>, аптайм <code>%s</code>\n",
-				other.PID, formatBytes(other.MemoryBytes), other.CPUPercent, other.Elapsed))
-		}
-	}
+	formatAgentResourceSection(&sb, agentSectionConfig{
+		AgentName:    "agy",
+		Icon:         "🧠",
+		IsActive:     r.ActiveAgent == "agy" || r.ActiveAgent == "",
+		Installed:    r.AgyInstalled,
+		Version:      r.AgyVersion,
+		WorkerActive: agyWorkerActive,
+		Worker:       agyWorker,
+		OtherWorkers: r.OtherWorkers,
+		ProjectName:  r.ProjectName,
+		TaskPrompt:   r.TaskPrompt,
+		TaskElapsed:  r.TaskElapsed,
+	})
 
 	// 5. Agent Worker Process (claude)
 	claudeWorkerActive := r.HasActiveTask && r.ActiveWorkerAgent == "claude"
-	claudeActiveTag := ""
-	if r.ActiveAgent == "claude" {
-		claudeActiveTag = " — 🟢 <i>активен</i>"
+	var claudeWorker *ProcessResourceInfo
+	if claudeWorkerActive {
+		claudeWorker = r.ActiveWorker
 	}
-	sb.WriteString(fmt.Sprintf("\n🟣 <b>Агент задач (claude)%s:</b>\n", claudeActiveTag))
-	if claudeWorkerActive && r.ActiveWorker != nil {
-		sb.WriteString(fmt.Sprintf("• PID: <code>%d</code> | Состояние: ⚡️ <b>выполняет задачу</b>\n", r.ActiveWorker.PID))
-		sb.WriteString(fmt.Sprintf("• Память (RSS): <b>%s</b> (<code>%.1f%%</code> RAM)\n",
-			formatBytes(r.ActiveWorker.MemoryBytes), r.ActiveWorker.MemoryPct))
-		sb.WriteString(fmt.Sprintf("• Нагрузка CPU: <b>%.1f%%</b>\n", r.ActiveWorker.CPUPercent))
-		if r.ActiveWorker.Elapsed != "" {
-			sb.WriteString(fmt.Sprintf("• Время процесса: <code>%s</code>\n", r.ActiveWorker.Elapsed))
-		} else if r.TaskElapsed > 0 {
-			sb.WriteString(fmt.Sprintf("• Время шага: <code>%s</code>\n", r.TaskElapsed))
-		}
-		if r.ProjectName != "" {
-			sb.WriteString(fmt.Sprintf("• Проект: <code>%s</code>\n", html.EscapeString(r.ProjectName)))
-		}
-		if r.TaskPrompt != "" {
-			shortPrompt := utils.TruncateString(r.TaskPrompt, 80)
-			sb.WriteString(fmt.Sprintf("• Задача: <i>%s</i>\n", html.EscapeString(shortPrompt)))
-		}
-	} else if claudeWorkerActive {
-		sb.WriteString("• Состояние: ⚙️ <i>Инициализация или запуск процесса...</i>\n")
-		if r.ProjectName != "" {
-			sb.WriteString(fmt.Sprintf("• Проект: <code>%s</code>\n", html.EscapeString(r.ProjectName)))
-		}
-	} else {
-		sb.WriteString("• Состояние: 💤 <i>Простаивает (нет активных задач)</i>\n")
-	}
-
-	if r.ClaudeInstalled {
-		versionStr := r.ClaudeVersion
-		if versionStr == "" {
-			versionStr = "Claude Code CLI"
-		}
-		sb.WriteString(fmt.Sprintf("• CLI: <code>%s</code> (🟢 <i>готов к работе</i>)\n", html.EscapeString(versionStr)))
-	} else {
-		sb.WriteString("• CLI: 🔴 <i>не найден в PATH</i>\n")
-	}
-
-	// Other claude processes
-	if len(r.ClaudeWorkers) > 0 {
-		sb.WriteString(fmt.Sprintf("• Фоновые процессы claude: <code>%d</code> шт.\n", len(r.ClaudeWorkers)))
-		for _, other := range r.ClaudeWorkers {
-			sb.WriteString(fmt.Sprintf("  ↳ PID <code>%d</code>: RAM <b>%s</b>, CPU <b>%.1f%%</b>, аптайм <code>%s</code>\n",
-				other.PID, formatBytes(other.MemoryBytes), other.CPUPercent, other.Elapsed))
-		}
-	}
+	formatAgentResourceSection(&sb, agentSectionConfig{
+		AgentName:    "claude",
+		Icon:         "🟣",
+		IsActive:     r.ActiveAgent == "claude",
+		Installed:    r.ClaudeInstalled,
+		Version:      r.ClaudeVersion,
+		WorkerActive: claudeWorkerActive,
+		Worker:       claudeWorker,
+		OtherWorkers: r.ClaudeWorkers,
+		ProjectName:  r.ProjectName,
+		TaskPrompt:   r.TaskPrompt,
+		TaskElapsed:  r.TaskElapsed,
+	})
 
 	sb.WriteString("\n💡 <i>Совет: в консоли Linux для мгновенного мониторинга сервиса используйте:</i>\n")
 	sb.WriteString("<code>systemctl status tg-bot.service</code>\n")

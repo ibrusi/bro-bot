@@ -111,6 +111,8 @@ func TestFormatResourcesMessageActiveTask(t *testing.T) {
 			MemoryPct:   6.1,
 			Elapsed:     "00:45",
 		},
+		AgyInstalled:  true,
+		AgyVersion:    "agy 1.2.4",
 		HasActiveTask: true,
 		ProjectName:   "my-cool-project",
 		TaskPrompt:    "do some work with files",
@@ -129,6 +131,9 @@ func TestFormatResourcesMessageActiveTask(t *testing.T) {
 	}
 	if !strings.Contains(msg, "15.5%") {
 		t.Fatalf("expected worker CPU: %s", msg)
+	}
+	if !strings.Contains(msg, "• CLI: <code>agy 1.2.4</code> (🟢 <i>готов к работе</i>)") {
+		t.Fatalf("expected agy CLI line in message: %s", msg)
 	}
 
 	compact := FormatCompactResourceSnippet(report)
@@ -255,6 +260,65 @@ func TestFormatResourcesMessageClaudeIdleAndWorkers(t *testing.T) {
 	compact := FormatCompactResourceSnippet(report)
 	if !strings.Contains(compact, "claude: 💤 <i>idle</i>") {
 		t.Fatalf("expected claude idle in compact snippet: %s", compact)
+	}
+}
+
+func TestFormatResourcesMessageUnifiedAgentSections(t *testing.T) {
+	// Case 1: Both installed, agy active and running task, claude idle
+	rep1 := ResourcesReport{
+		ActiveAgent:       "agy",
+		ActiveWorkerAgent: "agy",
+		HasActiveTask:     true,
+		AgyInstalled:      true,
+		AgyVersion:        "agy 1.2.4",
+		ClaudeInstalled:   true,
+		ClaudeVersion:     "2.1.273 (Claude Code)",
+		ActiveWorker: &ProcessResourceInfo{
+			PID:         101,
+			CPUPercent:  12.0,
+			MemoryBytes: 150 * 1024 * 1024,
+			Elapsed:     "02:15",
+		},
+		ProjectName: "demo-proj",
+		TaskPrompt:  "fix bug in code",
+	}
+
+	msg1 := FormatResourcesMessage(rep1)
+
+	// Verify agy section
+	if !strings.Contains(msg1, "🧠 <b>Агент задач (agy) — 🟢 <i>активен</i>:</b>") {
+		t.Fatalf("expected agy active header in msg1: %s", msg1)
+	}
+	if !strings.Contains(msg1, "• PID: <code>101</code> | Состояние: ⚡️ <b>выполняет задачу</b>") {
+		t.Fatalf("expected agy task state in msg1: %s", msg1)
+	}
+	if !strings.Contains(msg1, "• CLI: <code>agy 1.2.4</code> (🟢 <i>готов к работе</i>)") {
+		t.Fatalf("expected agy cli line in msg1: %s", msg1)
+	}
+
+	// Verify claude section
+	if !strings.Contains(msg1, "🟣 <b>Агент задач (claude):</b>") {
+		t.Fatalf("expected claude idle header in msg1: %s", msg1)
+	}
+	if !strings.Contains(msg1, "• Состояние: 💤 <i>Простаивает (нет активных задач)</i>") {
+		t.Fatalf("expected claude idle state in msg1: %s", msg1)
+	}
+	if !strings.Contains(msg1, "• CLI: <code>2.1.273 (Claude Code)</code> (🟢 <i>готов к работе</i>)") {
+		t.Fatalf("expected claude cli line in msg1: %s", msg1)
+	}
+
+	// Case 2: Neither CLI found in PATH
+	rep2 := ResourcesReport{
+		ActiveAgent:     "agy",
+		AgyInstalled:    false,
+		ClaudeInstalled: false,
+	}
+
+	msg2 := FormatResourcesMessage(rep2)
+	// Check that both have "• CLI: 🔴 <i>не найден в PATH</i>"
+	countNotFound := strings.Count(msg2, "• CLI: 🔴 <i>не найден в PATH</i>")
+	if countNotFound != 2 {
+		t.Fatalf("expected 2 instances of CLI not found, got %d in: %s", countNotFound, msg2)
 	}
 }
 
