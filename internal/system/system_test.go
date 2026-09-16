@@ -8,9 +8,8 @@ import (
 	"strings"
 	"testing"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/ports"
 	"time"
-
-	tele "gopkg.in/telebot.v3"
 )
 
 func TestParseSystemFlags(t *testing.T) {
@@ -48,8 +47,8 @@ func TestRestartMarkerSaveAndLoad(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	marker := RestartMarker{
-		ChatID:      123456789,
-		MessageID:   42,
+		ChatID:      "123456789",
+		MessageID:   "42",
 		Action:      "rebuild",
 		TriggeredAt: time.Now().Truncate(time.Second),
 		GitCommit:   "abc1234",
@@ -288,7 +287,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	}
 
 	// 2. Активная задача на проекте бота при /rebuild pull
-	task := testTM.CreateTask("bro-bot", "gemini", "Делаем рефакторинг", tele.ChatID(123))
+	task := testTM.CreateTask("bro-bot", "gemini", "Делаем рефакторинг", ports.ChatID("123"))
 	task.Status = domain.TaskStatusRunning
 
 	warn, blocked = checkActiveTasksForSystemAction("/rebuild pull", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects")
@@ -305,7 +304,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	// 3. Активная задача на другом проекте
 	testTM2 := domain.NewTaskManager()
 	domain.GlobalTaskManager = testTM2
-	task2 := testTM2.CreateTask("some-other-project", "gemini", "Фича для сайта", tele.ChatID(123))
+	task2 := testTM2.CreateTask("some-other-project", "gemini", "Фича для сайта", ports.ChatID("123"))
 	task2.Status = domain.TaskStatusRunning
 
 	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects")

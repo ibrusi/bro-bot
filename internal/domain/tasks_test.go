@@ -5,23 +5,17 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"bro-bot/internal/ports"
 	"bro-bot/internal/storage"
 	"time"
-
-	tele "gopkg.in/telebot.v3"
 )
 
-
-type dummyRecipient struct{}
-
-var _ tele.Recipient = dummyRecipient{}
-
-func (d dummyRecipient) Recipient() string { return "12345" }
+const testChatID ports.ChatID = "12345"
 
 func TestTaskManagerCreateAndGet(t *testing.T) {
 	tm := NewTaskManager()
 
-	t1 := tm.CreateTask("project-a", "model-1", "Prompt 1", dummyRecipient{})
+	t1 := tm.CreateTask("project-a", "model-1", "Prompt 1", testChatID)
 	if t1.ID != 1 {
 		t.Fatalf("expected ID 1, got %d", t1.ID)
 	}
@@ -29,7 +23,7 @@ func TestTaskManagerCreateAndGet(t *testing.T) {
 		t.Fatalf("expected project-a, got %s", t1.Project)
 	}
 
-	t2 := tm.CreateTask("project-b", "model-2", "Prompt 2", dummyRecipient{})
+	t2 := tm.CreateTask("project-b", "model-2", "Prompt 2", testChatID)
 	if t2.ID != 2 {
 		t.Fatalf("expected ID 2, got %d", t2.ID)
 	}
@@ -47,8 +41,8 @@ func TestTaskManagerCreateAndGet(t *testing.T) {
 
 func TestTaskManagerSwitchActiveTask(t *testing.T) {
 	tm := NewTaskManager()
-	_ = tm.CreateTask("p1", "m1", "task 1", dummyRecipient{})
-	_ = tm.CreateTask("p2", "m2", "task 2", dummyRecipient{})
+	_ = tm.CreateTask("p1", "m1", "task 1", testChatID)
+	_ = tm.CreateTask("p2", "m2", "task 2", testChatID)
 
 	// Switch to 2
 	switched, err := tm.SetActiveTask(2)
@@ -75,7 +69,7 @@ func TestTaskManagerProjectQueuing(t *testing.T) {
 	tm := NewTaskManager()
 
 	// Task 1 in proj-1 is running
-	t1 := tm.CreateTask("proj-1", "m1", "t1", dummyRecipient{})
+	t1 := tm.CreateTask("proj-1", "m1", "t1", testChatID)
 	t1.Status = TaskStatusRunning
 
 	if !tm.HasRunningTaskInProject("proj-1") {
@@ -86,7 +80,7 @@ func TestTaskManagerProjectQueuing(t *testing.T) {
 	}
 
 	// Task 2 in proj-1 is queued
-	t2 := tm.CreateTask("proj-1", "m1", "t2", dummyRecipient{})
+	t2 := tm.CreateTask("proj-1", "m1", "t2", testChatID)
 	t2.Status = TaskStatusQueued
 
 	queued := tm.GetNextQueuedTaskForProject("proj-1")
@@ -102,10 +96,10 @@ func TestTaskManagerProjectQueuing(t *testing.T) {
 
 func TestTaskManagerAddFollowup(t *testing.T) {
 	tm := NewTaskManager()
-	t1 := tm.CreateTask("proj-1", "m1", "first task", dummyRecipient{})
+	t1 := tm.CreateTask("proj-1", "m1", "first task", testChatID)
 	t1.Status = TaskStatusRunning
 
-	t2 := tm.CreateTask("proj-2", "m1", "second task", dummyRecipient{})
+	t2 := tm.CreateTask("proj-2", "m1", "second task", testChatID)
 	t2.Status = TaskStatusRunning
 
 	// Add followup specifically to task 1
@@ -156,7 +150,7 @@ func TestTaskManagerAddFollowup(t *testing.T) {
 
 func TestTaskManagerCancelTask(t *testing.T) {
 	tm := NewTaskManager()
-	t1 := tm.CreateTask("proj-1", "m1", "cancel me", dummyRecipient{})
+	t1 := tm.CreateTask("proj-1", "m1", "cancel me", testChatID)
 	t1.Status = TaskStatusRunning
 	t1.PendingFollowups = []string{"pending1"}
 
@@ -180,16 +174,16 @@ func TestTaskManagerCancelTask(t *testing.T) {
 
 func TestTaskManagerMessageTracking(t *testing.T) {
 	tm := NewTaskManager()
-	t1 := tm.CreateTask("proj-1", "m1", "t1", dummyRecipient{})
+	t1 := tm.CreateTask("proj-1", "m1", "t1", testChatID)
 
-	tm.RegisterMessageTask(100500, t1.ID)
+	tm.RegisterMessageTask(ports.MessageRef{Chat: testChatID, ID: "100500"}, t1.ID)
 
-	got := tm.GetTaskByMessageID(100500)
+	got := tm.GetTaskByMessageID("100500")
 	if got == nil || got.ID != t1.ID {
 		t.Fatalf("expected task %d for msg 100500, got %v", t1.ID, got)
 	}
 
-	notGot := tm.GetTaskByMessageID(999999)
+	notGot := tm.GetTaskByMessageID("999999")
 	if notGot != nil {
 		t.Fatalf("expected nil for unknown msg, got %v", notGot)
 	}
@@ -197,12 +191,12 @@ func TestTaskManagerMessageTracking(t *testing.T) {
 
 func TestFormatTasksListAndDetails(t *testing.T) {
 	tm := NewTaskManager()
-	t1 := tm.CreateTask("proj-alpha", "gemini-3.8-flash", "Fix bug in main", dummyRecipient{})
+	t1 := tm.CreateTask("proj-alpha", "gemini-3.8-flash", "Fix bug in main", testChatID)
 	t1.Status = TaskStatusRunning
 	t1.StartedAt = time.Now().Add(-2 * time.Minute)
 	t1.AppendLog("Running tests...")
 
-	t2 := tm.CreateTask("proj-alpha", "gemini-3.8-flash", "Add documentation", dummyRecipient{})
+	t2 := tm.CreateTask("proj-alpha", "gemini-3.8-flash", "Add documentation", testChatID)
 	t2.Status = TaskStatusQueued
 
 	msg, menu := FormatTasksList(tm)
@@ -228,13 +222,13 @@ func TestFormatTasksListAndDetails(t *testing.T) {
 func TestTaskManagerMultiProjectConcurrency(t *testing.T) {
 	tm := NewTaskManager()
 
-	t1 := tm.CreateTask("proj-a", "model-1", "task 1", dummyRecipient{})
+	t1 := tm.CreateTask("proj-a", "model-1", "task 1", testChatID)
 	t1.Status = TaskStatusRunning
 
-	t2 := tm.CreateTask("proj-b", "model-2", "task 2", dummyRecipient{})
+	t2 := tm.CreateTask("proj-b", "model-2", "task 2", testChatID)
 	t2.Status = TaskStatusRunning
 
-	t3 := tm.CreateTask("proj-a", "model-1", "task 3", dummyRecipient{})
+	t3 := tm.CreateTask("proj-a", "model-1", "task 3", testChatID)
 	t3.Status = TaskStatusQueued
 
 	if !tm.HasRunningTaskInProject("proj-a") {
@@ -260,7 +254,7 @@ func TestTaskManagerMultiProjectConcurrency(t *testing.T) {
 
 func TestTaskManagerCreateTaskWithPlan(t *testing.T) {
 	tm := NewTaskManager()
-	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Implement feature X", dummyRecipient{}, true)
+	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Implement feature X", testChatID, true)
 
 	if !task.RequiresPlan {
 		t.Errorf("expected RequiresPlan to be true")
@@ -305,7 +299,7 @@ func TestTaskManagerCreateTaskWithPlan(t *testing.T) {
 
 func TestFormatTasksListAndDetailsWithPlan(t *testing.T) {
 	tm := NewTaskManager()
-	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Build feature Y", dummyRecipient{}, true)
+	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Build feature Y", testChatID, true)
 	task.Status = TaskStatusWaitingApproval
 	task.Plan = "1. Create models\n2. Add endpoints"
 
@@ -334,7 +328,7 @@ func TestFormatTasksListAndDetailsWithPlan(t *testing.T) {
 
 func TestFormatTaskDetails_PlanTruncationAndDownloadLink(t *testing.T) {
 	tm := NewTaskManager()
-	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Build feature Y", dummyRecipient{}, true)
+	task := tm.CreateTaskWithPlan("proj-plan", "model-plan", "Build feature Y", testChatID, true)
 	task.Status = TaskStatusWaitingApproval
 
 	// 1. Short plan fits without truncation and includes /planfile link
@@ -371,11 +365,11 @@ func TestFormatTaskDetails_PlanTruncationAndDownloadLink(t *testing.T) {
 
 	// 4. Markup builders
 	markup := BuildTaskDetailsMarkup(task)
-	if markup == nil || len(markup.InlineKeyboard) == 0 {
+	if markup == nil || len(markup.Rows) == 0 {
 		t.Fatalf("expected non-empty markup from BuildTaskDetailsMarkup")
 	}
 	foundDocBtn := false
-	for _, row := range markup.InlineKeyboard {
+	for _, row := range markup.Rows {
 		for _, btn := range row {
 			if strings.Contains(btn.Text, "Скачать план") {
 				foundDocBtn = true
@@ -387,7 +381,7 @@ func TestFormatTaskDetails_PlanTruncationAndDownloadLink(t *testing.T) {
 	}
 
 	planMarkup := BuildTaskPlanMarkup(task.ID)
-	if planMarkup == nil || len(planMarkup.InlineKeyboard) == 0 {
+	if planMarkup == nil || len(planMarkup.Rows) == 0 {
 		t.Errorf("expected non-empty planMarkup")
 	}
 }
@@ -425,7 +419,7 @@ func TestTaskSessionDurationAndLocking(t *testing.T) {
 
 func TestTaskManagerLiveQueriesDuringTaskExecution(t *testing.T) {
 	tm := NewTaskManager()
-	t1 := tm.CreateTask("proj-live", "gemini-3.8-flash", "test concurrency", dummyRecipient{})
+	t1 := tm.CreateTask("proj-live", "gemini-3.8-flash", "test concurrency", testChatID)
 	t1.Lock()
 	t1.Status = TaskStatusRunning
 	t1.StartedAt = time.Now().Add(-10 * time.Second)
@@ -473,7 +467,7 @@ func TestTaskManagerLiveQueriesDuringTaskExecution(t *testing.T) {
 
 func TestTaskStatusWaitingInputAndDeliverAnswer(t *testing.T) {
 	tm := NewTaskManager()
-	task := tm.CreateTask("proj-test", "model-x", "do something", dummyRecipient{})
+	task := tm.CreateTask("proj-test", "model-x", "do something", testChatID)
 	task.Lock()
 	task.Status = TaskStatusWaitingInput
 	task.LastQuestion = "Какой цвет выбрать?"
@@ -503,7 +497,7 @@ func TestTaskStatusPausedAndQueueUnblocking(t *testing.T) {
 	tm := NewTaskManager()
 
 	// Task 1 in proj-1 is waiting input
-	t1 := tm.CreateTask("proj-1", "m1", "task 1", dummyRecipient{})
+	t1 := tm.CreateTask("proj-1", "m1", "task 1", testChatID)
 	t1.Lock()
 	t1.Status = TaskStatusWaitingInput
 	t1.Unlock()
@@ -513,7 +507,7 @@ func TestTaskStatusPausedAndQueueUnblocking(t *testing.T) {
 	}
 
 	// Task 2 in proj-1 is queued
-	t2 := tm.CreateTask("proj-1", "m1", "task 2", dummyRecipient{})
+	t2 := tm.CreateTask("proj-1", "m1", "task 2", testChatID)
 	t2.Lock()
 	t2.Status = TaskStatusQueued
 	t2.Unlock()
@@ -546,7 +540,7 @@ func TestTaskStatusPausedAndQueueUnblocking(t *testing.T) {
 func TestTaskManagerResumeTask(t *testing.T) {
 	tm := NewTaskManager()
 
-	t1 := tm.CreateTask("proj-resume", "m1", "initial", dummyRecipient{})
+	t1 := tm.CreateTask("proj-resume", "m1", "initial", testChatID)
 	t1.Lock()
 	t1.Status = TaskStatusPaused
 	t1.ConversationID = "conv-abc-123"
@@ -570,7 +564,7 @@ func TestTaskManagerResumeTask(t *testing.T) {
 	}
 
 	// 2. Возобновление при занятом проекте
-	t2 := tm.CreateTask("proj-resume", "m1", "another task", dummyRecipient{})
+	t2 := tm.CreateTask("proj-resume", "m1", "another task", testChatID)
 	t2.Lock()
 	t2.Status = TaskStatusRunning
 	t2.Unlock()
@@ -592,7 +586,7 @@ func TestTaskManagerResumeTask(t *testing.T) {
 	}
 
 	// 3. Тест AddFollowup для задачи на паузе
-	t3 := tm.CreateTask("proj-free", "m1", "task 3", dummyRecipient{})
+	t3 := tm.CreateTask("proj-free", "m1", "task 3", testChatID)
 	t3.Lock()
 	t3.Status = TaskStatusPaused
 	t3.Unlock()
@@ -612,7 +606,7 @@ func TestTaskManagerResumeTask(t *testing.T) {
 func TestGetActiveTaskWithCompletedAndActiveTasks(t *testing.T) {
 	tm := NewTaskManager()
 
-	t1 := tm.CreateTask("proj-1", "m1", "task 1", dummyRecipient{})
+	t1 := tm.CreateTask("proj-1", "m1", "task 1", testChatID)
 	t1.Lock()
 	t1.Status = TaskStatusRunning
 	t1.Unlock()
@@ -624,7 +618,7 @@ func TestGetActiveTaskWithCompletedAndActiveTasks(t *testing.T) {
 	}
 
 	// Task 2 is queued with plan requirement
-	t2 := tm.CreateTaskWithPlan("proj-1", "m1", "task 2", dummyRecipient{}, true)
+	t2 := tm.CreateTaskWithPlan("proj-1", "m1", "task 2", testChatID, true)
 	t2.Lock()
 	t2.Status = TaskStatusQueued
 	t2.Unlock()
@@ -676,7 +670,7 @@ func TestTaskManagerWithSQLiteStorage(t *testing.T) {
 	// 1. Инициализация менеджера с хранилищем
 	tm1 := NewTaskManagerWithStorage(s)
 
-	task1 := tm1.CreateTaskWithPlan("proj-alpha", "gemini-3.1-pro-high", "Initial task prompt", dummyRecipient{}, true)
+	task1 := tm1.CreateTaskWithPlan("proj-alpha", "gemini-3.1-pro-high", "Initial task prompt", testChatID, true)
 	if task1.ID != 1 {
 		t.Fatalf("expected task1 ID 1, got %d", task1.ID)
 	}
@@ -696,10 +690,10 @@ func TestTaskManagerWithSQLiteStorage(t *testing.T) {
 		t.Fatalf("AddFollowup failed: %v, qLen=%d, isAns=%v", err, qLen, isAns)
 	}
 
-	tm1.RegisterMessageTask(100500, task1.ID)
+	tm1.RegisterMessageTask(ports.MessageRef{Chat: testChatID, ID: "100500"}, task1.ID)
 	_, _ = tm1.SetActiveTask(task1.ID)
 
-	task2 := tm1.CreateTask("proj-beta", "flash", "Task 2 prompt", dummyRecipient{})
+	task2 := tm1.CreateTask("proj-beta", "flash", "Task 2 prompt", testChatID)
 	task2.Lock()
 	task2.Status = TaskStatusRunning // Имитируем задачу, оставшуюся running при падении
 	task2.Unlock()
@@ -727,7 +721,7 @@ func TestTaskManagerWithSQLiteStorage(t *testing.T) {
 	}
 
 	// Проверка маппинга сообщений
-	msgTask := tm2.GetTaskByMessageID(100500)
+	msgTask := tm2.GetTaskByMessageID("100500")
 	if msgTask == nil || msgTask.ID != 1 {
 		t.Fatalf("expected message 100500 to map to task 1, got %v", msgTask)
 	}
@@ -745,7 +739,7 @@ func TestTaskManagerWithSQLiteStorage(t *testing.T) {
 	}
 
 	// Проверка создания следующей задачи (nextID должен быть 3)
-	task3 := tm2.CreateTask("proj-gamma", "model", "Task 3", dummyRecipient{})
+	task3 := tm2.CreateTask("proj-gamma", "model", "Task 3", testChatID)
 	if task3.ID != 3 {
 		t.Fatalf("expected task 3 ID to be 3, got %d", task3.ID)
 	}
@@ -759,7 +753,7 @@ func TestSetAndClearTaskConversationID(t *testing.T) {
 	defer memStore.Close()
 
 	tm := NewTaskManagerWithStorage(memStore)
-	task := tm.CreateTask("proj-conv", "model", "Prompt", dummyRecipient{})
+	task := tm.CreateTask("proj-conv", "model", "Prompt", testChatID)
 
 	// 1. Установка conversation_id через SetTaskConversationID
 	testConvID := "agy-conv-uuid-12345"
@@ -804,7 +798,7 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 	tm := NewTaskManager()
 
 	// 1. Задача на планировании без переданного ответа с существующей сессией
-	pTask := tm.CreateTaskWithPlan("proj-plan", "m", "Make plan", dummyRecipient{}, true)
+	pTask := tm.CreateTaskWithPlan("proj-plan", "m", "Make plan", testChatID, true)
 	pTask.Lock()
 	pTask.Status = TaskStatusPaused
 	pTask.ConversationID = "conv-plan-123"
@@ -822,7 +816,7 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 	}
 
 	// 2. Задача на исполнении без переданного ответа с существующей сессией
-	execTask := tm.CreateTaskWithPlan("proj-exec", "m", "Execute task", dummyRecipient{}, true)
+	execTask := tm.CreateTaskWithPlan("proj-exec", "m", "Execute task", testChatID, true)
 	execTask.Lock()
 	execTask.PlanApproved = true
 	execTask.Status = TaskStatusPaused
@@ -841,7 +835,7 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 	}
 
 	// 3. Задача со статусом TaskStatusFailed должна успешно возобновляться
-	failedTask := tm.CreateTaskWithPlan("proj-failed", "m", "Failed task", dummyRecipient{}, false)
+	failedTask := tm.CreateTaskWithPlan("proj-failed", "m", "Failed task", testChatID, false)
 	failedTask.Lock()
 	failedTask.Status = TaskStatusFailed
 	failedTask.FinishedAt = time.Now()
@@ -862,7 +856,7 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 	}
 
 	// 4. Задача со статусом TaskStatusCancelled должна успешно возобновляться
-	cancelledTask := tm.CreateTaskWithPlan("proj-cancelled", "m", "Cancelled task", dummyRecipient{}, false)
+	cancelledTask := tm.CreateTaskWithPlan("proj-cancelled", "m", "Cancelled task", testChatID, false)
 	cancelledTask.Lock()
 	cancelledTask.Status = TaskStatusCancelled
 	cancelledTask.FinishedAt = time.Now()
@@ -887,7 +881,7 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 	}
 
 	// 5. Возобновление отменённой задачи без ответа — должен сгенерировать дефолтный промпт
-	cancelledTask2 := tm.CreateTaskWithPlan("proj-cancelled2", "m", "Another cancelled", dummyRecipient{}, false)
+	cancelledTask2 := tm.CreateTaskWithPlan("proj-cancelled2", "m", "Another cancelled", testChatID, false)
 	cancelledTask2.Lock()
 	cancelledTask2.Status = TaskStatusCancelled
 	cancelledTask2.FinishedAt = time.Now()
@@ -909,7 +903,7 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 func TestAddFollowupResumeCancelledTask(t *testing.T) {
 	tm := NewTaskManager()
 
-	task := tm.CreateTask("proj-followup-cancel", "m1", "task to cancel and resume", dummyRecipient{})
+	task := tm.CreateTask("proj-followup-cancel", "m1", "task to cancel and resume", testChatID)
 	task.Lock()
 	task.Status = TaskStatusCancelled
 	task.FinishedAt = time.Now()

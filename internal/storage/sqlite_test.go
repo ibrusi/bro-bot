@@ -313,11 +313,11 @@ func TestStorageMessageMapping(t *testing.T) {
 
 	taskID, _ := s.CreateTask(ctx, &TaskRecord{Project: "p", Model: "m", Status: "running"})
 
-	if err := s.RegisterMessageTask(ctx, 999, 12345, taskID); err != nil {
+	if err := s.RegisterMessageTask(ctx, "12345", "999", taskID); err != nil {
 		t.Fatalf("RegisterMessageTask failed: %v", err)
 	}
 
-	gotTaskID, err := s.GetTaskIDByMessage(ctx, 999)
+	gotTaskID, err := s.GetTaskIDByMessage(ctx, "999")
 	if err != nil {
 		t.Fatalf("GetTaskIDByMessage failed: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestStorageMessageMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAllMessageTasks failed: %v", err)
 	}
-	if len(all) != 1 || all[999] != taskID {
+	if len(all) != 1 || all["999"] != taskID {
 		t.Fatalf("ListAllMessageTasks mismatch: %+v", all)
 	}
 }
@@ -446,4 +446,3 @@ func TestStorageUpdateTaskConversationID(t *testing.T) {
 		t.Fatalf("expected ConversationID %q, got %q", testConvID, got2.ConversationID)
 	}
 }
-

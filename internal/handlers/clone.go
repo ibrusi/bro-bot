@@ -11,9 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"bro-bot/internal/config"
+	"bro-bot/internal/ports"
 	"time"
-
-	tele "gopkg.in/telebot.v3"
 )
 
 var validProjectNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_\.\-]+$`)
@@ -142,9 +141,9 @@ func cloneRepository(ctx context.Context, repoURL, targetPath string) ([]byte, e
 	return cmd.CombinedOutput()
 }
 
-// handleCloneCommand handles /clone <url> [name] Telegram bot command.
-func handleCloneCommand(b *tele.Bot, c tele.Context) error {
-	args := c.Args()
+// handleCloneCommand обрабатывает команду /clone <url> [имя].
+func handleCloneCommand(s ports.Session) error {
+	args := s.Args()
 	if len(args) == 0 {
 		helpMsg := "📥 <b>Клонирование git-репозитория:</b>\n\n" +
 			"Использование:\n" +
@@ -157,55 +156,57 @@ func handleCloneCommand(b *tele.Bot, c tele.Context) error {
 			"• <b>Своё имя папки:</b>\n" +
 			"  <code>/clone git@github.com:owner/repo.git my-project</code>\n\n" +
 			"💡 <i>Репозиторий будет сохранен в каталог проектов рядом с остальными проектами. Активный проект не переключается (для переключения используйте <code>/use &lt;имя&gt;</code>).</i>"
-		return c.Send(helpMsg, tele.ModeHTML)
+		return s.Send(helpMsg, ports.Rich())
 	}
 
 	rawURL := args[0]
 	cleanURL, defaultName, err := parseRepoURL(rawURL)
 	if err != nil {
-		return c.Send(fmt.Sprintf("❌ Ошибка в URL: %s\n\nИспользование: <code>/clone &lt;url&gt; [имя_папки]</code>", html.EscapeString(err.Error())), tele.ModeHTML)
+		return s.Send(fmt.Sprintf("❌ Ошибка в URL: %s\n\nИспользование: <code>/clone &lt;url&gt; [имя_папки]</code>", html.EscapeString(err.Error())), ports.Rich())
 	}
 
 	targetName := defaultName
 	if len(args) > 1 {
 		customName, err := sanitizeProjectName(args[1])
 		if err != nil {
-			return c.Send(fmt.Sprintf("❌ Ошибка в имени проекта: %s", html.EscapeString(err.Error())), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ Ошибка в имени проекта: %s", html.EscapeString(err.Error())), ports.Rich())
 		}
 		targetName = customName
 	} else {
 		validatedName, err := sanitizeProjectName(defaultName)
 		if err != nil {
-			return c.Send(fmt.Sprintf("❌ Не удалось использовать автоматически извлеченное имя <code>%s</code>: %s\nУкажите имя явно: <code>/clone %s &lt;имя&gt;</code>",
-				html.EscapeString(defaultName), html.EscapeString(err.Error()), html.EscapeString(rawURL)), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ Не удалось использовать автоматически извлеченное имя <code>%s</code>: %s\nУкажите имя явно: <code>/clone %s &lt;имя&gt;</code>",
+				html.EscapeString(defaultName), html.EscapeString(err.Error()), html.EscapeString(rawURL)), ports.Rich())
 		}
 		targetName = validatedName
 	}
 
 	cleanRoot := filepath.Clean(config.ProjectsRoot)
 	if err := os.MkdirAll(cleanRoot, 0755); err != nil {
-		return c.Send(fmt.Sprintf("❌ Ошибка доступа к каталогу проектов: %s", html.EscapeString(err.Error())), tele.ModeHTML)
+		return s.Send(fmt.Sprintf("❌ Ошибка доступа к каталогу проектов: %s", html.EscapeString(err.Error())), ports.Rich())
 	}
 	targetPath := filepath.Join(cleanRoot, targetName)
 	cleanTargetPath := filepath.Clean(targetPath)
 
 	if !strings.HasPrefix(cleanTargetPath, cleanRoot+string(filepath.Separator)) {
-		return c.Send("❌ Недопустимый путь для проекта.", tele.ModeHTML)
+		return s.Send("❌ Недопустимый путь для проекта.", ports.Rich())
 	}
 
 	if _, err := os.Stat(targetPath); err == nil {
-		return c.Send(fmt.Sprintf("❌ Каталог <code>%s</code> уже существует в проектах.\n\nДля переключения на него используйте: <code>/use %s</code>",
-			html.EscapeString(targetName), html.EscapeString(targetName)), tele.ModeHTML)
+		return s.Send(fmt.Sprintf("❌ Каталог <code>%s</code> уже существует в проектах.\n\nДля переключения на него используйте: <code>/use %s</code>",
+			html.EscapeString(targetName), html.EscapeString(targetName)), ports.Rich())
 	}
 
-	statusMsg, err := b.Send(c.Recipient(), fmt.Sprintf(
+	m := s.Messenger()
+	chat := s.Chat()
+	statusRef, err := m.Send(context.Background(), chat, fmt.Sprintf(
 		"⏳ <b>Клонирование репозитория...</b>\n\n"+
 			"🌐 <b>URL:</b> <code>%s</code>\n"+
 			"📁 <b>Имя проекта:</b> <code>%s</code>\n\n"+
 			"<i>Пожалуйста, подождите, выполняется git clone...</i>",
 		html.EscapeString(cleanURL),
 		html.EscapeString(targetName),
-	), tele.ModeHTML)
+	), ports.Rich())
 	if err != nil {
 		return err
 	}
@@ -250,8 +251,8 @@ func handleCloneCommand(b *tele.Bot, c tele.Context) error {
 				hint.String(),
 			)
 
-			if _, editErr := b.Edit(statusMsg, errorMsg, tele.ModeHTML); editErr != nil {
-				_ = c.Send(errorMsg, tele.ModeHTML)
+			if editErr := m.Edit(context.Background(), statusRef, errorMsg, ports.Rich()); editErr != nil {
+				_ = s.Send(errorMsg, ports.Rich())
 			}
 			return
 		}
@@ -290,8 +291,8 @@ func handleCloneCommand(b *tele.Bot, c tele.Context) error {
 			html.EscapeString(targetName),
 		)
 
-		if _, editErr := b.Edit(statusMsg, successMsg, tele.ModeHTML); editErr != nil {
-			_ = c.Send(successMsg, tele.ModeHTML)
+		if editErr := m.Edit(context.Background(), statusRef, successMsg, ports.Rich()); editErr != nil {
+			_ = s.Send(successMsg, ports.Rich())
 		}
 	}()
 
