@@ -115,10 +115,10 @@
 ### 1. Клонирование репозитория
 
 ```bash
-# Рекомендуемый путь установки: /home/deploy/tg-agent-bot
+# Рекомендуемый путь установки: /home/deploy/bro-bot
 cd /home/deploy
-git clone git@github.com:ibrusi/bro-bot.git tg-agent-bot
-cd tg-agent-bot
+git clone git@github.com:ibrusi/bro-bot.git
+cd bro-bot
 ```
 
 ### 2. Создание каталога проектов
@@ -177,8 +177,8 @@ DEFAULT_PROJECT=bro-bot
 DEFAULT_MODEL=gemini-3.1-pro-high
 QUESTION_TIMEOUT=15m
 STEP_TIMEOUT=30m
-BOT_DIR=/home/deploy/tg-agent-bot
-BOT_SERVICE_NAME=tg-bot.service
+BOT_DIR=/home/deploy/bro-bot
+BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
 ```
 
@@ -188,7 +188,7 @@ SQLITE_DB_PATH=data/bot.db
 
 Для круглосуточной стабильной работы и корректного функционирования команд `/restart` и `/rebuild` рекомендуется настроить systemd-сервис.
 
-### 1. Создание сервиса `/etc/systemd/system/tg-bot.service`
+### 1. Создание сервиса `/etc/systemd/system/bro-bot.service`
 
 Создайте файл сервиса с помощью `sudo`:
 
@@ -202,13 +202,13 @@ Wants=network-online.target
 Type=simple
 User=deploy
 Group=deploy
-WorkingDirectory=/home/deploy/tg-agent-bot
+WorkingDirectory=/home/deploy/bro-bot
 
-EnvironmentFile=/home/deploy/tg-agent-bot/.env
+EnvironmentFile=/home/deploy/bro-bot/.env
 # Убедитесь, что в PATH входят пути к go, agy и пользовательским бинарникам
 Environment="PATH=/usr/local/go/bin:/home/deploy/go/bin:/home/deploy/.local/bin:/usr/bin:/bin"
 
-ExecStart=/home/deploy/tg-agent-bot/bot
+ExecStart=/home/deploy/bro-bot/bot
 
 Restart=always
 RestartSec=5s
@@ -224,16 +224,16 @@ WantedBy=multi-user.target
 
 ### 2. Настройка прав `sudoers` для перезапуска сервиса
 
-Команды бота `/restart` и `/rebuild` выполняют `sudo systemctl restart tg-bot.service`. Чтобы бот мог перезапускать себя без запроса пароля, добавьте правило в sudoers:
+Команды бота `/restart` и `/rebuild` выполняют `sudo systemctl restart bro-bot.service`. Чтобы бот мог перезапускать себя без запроса пароля, добавьте правило в sudoers:
 
 ```bash
-sudo visudo -f /etc/sudoers.d/tg-bot
+sudo visudo -f /etc/sudoers.d/bro-bot
 ```
 
 Добавьте строку (замените `deploy` на имя вашего пользователя):
 
 ```sudoers
-deploy ALL=(ALL) NOPASSWD: /bin/systemctl restart tg-bot.service, /usr/bin/systemctl restart tg-bot.service
+deploy ALL=(ALL) NOPASSWD: /bin/systemctl restart bro-bot.service, /usr/bin/systemctl restart bro-bot.service
 ```
 
 ### 3. Запуск и проверка службы
@@ -243,13 +243,13 @@ deploy ALL=(ALL) NOPASSWD: /bin/systemctl restart tg-bot.service, /usr/bin/syste
 sudo systemctl daemon-reload
 
 # Включить автозапуск и запустить службу
-sudo systemctl enable --now tg-bot.service
+sudo systemctl enable --now bro-bot.service
 
 # Проверить статус
-sudo systemctl status tg-bot.service
+sudo systemctl status bro-bot.service
 
 # Просмотр логов в реальном времени
-journalctl -u tg-bot.service -f
+journalctl -u bro-bot.service -f
 ```
 
 ---
