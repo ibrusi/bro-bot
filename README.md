@@ -1,10 +1,10 @@
-# 🤖 tg-bot-agent (Telegram Agent Bridge Bot)
+# 🤖 bro-bot (Telegram Agent Bridge Bot)
 
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)](https://kernel.org)
 
-**tg-bot-agent** — это автономный сервис-мост на Go, соединяющий **Telegram** с агентной средой **Google Antigravity CLI (`agy`)**. 
+**bro-bot** — это автономный сервис-мост на Go, соединяющий **Telegram** с агентной средой **Google Antigravity CLI (`agy`)**. 
 
 Бот позволяет разработчику или команде управлять пулом проектов, ставить задачи на кодинг и рефакторинг, утверждать интерактивные планы реализации, отвечать на уточняющие вопросы агента, контролировать лимиты токенов и потребление ресурсов сервера — не покидая Telegram.
 
@@ -65,7 +65,7 @@
                              │  HTTPS / Long Polling
                              ▼
 ┌──────────────────────────────────────────────────────────┐
-│              tg-bot-agent (Go Executable)                │
+│                 bro-bot (Go Executable)                  │
 │                                                          │
 │  internal/handlers/  ──► Telegram Commands & Callbacks   │
 │  internal/domain/    ──► Task Queue, Sessions & Tokens   │
@@ -117,7 +117,7 @@
 ```bash
 # Рекомендуемый путь установки: /home/deploy/tg-agent-bot
 cd /home/deploy
-git clone git@github.com:ibrusi/tg-bot-agent.git tg-agent-bot
+git clone git@github.com:ibrusi/bro-bot.git tg-agent-bot
 cd tg-agent-bot
 ```
 
@@ -173,7 +173,7 @@ nano .env
 TELEGRAM_BOT_TOKEN=8840072233:AAG23BWxBYQOch15Dj6DuMGONiY2U2Vib3A
 TELEGRAM_ADMIN_ID=52052859
 PROJECTS_ROOT=/home/deploy/projects
-DEFAULT_PROJECT=tg-bot-agent
+DEFAULT_PROJECT=bro-bot
 DEFAULT_MODEL=gemini-3.1-pro-high
 QUESTION_TIMEOUT=15m
 STEP_TIMEOUT=30m
@@ -340,7 +340,7 @@ journalctl -u tg-bot.service -f
 
 ## 🤖 Системные настройки бота (GEMINI.md)
 
-Файл **`GEMINI.md`** содержит специфичные инструкции и контекст для интеллектуального агента (agy) при работе над кодовой базой самого проекта `tg-bot-agent`.
+Файл **`GEMINI.md`** содержит специфичные инструкции и контекст для интеллектуального агента (agy) при работе над кодовой базой самого проекта `bro-bot`.
 
 Ключевые особенности:
 1. **Знание конфигурации**: Агент ознакомлен со списком основных переменных окружения проекта (например, `TELEGRAM_ADMIN_ID`, `PROJECTS_ROOT`, `DEFAULT_MODEL`, `QUESTION_TIMEOUT`).
