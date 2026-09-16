@@ -1,6 +1,9 @@
 package system
 
 import (
+	"bro-bot/internal/config"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/utils"
 	"bufio"
 	"bytes"
 	"context"
@@ -12,9 +15,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"bro-bot/internal/config"
-	"bro-bot/internal/domain"
-	"bro-bot/internal/utils"
 	"time"
 )
 

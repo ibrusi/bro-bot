@@ -1,6 +1,10 @@
 package system
 
 import (
+	"bro-bot/internal/config"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,10 +17,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"bro-bot/internal/config"
-	"bro-bot/internal/domain"
-	"bro-bot/internal/ports"
-	"bro-bot/internal/utils"
 	"time"
 )
 

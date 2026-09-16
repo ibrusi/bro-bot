@@ -1,6 +1,15 @@
 package handlers
 
 import (
+	"bro-bot/internal/adapters/agy"
+	"bro-bot/internal/adapters/claude"
+	"bro-bot/internal/config"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/models"
+	"bro-bot/internal/ports"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/system"
+	"bro-bot/internal/utils"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -16,18 +25,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"bro-bot/internal/config"
-	"bro-bot/internal/domain"
-	"bro-bot/internal/models"
-	"bro-bot/internal/ports"
-	"bro-bot/internal/storage"
-	"bro-bot/internal/system"
-	"bro-bot/internal/utils"
 	"time"
 )
 
 var (
-	Agent ports.AgentFramework
+	Agent           ports.AgentFramework
+	ActiveAgentName = "agy"
 )
 
 type AgyQuotaResponse struct {
@@ -404,6 +407,31 @@ func Start(t ports.Transport) {
 		}
 
 		return s.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", html.EscapeString(resolved)), ports.Rich())
+	})
+
+	t.OnCommand("agent", func(s ports.Session) error {
+		args := s.Args()
+		if len(args) == 0 {
+			return s.Send(fmt.Sprintf("🤖 Текущий CLI агент: <code>%s</code>\nДоступны: <b>agy</b>, <b>claude</b>", html.EscapeString(ActiveAgentName)), ports.Rich())
+		}
+
+		name := strings.ToLower(strings.TrimSpace(args[0]))
+		switch name {
+		case "agy":
+			adapter := agy.NewAgyAdapter()
+			Agent = adapter
+			models.Agent = adapter
+			ActiveAgentName = "agy"
+			return s.Send("✅ CLI агент переключен на: <b>agy</b>", ports.Rich())
+		case "claude":
+			adapter := claude.NewClaudeAdapter()
+			Agent = adapter
+			models.Agent = adapter
+			ActiveAgentName = "claude"
+			return s.Send("✅ CLI агент переключен на: <b>claude</b>", ports.Rich())
+		default:
+			return s.Send(fmt.Sprintf("❌ Неизвестный агент: <code>%s</code>. Доступны: <b>agy</b>, <b>claude</b>", html.EscapeString(name)), ports.Rich())
+		}
 	})
 
 	handleUsage := func(s ports.Session) error {
@@ -2959,6 +2987,7 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "usage", Description: "Остаток квот и лимиты аккаунта"},
 		{Name: "models", Description: "Список доступных моделей"},
 		{Name: "model", Description: "[имя] Переключить активную модель"},
+		{Name: "agent", Description: "[agy|claude] Переключить активного CLI агента"},
 		{Name: "projects", Description: "Список доступных проектов"},
 		{Name: "use", Description: "<имя> Переключить активный проект"},
 		{Name: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
