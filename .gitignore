@@ -1,6 +1,6 @@
 # Binaries
 /bot
-/tg-agent-bot
+/bro-bot
 *.exe
 *.exe~
 *.dll

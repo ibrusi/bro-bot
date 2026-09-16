@@ -1,9 +1,9 @@
 package main
 
 import (
-	"tg-agent-bot/internal/adapters/agy"
-	"tg-agent-bot/internal/handlers"
-	"tg-agent-bot/internal/models"
+	"bro-bot/internal/adapters/agy"
+	"bro-bot/internal/handlers"
+	"bro-bot/internal/models"
 )
 
 func main() {

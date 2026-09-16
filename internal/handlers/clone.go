@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"tg-agent-bot/internal/config"
+	"bro-bot/internal/config"
 	"time"
 
 	tele "gopkg.in/telebot.v3"

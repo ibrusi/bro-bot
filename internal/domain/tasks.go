@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"tg-agent-bot/internal/storage"
-	"tg-agent-bot/internal/utils"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/utils"
 	"time"
 
 	tele "gopkg.in/telebot.v3"

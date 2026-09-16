@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"fmt"
-	"tg-agent-bot/internal/utils"
+	"bro-bot/internal/utils"
 
 	tele "gopkg.in/telebot.v3"
 )

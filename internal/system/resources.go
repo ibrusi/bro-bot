@@ -12,9 +12,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"tg-agent-bot/internal/config"
-	"tg-agent-bot/internal/domain"
-	"tg-agent-bot/internal/utils"
+	"bro-bot/internal/config"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/utils"
 	"time"
 )
 

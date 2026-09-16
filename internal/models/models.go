@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"tg-agent-bot/internal/ports"
-	"tg-agent-bot/internal/utils"
+	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 	"time"
 )
 

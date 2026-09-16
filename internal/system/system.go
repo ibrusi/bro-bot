@@ -12,9 +12,9 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"tg-agent-bot/internal/config"
-	"tg-agent-bot/internal/domain"
-	"tg-agent-bot/internal/utils"
+	"bro-bot/internal/config"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/utils"
 	"time"
 
 	tele "gopkg.in/telebot.v3"
@@ -22,7 +22,7 @@ import (
 
 const (
 	restartMarkerFilename = ".restart_notify.json"
-	defaultBotDir         = "/home/deploy/tg-agent-bot"
+	defaultBotDir         = "/home/deploy/bro-bot"
 	defaultServiceName    = "tg-bot.service"
 )
 
@@ -342,13 +342,13 @@ func isBotProject(projectName, botDir, projectsRoot string) bool {
 	}
 
 	// Прямое совпадение с известными именами репозитория бота
-	for _, name := range []string{"tg-bot-agent", "tg-agent-bot"} {
+	for _, name := range []string{"bro-bot", "bro-bot"} {
 		if strings.EqualFold(cleanProj, name) || strings.EqualFold(baseProj, name) {
 			return true
 		}
 	}
 
-	// Совпадение с basename директории бота (например, tg-agent-bot)
+	// Совпадение с basename директории бота (например, bro-bot)
 	if botDir != "" {
 		botBase := filepath.Base(botDir)
 		if strings.EqualFold(cleanProj, botBase) || strings.EqualFold(baseProj, botBase) {

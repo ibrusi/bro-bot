@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"tg-agent-bot/internal/models"
-	"tg-agent-bot/internal/storage"
-	"tg-agent-bot/internal/utils"
+	"bro-bot/internal/models"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/utils"
 	"time"
 )
 

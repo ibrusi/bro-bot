@@ -1,7 +1,7 @@
 package config
 
 import (
-	"tg-agent-bot/internal/domain"
+	"bro-bot/internal/domain"
 	"time"
 )
 

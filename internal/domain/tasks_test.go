@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"tg-agent-bot/internal/storage"
+	"bro-bot/internal/storage"
 	"time"
 
 	tele "gopkg.in/telebot.v3"

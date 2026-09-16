@@ -13,11 +13,11 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"tg-agent-bot/internal/config"
-	"tg-agent-bot/internal/domain"
-	"tg-agent-bot/internal/models"
-	"tg-agent-bot/internal/storage"
-	"tg-agent-bot/internal/utils"
+	"bro-bot/internal/config"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/models"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/utils"
 	"time"
 
 	"github.com/creack/pty"
@@ -32,7 +32,7 @@ func TestInitDefaultProject(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(tmpDir, "aaa-project"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(tmpDir, "tg-bot-agent"), 0755); err != nil {
+	if err := os.Mkdir(filepath.Join(tmpDir, "bro-bot"), 0755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -48,7 +48,7 @@ func TestInitDefaultProject(t *testing.T) {
 	}
 
 	// Case 2: Custom DEFAULT_PROJECT env var
-	os.Setenv("DEFAULT_PROJECT", "tg-bot-agent")
+	os.Setenv("DEFAULT_PROJECT", "bro-bot")
 	defer os.Unsetenv("DEFAULT_PROJECT")
 	initDefaultProject(tmpDir)
 
@@ -56,8 +56,8 @@ func TestInitDefaultProject(t *testing.T) {
 	cur = config.ProjectState.CurrentProject
 	config.ProjectState.RUnlock()
 
-	if cur != "tg-bot-agent" {
-		t.Errorf("expected tg-bot-agent, got %s", cur)
+	if cur != "bro-bot" {
+		t.Errorf("expected bro-bot, got %s", cur)
 	}
 
 	// Case 3: Neither custom nor existing -> fallback to first dir
