@@ -924,3 +924,48 @@ func TestAddFollowupResumeCancelledTask(t *testing.T) {
 		t.Errorf("expected CurrentPrompt to be 'Resume via followup', got '%s'", resumed.CurrentPrompt)
 	}
 }
+
+func TestTaskAgentAndSessionFormatting(t *testing.T) {
+	tm := NewTaskManager()
+
+	// 1. Создание задачи с агентом claude
+	tClaude := tm.CreateTaskWithPlanAndAgent("proj-claude", "sonnet", "claude", "Do claude work", testChatID, false)
+	if tClaude.Agent != "claude" {
+		t.Errorf("expected Agent 'claude', got '%s'", tClaude.Agent)
+	}
+
+	// 2. Создание задачи с агентом agy (по умолчанию)
+	tAgy := tm.CreateTask("proj-agy", "gemini-3.1-pro-high", "Do agy work", testChatID)
+	if tAgy.Agent != "agy" {
+		t.Errorf("expected Agent 'agy', got '%s'", tAgy.Agent)
+	}
+
+	// 3. Установка сессий
+	tm.SetTaskConversationID(tClaude.ID, "session-claude-uuid-1234")
+	tm.SetTaskConversationID(tAgy.ID, "session-agy-uuid-5678")
+
+	// 4. Проверка FormatTasksList
+	listMsg, _ := FormatTasksList(tm)
+	if !strings.Contains(listMsg, "[<code>claude</code>]") {
+		t.Errorf("expected FormatTasksList to contain '[<code>claude</code>]', got: %s", listMsg)
+	}
+	if !strings.Contains(listMsg, "[<code>agy</code>]") {
+		t.Errorf("expected FormatTasksList to contain '[<code>agy</code>]', got: %s", listMsg)
+	}
+
+	// 5. Проверка FormatTaskDetails
+	detailsClaude := FormatTaskDetails(tClaude, true)
+	if !strings.Contains(detailsClaude, "• <b>Агент:</b> <code>claude</code>") {
+		t.Errorf("expected FormatTaskDetails to contain '• <b>Агент:</b> <code>claude</code>', got: %s", detailsClaude)
+	}
+	if !strings.Contains(detailsClaude, "• 🧵 <b>Сессия claude:</b> <code>session-claude-uuid-1234</code>") {
+		t.Errorf("expected FormatTaskDetails to contain '• 🧵 <b>Сессия claude:</b> ...', got: %s", detailsClaude)
+	}
+
+	// 6. Проверка SetTaskAgent
+	tm.SetTaskAgent(tClaude.ID, "agy")
+	if tClaude.Agent != "agy" {
+		t.Errorf("expected updated Agent 'agy', got '%s'", tClaude.Agent)
+	}
+}
+

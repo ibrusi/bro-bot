@@ -282,6 +282,7 @@ func (r *StreamResult) IsError() bool {
 type TaskTokenMetrics struct {
 	Project         string
 	Model           string
+	Agent           string
 	Prompt          string
 	PRURL           string
 	ConversationID  string
@@ -389,14 +390,48 @@ func NewTokenTracker() *TokenTracker {
 	}
 }
 
-// StartTask инициализирует отслеживание новой задачи.
-func (t *TokenTracker) StartTask(project, model, prompt string) {
+// StartTaskWithAgent инициализирует отслеживание новой задачи с указанием агента.
+func (t *TokenTracker) StartTaskWithAgent(project, model, agent, prompt string) {
 	t.Lock()
 	defer t.Unlock()
 
+	if agent == "" {
+		agent = "agy"
+	}
 	t.currentTask = &TaskTokenMetrics{
 		Project:   project,
 		Model:     model,
+		Agent:     agent,
+		Prompt:    prompt,
+		StartedAt: time.Now(),
+		Usage:     UsageStats{},
+	}
+	t.stepUsages = make(map[int]UsageStats)
+	t.accumulatedSteps = UsageStats{}
+	t.stepDurationTotal = 0
+}
+
+// StartTask инициализирует отслеживание новой задачи (по умолчанию агент agy).
+func (t *TokenTracker) StartTask(project, model, prompt string) {
+	t.StartTaskWithAgent(project, model, "agy", prompt)
+}
+
+// StartTaskIfNotActiveWithAgent инициализирует отслеживание, если текущая задача не установлена.
+func (t *TokenTracker) StartTaskIfNotActiveWithAgent(project, model, agent, prompt string) {
+	t.Lock()
+	defer t.Unlock()
+
+	if t.currentTask != nil {
+		return
+	}
+
+	if agent == "" {
+		agent = "agy"
+	}
+	t.currentTask = &TaskTokenMetrics{
+		Project:   project,
+		Model:     model,
+		Agent:     agent,
 		Prompt:    prompt,
 		StartedAt: time.Now(),
 		Usage:     UsageStats{},
@@ -409,23 +444,7 @@ func (t *TokenTracker) StartTask(project, model, prompt string) {
 // StartTaskIfNotActive инициализирует отслеживание, если текущая задача не установлена.
 // Полезно при возобновлении задачи, которая была приостановлена (и currentTask == nil).
 func (t *TokenTracker) StartTaskIfNotActive(project, model, prompt string) {
-	t.Lock()
-	defer t.Unlock()
-
-	if t.currentTask != nil {
-		return
-	}
-
-	t.currentTask = &TaskTokenMetrics{
-		Project:   project,
-		Model:     model,
-		Prompt:    prompt,
-		StartedAt: time.Now(),
-		Usage:     UsageStats{},
-	}
-	t.stepUsages = make(map[int]UsageStats)
-	t.accumulatedSteps = UsageStats{}
-	t.stepDurationTotal = 0
+	t.StartTaskIfNotActiveWithAgent(project, model, "agy", prompt)
 }
 
 // StartNextStep сохраняет накопленные метрики предыдущего шага в рамках одной задачи (followups).
@@ -1055,7 +1074,16 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 			bldr.WriteString(fmt.Sprintf("• 🔗 <b>PR:</b> <a href=\"%s\">Открыть Pull Request</a>\n", html.EscapeString(metrics.PRURL)))
 		}
 		if taskConvID != "" {
-			bldr.WriteString(fmt.Sprintf("• 🧵 <b>Сессия agy:</b> <code>%s</code>\n", html.EscapeString(taskConvID)))
+			agentName := metrics.Agent
+			if agentName == "" && task != nil {
+				task.Lock()
+				agentName = task.Agent
+				task.Unlock()
+			}
+			if agentName == "" {
+				agentName = "agy"
+			}
+			bldr.WriteString(fmt.Sprintf("• 🧵 <b>Сессия %s:</b> <code>%s</code>\n", html.EscapeString(agentName), html.EscapeString(taskConvID)))
 		}
 
 		bldr.WriteString("\n💡 <i>В agy команда /context визуализирует распределение контекстного окна. Бот получает эту статистику в реальном времени из потока событий agy.</i>")
@@ -1135,7 +1163,11 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 			bldr.WriteString(fmt.Sprintf("• 🔗 <b>PR:</b> <a href=\"%s\">Открыть Pull Request</a>\n", html.EscapeString(last.PRURL)))
 		}
 		if last.ConversationID != "" {
-			bldr.WriteString(fmt.Sprintf("• 🧵 <b>Сессия agy:</b> <code>%s</code>\n", html.EscapeString(last.ConversationID)))
+			agentName := last.Agent
+			if agentName == "" {
+				agentName = "agy"
+			}
+			bldr.WriteString(fmt.Sprintf("• 🧵 <b>Сессия %s:</b> <code>%s</code>\n", html.EscapeString(agentName), html.EscapeString(last.ConversationID)))
 		}
 
 		bldr.WriteString("\n💡 <i>Контекст конкретной задачи: /context &lt;id&gt; (список: /tasks).</i>")

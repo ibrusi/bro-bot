@@ -100,13 +100,18 @@ func (s *SQLiteStorage) CreateTask(ctx context.Context, task *TaskRecord) (int, 
 		optsJSON = []byte("[]")
 	}
 
+	agent := task.Agent
+	if agent == "" {
+		agent = "agy"
+	}
+
 	query := `
 		INSERT INTO tasks (
-			project, model, initial_prompt, current_prompt, status,
+			project, model, agent, initial_prompt, current_prompt, status,
 			requires_plan, plan, plan_approved, started_at, finished_at,
 			last_pr_url, conversation_id, last_question, question_options,
 			question_asked_at, recipient_id, last_model_used, last_tokens_used
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 	`
 
 	var startedAt, finishedAt, questionAskedAt interface{}
@@ -123,6 +128,7 @@ func (s *SQLiteStorage) CreateTask(ctx context.Context, task *TaskRecord) (int, 
 	res, err := s.db.ExecContext(ctx, query,
 		task.Project,
 		task.Model,
+		agent,
 		task.InitialPrompt,
 		task.CurrentPrompt,
 		task.Status,
@@ -162,10 +168,16 @@ func (s *SQLiteStorage) UpdateTask(ctx context.Context, task *TaskRecord) error 
 		optsJSON = []byte("[]")
 	}
 
+	agent := task.Agent
+	if agent == "" {
+		agent = "agy"
+	}
+
 	query := `
 		UPDATE tasks SET
 			project = ?,
 			model = ?,
+			agent = ?,
 			initial_prompt = ?,
 			current_prompt = ?,
 			status = ?,
@@ -199,6 +211,7 @@ func (s *SQLiteStorage) UpdateTask(ctx context.Context, task *TaskRecord) error 
 	_, err = s.db.ExecContext(ctx, query,
 		task.Project,
 		task.Model,
+		agent,
 		task.InitialPrompt,
 		task.CurrentPrompt,
 		task.Status,
@@ -260,6 +273,15 @@ func (s *SQLiteStorage) UpdateTaskConversationID(ctx context.Context, id int, co
 	return err
 }
 
+// UpdateTaskAgent обновляет привязку агента для задачи.
+func (s *SQLiteStorage) UpdateTaskAgent(ctx context.Context, id int, agent string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent = ? WHERE id = ?`, agent, id)
+	return err
+}
+
 func scanTaskRow(scanner interface {
 	Scan(dest ...interface{}) error
 }) (*TaskRecord, error) {
@@ -275,6 +297,7 @@ func scanTaskRow(scanner interface {
 		&task.ID,
 		&task.Project,
 		&task.Model,
+		&task.Agent,
 		&task.InitialPrompt,
 		&task.CurrentPrompt,
 		&task.Status,
@@ -297,6 +320,10 @@ func scanTaskRow(scanner interface {
 		return nil, err
 	}
 
+	if task.Agent == "" {
+		task.Agent = "agy"
+	}
+
 	if startedAt.Valid {
 		task.StartedAt = startedAt.Time
 	}
@@ -314,7 +341,7 @@ func scanTaskRow(scanner interface {
 }
 
 const taskSelectFields = `
-	id, project, model, initial_prompt, current_prompt, status,
+	id, project, model, agent, initial_prompt, current_prompt, status,
 	requires_plan, plan, plan_approved, started_at, finished_at,
 	created_at, last_pr_url, conversation_id, last_question,
 	question_options, question_asked_at, recipient_id, last_model_used,

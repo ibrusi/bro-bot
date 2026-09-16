@@ -132,6 +132,14 @@ SELECT CAST(chat_id AS TEXT), CAST(message_id AS TEXT), task_id, created_at
 FROM telegram_messages;
 `,
 	},
+	{
+		version: 4,
+		name:    "add_agent_to_tasks",
+		sql: `
+ALTER TABLE tasks ADD COLUMN agent TEXT NOT NULL DEFAULT 'agy';
+CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent);
+`,
+	},
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

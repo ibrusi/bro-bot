@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bro-bot/internal/adapters/mock"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
 	"bro-bot/internal/models"
@@ -1169,5 +1170,364 @@ func TestStepTimeoutSimulation(t *testing.T) {
 
 	if !realTimedOut {
 		t.Fatalf("expected realTimedOut to be TRUE when terminal output contains [agy] print timeout banner")
+	}
+}
+
+type mockTransport struct {
+	*mock.Messenger
+	commands  map[string]ports.Handler
+	callbacks map[string]ports.Handler
+	textH     ports.Handler
+}
+
+func newMockTransport() *mockTransport {
+	return &mockTransport{
+		Messenger: mock.New(),
+		commands:  make(map[string]ports.Handler),
+		callbacks: make(map[string]ports.Handler),
+	}
+}
+
+func (m *mockTransport) OnCommand(name string, h ports.Handler) {
+	m.commands[name] = h
+}
+func (m *mockTransport) OnText(h ports.Handler) {
+	m.textH = h
+}
+func (m *mockTransport) OnCallback(action string, h ports.Handler) {
+	m.callbacks[action] = h
+}
+func (m *mockTransport) Use(mw func(ports.Handler) ports.Handler) {}
+func (m *mockTransport) Start(ctx context.Context) error         { return nil }
+func (m *mockTransport) Stop()                                   {}
+
+func TestHasAgentConflict(t *testing.T) {
+	// 1. nil task -> false
+	if HasAgentConflict(nil, "agy") {
+		t.Errorf("expected false for nil task")
+	}
+
+	// 2. Empty ConversationID -> false, even if agents differ
+	t1 := &domain.TaskSession{Agent: "claude", ConversationID: ""}
+	if HasAgentConflict(t1, "agy") {
+		t.Errorf("expected false when ConversationID is empty")
+	}
+
+	// 3. ConversationID present, same agent -> false (case insensitive)
+	t2 := &domain.TaskSession{Agent: "claude", ConversationID: "conv-1"}
+	if HasAgentConflict(t2, "claude") {
+		t.Errorf("expected false when agents match")
+	}
+	if HasAgentConflict(t2, "Claude") {
+		t.Errorf("expected false for case-insensitive match")
+	}
+
+	// 4. ConversationID present, different agent -> true
+	if !HasAgentConflict(t2, "agy") {
+		t.Errorf("expected true when agent is claude and active is agy")
+	}
+
+	// 5. Empty agent defaults to agy
+	t3 := &domain.TaskSession{Agent: "", ConversationID: "conv-2"}
+	if HasAgentConflict(t3, "agy") {
+		t.Errorf("expected false for default agy vs agy")
+	}
+	if !HasAgentConflict(t3, "claude") {
+		t.Errorf("expected true for default agy vs claude")
+	}
+}
+
+func TestSwitchActiveAgent(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	st, err := storage.NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create sqlite storage: %v", err)
+	}
+	defer st.Close()
+	domain.GlobalTaskManager.InitWithStorage(st)
+
+	config.ProjectState.Lock()
+	config.ProjectState.CurrentModel = "gemini-3.1-pro-high"
+	config.ProjectState.Unlock()
+
+	// Switch to claude
+	msg, err := SwitchActiveAgent("claude")
+	if err != nil {
+		t.Fatalf("unexpected error switching to claude: %v", err)
+	}
+	if ActiveAgentName != "claude" {
+		t.Fatalf("expected ActiveAgentName to be claude, got %s", ActiveAgentName)
+	}
+	if !strings.Contains(msg, "claude") {
+		t.Errorf("expected message to mention claude: %s", msg)
+	}
+	config.ProjectState.RLock()
+	curModel := config.ProjectState.CurrentModel
+	config.ProjectState.RUnlock()
+	if curModel != "sonnet" {
+		t.Errorf("expected model to switch to sonnet for claude, got %s", curModel)
+	}
+	savedAgent, _ := st.GetSetting(context.Background(), "current_agent")
+	if savedAgent != "claude" {
+		t.Errorf("expected current_agent in db to be claude, got %s", savedAgent)
+	}
+
+	// Switch to agy
+	msg, err = SwitchActiveAgent("agy")
+	if err != nil {
+		t.Fatalf("unexpected error switching to agy: %v", err)
+	}
+	if ActiveAgentName != "agy" {
+		t.Fatalf("expected ActiveAgentName to be agy, got %s", ActiveAgentName)
+	}
+	savedAgent, _ = st.GetSetting(context.Background(), "current_agent")
+	if savedAgent != "agy" {
+		t.Errorf("expected current_agent in db to be agy, got %s", savedAgent)
+	}
+
+	// Switch to invalid
+	_, err = SwitchActiveAgent("unknown_bot")
+	if err == nil {
+		t.Fatalf("expected error switching to unknown agent")
+	}
+}
+
+func TestBuildAgentConflictMarkup(t *testing.T) {
+	kb := buildAgentConflictMarkup(42, "claude")
+	if kb == nil || len(kb.Rows) != 1 || len(kb.Rows[0]) != 2 {
+		t.Fatalf("expected 1 row with 2 buttons, got %v", kb)
+	}
+	btnRestart := kb.Rows[0][0]
+	if btnRestart.Action != "task_agent_restart" || btnRestart.Payload != "42" || !strings.Contains(btnRestart.Text, "Начать заново") {
+		t.Errorf("unexpected restart button: %+v", btnRestart)
+	}
+	btnSwitch := kb.Rows[0][1]
+	if btnSwitch.Action != "task_agent_switch" || btnSwitch.Payload != "42" || !strings.Contains(btnSwitch.Text, "claude") {
+		t.Errorf("unexpected switch button: %+v", btnSwitch)
+	}
+}
+
+func TestSendAgentConflictDialog(t *testing.T) {
+	task := &domain.TaskSession{
+		ID:             99,
+		Agent:          "claude",
+		ConversationID: "conv-claude-99",
+	}
+
+	m := mock.New()
+	sess := &mock.Session{
+		M:      m,
+		ChatID: testChatID,
+	}
+
+	ActiveAgentName = "agy"
+	err := sendAgentConflictDialog(sess, task)
+	if err != nil {
+		t.Fatalf("sendAgentConflictDialog failed: %v", err)
+	}
+
+	last := m.LastSent()
+	if last == nil {
+		t.Fatalf("expected message to be sent")
+	}
+	if !strings.Contains(last.Text, "была начата агентом claude") {
+		t.Errorf("expected message to mention claude: %s", last.Text)
+	}
+	if !strings.Contains(last.Text, "conv-claude-99") {
+		t.Errorf("expected message to mention session id: %s", last.Text)
+	}
+	if !strings.Contains(last.Text, "Текущий активный агент бота: <b>agy</b>") {
+		t.Errorf("expected message to mention active agent agy: %s", last.Text)
+	}
+	if last.Opts == nil || last.Opts.Keyboard == nil {
+		t.Fatalf("expected markup with buttons")
+	}
+}
+
+func TestSendAgentConflictDialogWithMessenger(t *testing.T) {
+	task := &domain.TaskSession{
+		ID:             100,
+		Agent:          "agy",
+		ConversationID: "conv-agy-100",
+	}
+
+	m := mock.New()
+	ActiveAgentName = "claude"
+	err := sendAgentConflictDialogWithMessenger(m, testChatID, task)
+	if err != nil {
+		t.Fatalf("sendAgentConflictDialogWithMessenger failed: %v", err)
+	}
+
+	last := m.LastSent()
+	if last == nil {
+		t.Fatalf("expected message to be sent")
+	}
+	if !strings.Contains(last.Text, "была начата агентом agy") {
+		t.Errorf("expected message to mention agy: %s", last.Text)
+	}
+	if !strings.Contains(last.Text, "conv-agy-100") {
+		t.Errorf("expected message to mention session id: %s", last.Text)
+	}
+	if !strings.Contains(last.Text, "Текущий активный агент бота: <b>claude</b>") {
+		t.Errorf("expected message to mention active agent claude: %s", last.Text)
+	}
+}
+
+func setupTestApp(t *testing.T) *mockTransport {
+	tmpDir := t.TempDir()
+	projDir := filepath.Join(tmpDir, "testproj")
+	_ = os.MkdirAll(projDir, 0755)
+
+	t.Setenv("TELEGRAM_ADMIN_ID", "12345")
+	t.Setenv("PROJECTS_ROOT", tmpDir)
+	t.Setenv("QUESTION_TIMEOUT", "5m")
+	t.Setenv("BOT_SERVICE_NAME", "bro-bot.service")
+	t.Setenv("BOT_DIR", tmpDir)
+	t.Setenv("SQLITE_DB_PATH", filepath.Join(tmpDir, "bot.db"))
+	t.Setenv("DEFAULT_MODEL", "gemini-3.1-pro-high")
+
+	mt := newMockTransport()
+	Start(mt)
+	return mt
+}
+
+func TestResumeAgentConflictDialog(t *testing.T) {
+	mt := setupTestApp(t)
+
+	_, _ = SwitchActiveAgent("agy")
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "claude", "initial prompt", testChatID, false)
+	domain.GlobalTaskManager.SetTaskConversationID(task.ID, "session-uuid-1234")
+	task.Lock()
+	task.Status = domain.TaskStatusPaused
+	task.Unlock()
+
+	resumeHandler, ok := mt.commands["resume"]
+	if !ok {
+		t.Fatalf("resume command handler not found")
+	}
+
+	sess := &mock.Session{
+		M:       mt.Messenger,
+		ChatID:  testChatID,
+		ArgsVal: []string{strconv.Itoa(task.ID), "answer text to resume"},
+	}
+
+	err := resumeHandler(sess)
+	if err != nil {
+		t.Fatalf("resume handler failed: %v", err)
+	}
+
+	last := mt.LastSent()
+	if last == nil {
+		t.Fatalf("expected conflict dialog message to be sent")
+	}
+	if !strings.Contains(last.Text, "была начата агентом claude") {
+		t.Errorf("expected message to mention agent claude, got: %s", last.Text)
+	}
+	if !strings.Contains(last.Text, "session-uuid-1234") {
+		t.Errorf("expected message to mention session uuid, got: %s", last.Text)
+	}
+	if last.Opts == nil || last.Opts.Keyboard == nil {
+		t.Fatalf("expected conflict keyboard in dialog")
+	}
+
+	// Verify task.CurrentPrompt was preserved
+	task.Lock()
+	curPrompt := task.CurrentPrompt
+	task.Unlock()
+	if curPrompt != "answer text to resume" {
+		t.Errorf("expected answer to be preserved in CurrentPrompt, got: %s", curPrompt)
+	}
+}
+
+func TestTaskAgentRestartCallback(t *testing.T) {
+	mt := setupTestApp(t)
+
+	_, _ = SwitchActiveAgent("agy")
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "claude", "initial prompt", testChatID, false)
+	domain.GlobalTaskManager.SetTaskConversationID(task.ID, "session-uuid-9999")
+	task.Lock()
+	task.Status = domain.TaskStatusPaused
+	task.CurrentPrompt = "new instructions"
+	task.Unlock()
+
+	restartCb, ok := mt.callbacks["task_agent_restart"]
+	if !ok {
+		t.Fatalf("task_agent_restart callback not registered")
+	}
+
+	sess := &mock.Session{
+		M:      mt.Messenger,
+		ChatID: testChatID,
+		CB: &ports.CallbackQuery{
+			ID:          "cb1",
+			Action:      "task_agent_restart",
+			Payload:     strconv.Itoa(task.ID),
+			MessageText: "⚠️ Задача #1 была начата...",
+		},
+	}
+
+	err := restartCb(sess)
+	if err != nil {
+		t.Fatalf("task_agent_restart failed: %v", err)
+	}
+
+	task.Lock()
+	convID := task.ConversationID
+	agent := task.Agent
+	task.Unlock()
+
+	if convID != "" {
+		t.Errorf("expected ConversationID to be cleared, got: %s", convID)
+	}
+	if agent != "agy" {
+		t.Errorf("expected Agent to be updated to agy, got: %s", agent)
+	}
+	if len(sess.Edits) == 0 || !strings.Contains(sess.Edits[0], "Начать заново с агентом agy") {
+		t.Errorf("expected callback message to be edited with choice, got: %v", sess.Edits)
+	}
+}
+
+func TestTaskAgentSwitchCallback(t *testing.T) {
+	mt := setupTestApp(t)
+
+	_, _ = SwitchActiveAgent("agy")
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "claude", "initial prompt", testChatID, false)
+	domain.GlobalTaskManager.SetTaskConversationID(task.ID, "session-uuid-8888")
+	task.Lock()
+	task.Status = domain.TaskStatusPaused
+	task.CurrentPrompt = "continue step"
+	task.Unlock()
+
+	switchCb, ok := mt.callbacks["task_agent_switch"]
+	if !ok {
+		t.Fatalf("task_agent_switch callback not registered")
+	}
+
+	sess := &mock.Session{
+		M:      mt.Messenger,
+		ChatID: testChatID,
+		CB: &ports.CallbackQuery{
+			ID:          "cb2",
+			Action:      "task_agent_switch",
+			Payload:     strconv.Itoa(task.ID),
+			MessageText: "⚠️ Задача #1 была начата...",
+		},
+	}
+
+	err := switchCb(sess)
+	if err != nil {
+		t.Fatalf("task_agent_switch failed: %v", err)
+	}
+
+	if ActiveAgentName != "claude" {
+		t.Errorf("expected ActiveAgentName to be claude after switch, got: %s", ActiveAgentName)
+	}
+	if len(sess.Edits) == 0 || !strings.Contains(sess.Edits[0], "Переключиться на claude") {
+		t.Errorf("expected callback message to be edited with choice, got: %v", sess.Edits)
 	}
 }
