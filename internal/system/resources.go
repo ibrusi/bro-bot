@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -24,6 +25,14 @@ type HostMemoryStats struct {
 	AvailableBytes int64
 	UsedBytes      int64
 	UsedPercent    float64
+}
+
+type HostDiskStats struct {
+	TotalBytes  int64
+	FreeBytes   int64
+	UsedBytes   int64
+	FreePercent float64
+	UsedPercent float64
 }
 
 type HostLoadStats struct {
@@ -66,6 +75,7 @@ type ClaudeAgentInfo = AgentCLIInfo
 type ResourcesReport struct {
 	Host              HostLoadStats
 	Memory            HostMemoryStats
+	Disk              HostDiskStats
 	CGroup            CGroupStats
 	BotProc           *ProcessResourceInfo
 	ActiveAgent       string
@@ -165,6 +175,57 @@ func readHostLoad() HostLoadStats {
 		stats.Load15, _ = strconv.ParseFloat(fields[2], 64)
 	}
 	return stats
+}
+
+func readHostDisk() HostDiskStats {
+	targetPath := "/"
+	if config.ProjectsRoot != "" {
+		if _, err := os.Stat(config.ProjectsRoot); err == nil {
+			targetPath = config.ProjectsRoot
+		}
+	}
+
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(targetPath, &stat); err != nil {
+		if targetPath != "/" {
+			if err := syscall.Statfs("/", &stat); err != nil {
+				return HostDiskStats{}
+			}
+		} else {
+			return HostDiskStats{}
+		}
+	}
+
+	bsize := stat.Bsize
+	if stat.Frsize > 0 {
+		bsize = stat.Frsize
+	}
+	if bsize <= 0 {
+		bsize = 512
+	}
+
+	totalBytes := int64(stat.Blocks) * bsize
+	freeBytes := int64(stat.Bavail) * bsize
+	var usedBytes int64
+	if stat.Blocks >= stat.Bfree {
+		usedBytes = int64(stat.Blocks-stat.Bfree) * bsize
+	} else if totalBytes > freeBytes {
+		usedBytes = totalBytes - freeBytes
+	}
+
+	var freePct, usedPct float64
+	if totalBytes > 0 {
+		freePct = (float64(freeBytes) / float64(totalBytes)) * 100
+		usedPct = (float64(usedBytes) / float64(totalBytes)) * 100
+	}
+
+	return HostDiskStats{
+		TotalBytes:  totalBytes,
+		FreeBytes:   freeBytes,
+		UsedBytes:   usedBytes,
+		FreePercent: freePct,
+		UsedPercent: usedPct,
+	}
 }
 
 func readCGroupStats() CGroupStats {
@@ -573,6 +634,7 @@ func collectProcessInfo(pid int, role string, psMap map[int]psMetric, topCpuMap 
 func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 	hostLoad := readHostLoad()
 	hostMem := readHostMemory()
+	hostDisk := readHostDisk()
 	cgroup := readCGroupStats()
 
 	botPid := os.Getpid()
@@ -711,6 +773,7 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 	return ResourcesReport{
 		Host:              hostLoad,
 		Memory:            hostMem,
+		Disk:              hostDisk,
 		CGroup:            cgroup,
 		BotProc:           botInfo,
 		ActiveAgent:       activeAgent,
@@ -814,6 +877,12 @@ func FormatResourcesMessage(r ResourcesReport) string {
 			formatBytes(r.Memory.UsedBytes),
 			formatBytes(r.Memory.TotalBytes),
 			r.Memory.UsedPercent))
+	}
+	if r.Disk.TotalBytes > 0 {
+		sb.WriteString(fmt.Sprintf("• Диск: свободно <b>%s</b> из <b>%s</b> (<code>%.1f%%</code> свободно)\n",
+			formatBytes(r.Disk.FreeBytes),
+			formatBytes(r.Disk.TotalBytes),
+			r.Disk.FreePercent))
 	}
 
 	// 2. Systemd Service CGroup
