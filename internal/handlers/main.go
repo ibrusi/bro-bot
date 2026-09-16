@@ -171,6 +171,11 @@ func Start(t ports.Transport) {
 			log.Printf("Восстановлен PlanMode из SQLite: %v", pm)
 		}
 	}
+	if savedAgent, err := sqliteStorage.GetSetting(ctx, "current_agent"); err == nil && savedAgent != "" {
+		if _, err := SwitchActiveAgent(savedAgent); err == nil {
+			log.Printf("Восстановлен активный агент из SQLite: %s", savedAgent)
+		}
+	}
 
 	if err := t.SetCommands(context.Background(), getDefaultCommands()); err != nil {
 		log.Printf("Предупреждение: не удалось зарегистрировать команды: %v", err)
@@ -262,7 +267,17 @@ func Start(t ports.Transport) {
 
 		details := domain.FormatTaskDetails(task, true)
 		markup := domain.BuildTaskDetailsMarkup(task)
-		return s.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), ports.RichWith(markup))
+		conflictNote := ""
+		if HasAgentConflict(task, ActiveAgentName) {
+			task.Lock()
+			tAgent := task.Agent
+			if tAgent == "" {
+				tAgent = "agy"
+			}
+			task.Unlock()
+			conflictNote = fmt.Sprintf("\n\n⚠️ <i>Внимание: задача использует сессию агента <b>%s</b>, а активен <b>%s</b>.</i>", html.EscapeString(tAgent), html.EscapeString(ActiveAgentName))
+		}
+		return s.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s%s", id, details, conflictNote), ports.RichWith(markup))
 	})
 
 	t.OnCommand("status", func(s ports.Session) error {
@@ -416,30 +431,11 @@ func Start(t ports.Transport) {
 		}
 
 		name := strings.ToLower(strings.TrimSpace(args[0]))
-		switch name {
-		case "agy":
-			adapter := agy.NewAgyAdapter()
-			Agent = adapter
-			models.Agent = adapter
-			ActiveAgentName = "agy"
-			return s.Send("✅ CLI агент переключен на: <b>agy</b>", ports.Rich())
-		case "claude":
-			adapter := claude.NewClaudeAdapter()
-			Agent = adapter
-			models.Agent = adapter
-			ActiveAgentName = "claude"
-			config.ProjectState.Lock()
-			curModel := config.ProjectState.CurrentModel
-			suggested := ""
-			if strings.Contains(strings.ToLower(curModel), "gemini") || strings.Contains(strings.ToLower(curModel), "gpt") {
-				config.ProjectState.CurrentModel = "sonnet"
-				suggested = "\nМодель автоматически переключена на <b>sonnet</b> (Claude Sonnet 4.6)."
-			}
-			config.ProjectState.Unlock()
-			return s.Send("✅ CLI агент переключен на: <b>claude</b>"+suggested, ports.Rich())
-		default:
-			return s.Send(fmt.Sprintf("❌ Неизвестный агент: <code>%s</code>. Доступны: <b>agy</b>, <b>claude</b>", html.EscapeString(name)), ports.Rich())
+		msg, err := SwitchActiveAgent(name)
+		if err != nil {
+			return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
 		}
+		return s.Send(msg, ports.Rich())
 	})
 
 	handleUsage := func(s ports.Session) error {
@@ -661,7 +657,17 @@ func Start(t ports.Transport) {
 			}
 			details := domain.FormatTaskDetails(active, true)
 			markup := domain.BuildTaskDetailsMarkup(active)
-			return s.Send(details, ports.RichWith(markup))
+			conflictNote := ""
+			if HasAgentConflict(active, ActiveAgentName) {
+				active.Lock()
+				tAgent := active.Agent
+				if tAgent == "" {
+					tAgent = "agy"
+				}
+				active.Unlock()
+				conflictNote = fmt.Sprintf("\n\n⚠️ <i>Внимание: задача использует сессию агента <b>%s</b>, а активен <b>%s</b>.</i>", html.EscapeString(tAgent), html.EscapeString(ActiveAgentName))
+			}
+			return s.Send(details+conflictNote, ports.RichWith(markup))
 		}
 
 		first := strings.TrimPrefix(args[0], "#")
@@ -692,7 +698,17 @@ func Start(t ports.Transport) {
 
 		details := domain.FormatTaskDetails(task, true)
 		markup := domain.BuildTaskDetailsMarkup(task)
-		return s.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), ports.RichWith(markup))
+		conflictNote := ""
+		if HasAgentConflict(task, ActiveAgentName) {
+			task.Lock()
+			tAgent := task.Agent
+			if tAgent == "" {
+				tAgent = "agy"
+			}
+			task.Unlock()
+			conflictNote = fmt.Sprintf("\n\n⚠️ <i>Внимание: задача использует сессию агента <b>%s</b>, а активен <b>%s</b>.</i>", html.EscapeString(tAgent), html.EscapeString(ActiveAgentName))
+		}
+		return s.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s%s", id, details, conflictNote), ports.RichWith(markup))
 	})
 
 	t.OnCommand("add", func(s ports.Session) error {
@@ -1021,6 +1037,13 @@ func Start(t ports.Transport) {
 				task.DeliverAnswer(chosenText)
 				return s.Send(fmt.Sprintf("💬 <b>Выбран вариант %d для задачи #%d:</b>\n<i>«%s»</i>", optIdx+1, taskID, html.EscapeString(chosenText)), ports.Rich())
 			}
+			if HasAgentConflict(task, ActiveAgentName) {
+				task.Lock()
+				task.CurrentPrompt = chosenText
+				task.Unlock()
+				domain.GlobalTaskManager.SaveTask(task)
+				return sendAgentConflictDialog(s, task)
+			}
 			resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, chosenText)
 			if err != nil {
 				return s.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", taskID, err.Error()), ports.Rich())
@@ -1040,6 +1063,13 @@ func Start(t ports.Transport) {
 			return s.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>",
 				taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 		} else if status == domain.TaskStatusPaused {
+			if HasAgentConflict(task, ActiveAgentName) {
+				task.Lock()
+				task.CurrentPrompt = chosenText
+				task.Unlock()
+				domain.GlobalTaskManager.SaveTask(task)
+				return sendAgentConflictDialog(s, task)
+			}
 			resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, chosenText)
 			if err != nil {
 				return s.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", taskID, err.Error()), ports.Rich())
@@ -1122,6 +1152,10 @@ func Start(t ports.Transport) {
 			return s.Send(fmt.Sprintf("ℹ️ Задача #%d не находится на паузе (текущий статус: %s).", taskID, status.RussianTitle()), nil)
 		}
 
+		if HasAgentConflict(task, ActiveAgentName) {
+			return sendAgentConflictDialog(s, task)
+		}
+
 		if lastQ != "" && len(opts) > 0 {
 			menu := buildQuestionMarkup(task)
 			promptMsg := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Выберите вариант кнопкой или ответьте сообщением в чат:</i>",
@@ -1149,9 +1183,116 @@ func Start(t ports.Transport) {
 			return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.\nОна запустится автоматически, как только проект освободится.", taskID, html.EscapeString(proj)), ports.Rich())
 		}
 
+		task.Lock()
+		tAgent := task.Agent
+		if tAgent == "" {
+			tAgent = "agy"
+		}
+		task.Unlock()
+
 		workDir := filepath.Join(config.ProjectsRoot, proj)
 		go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
-		return s.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с сохранённой сессии agy!</b>", taskID, html.EscapeString(proj)), ports.Rich())
+		return s.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с сохранённой сессии %s!</b>", taskID, html.EscapeString(proj), html.EscapeString(tAgent)), ports.Rich())
+	})
+
+	t.OnCallback("task_agent_restart", func(s ports.Session) error {
+		idStr := s.Callback().Payload
+		taskID, err := strconv.Atoi(idStr)
+		if err != nil {
+			return s.Respond("Некорректный номер задачи")
+		}
+
+		task := domain.GlobalTaskManager.GetTask(taskID)
+		if task == nil {
+			return s.Respond("Задача не найдена")
+		}
+
+		_ = s.Respond(fmt.Sprintf("Перезапуск с агентом %s...", ActiveAgentName))
+
+		domain.GlobalTaskManager.ClearTaskConversationID(taskID)
+		domain.GlobalTaskManager.SetTaskAgent(taskID, ActiveAgentName)
+
+		task.Lock()
+		proj := task.Project
+		task.ConversationID = ""
+		task.Agent = ActiveAgentName
+		if task.RequiresPlan && !task.PlanApproved {
+			task.Status = domain.TaskStatusPlanning
+		} else {
+			task.Status = domain.TaskStatusRunning
+		}
+		if task.CurrentPrompt == "" {
+			task.CurrentPrompt = task.InitialPrompt
+		}
+		task.LastPRURL = ""
+		task.LastQuestion = ""
+		task.QuestionOptions = nil
+		task.StartedAt = time.Now()
+		task.RecentLogs = nil
+		task.FullOutput.Reset()
+		task.Unlock()
+
+		syncLegacySession(task)
+		domain.GlobalTaskManager.SaveTask(task)
+
+		if cb := s.Callback(); cb != nil && cb.MessageText != "" {
+			_ = s.Edit(fmt.Sprintf("%s\n\n🔄 <b>Выбрано: Начать заново с агентом %s.</b>", cb.MessageText, html.EscapeString(ActiveAgentName)), ports.Rich())
+		}
+
+		workDir := filepath.Join(config.ProjectsRoot, proj)
+		go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
+		return s.Send(fmt.Sprintf("🔄 <b>Задача #%d перезапущена с агентом %s</b> (новая сессия в <code>%s</code>).", taskID, html.EscapeString(ActiveAgentName), html.EscapeString(proj)), ports.Rich())
+	})
+
+	t.OnCallback("task_agent_switch", func(s ports.Session) error {
+		idStr := s.Callback().Payload
+		taskID, err := strconv.Atoi(idStr)
+		if err != nil {
+			return s.Respond("Некорректный номер задачи")
+		}
+
+		task := domain.GlobalTaskManager.GetTask(taskID)
+		if task == nil {
+			return s.Respond("Задача не найдена")
+		}
+
+		task.Lock()
+		targetAgent := task.Agent
+		if targetAgent == "" {
+			targetAgent = "agy"
+		}
+		prompt := task.CurrentPrompt
+		proj := task.Project
+		task.Unlock()
+
+		_ = s.Respond(fmt.Sprintf("Переключение на %s...", targetAgent))
+
+		switchMsg, err := SwitchActiveAgent(targetAgent)
+		if err != nil {
+			return s.Send(fmt.Sprintf("❌ Ошибка переключения агента: %v", err), ports.Rich())
+		}
+
+		resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, prompt)
+		if err != nil {
+			return s.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", taskID, err.Error()), ports.Rich())
+		}
+		syncLegacySession(resumedTask)
+
+		if cb := s.Callback(); cb != nil && cb.MessageText != "" {
+			_ = s.Edit(fmt.Sprintf("%s\n\n🔀 <b>Выбрано: Переключиться на %s.</b>", cb.MessageText, html.EscapeString(targetAgent)), ports.Rich())
+		}
+
+		resumedTask.Lock()
+		resStatus := resumedTask.Status
+		resumedTask.Unlock()
+
+		if resStatus == domain.TaskStatusQueued {
+			return s.Send(fmt.Sprintf("%s\n\n⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.", switchMsg, taskID, html.EscapeString(proj)), ports.Rich())
+		}
+
+		workDir := filepath.Join(config.ProjectsRoot, proj)
+		go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+		return s.Send(fmt.Sprintf("%s\n\n▶️ <b>Задача #%d (<code>%s</code>) возобновлена с агентом %s!</b>", switchMsg, taskID, html.EscapeString(proj), html.EscapeString(targetAgent)), ports.Rich())
 	})
 
 	t.OnCommand("pause", func(s ports.Session) error {
@@ -1240,6 +1381,16 @@ func Start(t ports.Transport) {
 		task := domain.GlobalTaskManager.GetTask(targetID)
 		if task == nil {
 			return s.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), ports.Rich())
+		}
+
+		if HasAgentConflict(task, ActiveAgentName) {
+			if answer != "" {
+				task.Lock()
+				task.CurrentPrompt = answer
+				task.Unlock()
+				domain.GlobalTaskManager.SaveTask(task)
+			}
+			return sendAgentConflictDialog(s, task)
 		}
 
 		task.Lock()
@@ -1341,6 +1492,7 @@ func Start(t ports.Transport) {
 		}
 		proj := task.Project
 		task.ConversationID = ""
+		task.Agent = ActiveAgentName
 		task.Status = domain.TaskStatusRunning
 		if task.RequiresPlan && !task.PlanApproved {
 			task.Status = domain.TaskStatusPlanning
@@ -1355,11 +1507,12 @@ func Start(t ports.Transport) {
 		task.Unlock()
 
 		domain.GlobalTaskManager.ClearTaskConversationID(targetID)
+		domain.GlobalTaskManager.SetTaskAgent(targetID, ActiveAgentName)
 		syncLegacySession(task)
 
 		workDir := filepath.Join(config.ProjectsRoot, proj)
 		go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
-		return s.Send(fmt.Sprintf("🔄 <b>Задача #%d перезапущена с чистого листа</b> (новая сессия agy в <code>%s</code>).", targetID, html.EscapeString(proj)), ports.Rich())
+		return s.Send(fmt.Sprintf("🔄 <b>Задача #%d перезапущена с чистого листа</b> (новая сессия %s в <code>%s</code>).", targetID, html.EscapeString(ActiveAgentName), html.EscapeString(proj)), ports.Rich())
 	})
 
 	t.OnCommand("restart", func(s ports.Session) error {
@@ -1512,7 +1665,7 @@ func runAgentPipeline(m ports.Messenger, chat ports.ChatID, workDir, projectName
 	modelName := config.ProjectState.CurrentModel
 	config.ProjectState.RUnlock()
 
-	task := domain.GlobalTaskManager.CreateTask(projectName, modelName, initialPrompt, chat)
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent(projectName, modelName, ActiveAgentName, initialPrompt, chat, false)
 	task.Lock()
 	task.Status = domain.TaskStatusRunning
 	task.StartedAt = time.Now()
@@ -1532,8 +1685,12 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 	if trackPrompt == "" {
 		trackPrompt = task.InitialPrompt
 	}
+	taskAgent := task.Agent
+	if taskAgent == "" {
+		taskAgent = ActiveAgentName
+	}
 	task.Unlock()
-	domain.GlobalTokenTracker.StartTaskIfNotActive(projectName, trackModel, trackPrompt)
+	domain.GlobalTokenTracker.StartTaskIfNotActiveWithAgent(projectName, trackModel, trackPrompt, taskAgent)
 
 	// ЭТАП 1: Планирование (если требуется и ещё не утверждён)
 	task.Lock()
@@ -1991,7 +2148,22 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 
 	task.Lock()
 	convID := task.ConversationID
+	taskAgent := task.Agent
+	if taskAgent == "" {
+		taskAgent = "agy"
+	}
 	task.Unlock()
+
+	if convID != "" && !strings.EqualFold(taskAgent, ActiveAgentName) {
+		err := fmt.Errorf("конфликт агентов: сессия задачи принадлежит %s, а текущий агент %s", taskAgent, ActiveAgentName)
+		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, err), nil)
+		task.Lock()
+		task.Status = domain.TaskStatusPaused
+		task.Unlock()
+		syncLegacySession(task)
+		_ = sendAgentConflictDialogWithMessenger(m, chat, task)
+		return StepResult{Outcome: StepOutcomeError, Error: err}
+	}
 
 	args := ports.ExecuteArgs{
 		ConversationID: convID,
@@ -2118,6 +2290,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 				}
 				if convID != "" {
 					domain.GlobalTaskManager.SetTaskConversationID(taskID, convID)
+					domain.GlobalTaskManager.SetTaskAgent(taskID, ActiveAgentName)
 					domain.GlobalTokenTracker.SetConversationID(convID)
 				}
 
@@ -2297,6 +2470,10 @@ func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.Ta
 	task.Lock()
 	task.Status = domain.TaskStatusPaused
 	convID := task.ConversationID
+	tAgent := task.Agent
+	if tAgent == "" {
+		tAgent = "agy"
+	}
 	task.Unlock()
 
 	syncLegacySession(task)
@@ -2316,11 +2493,11 @@ func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.Ta
 	resumeMenu := buildResumeMarkup(taskID)
 	timeoutMsg := fmt.Sprintf(
 		"⏸ <b>Задача #%d (<code>%s</code>) приостановлена по таймауту %s (%v).</b>\n\n"+
-			"🧵 <b>Сессия agy:</b> <code>%s</code> (сохранена)\n"+
+			"🧵 <b>Сессия %s:</b> <code>%s</code> (сохранена)\n"+
 			"Очередь проекта освобождена для других задач.\n\n"+
 			"Контекст не потерян! Чтобы продолжить с этого места, нажмите <b>«▶️ Возобновить задачу»</b> или введите <code>/resume %d [указания]</code>.",
 		taskID, html.EscapeString(projectName), phaseName, stepTimeout,
-		html.EscapeString(convID), taskID,
+		html.EscapeString(tAgent), html.EscapeString(convID), taskID,
 	)
 
 	if m != nil && chat != "" {
@@ -2405,7 +2582,7 @@ func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan b
 		return s.Send("❌ Сначала выберите проект: /projects", nil)
 	}
 
-	task := domain.GlobalTaskManager.CreateTaskWithPlan(curProj, curMod, text, s.Chat(), requiresPlan)
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent(curProj, curMod, ActiveAgentName, text, s.Chat(), requiresPlan)
 	syncLegacySession(task)
 
 	if domain.GlobalTaskManager.HasRunningTaskInProject(curProj) {
@@ -2433,7 +2610,7 @@ func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan b
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(task.ID)
 
-	domain.GlobalTokenTracker.StartTask(curProj, curMod, text)
+	domain.GlobalTokenTracker.StartTaskWithAgent(curProj, curMod, text, ActiveAgentName)
 	workDir := filepath.Join(config.ProjectsRoot, curProj)
 
 	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
@@ -2449,6 +2626,7 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 
 	task.Lock()
 	status := task.Status
+	cmdIsNil := (task.Cmd == nil || task.Cmd.Process == nil)
 	task.Unlock()
 
 	if status == domain.TaskStatusWaitingApproval {
@@ -2456,6 +2634,14 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 			return handleApprovePlan(s.Messenger(), s.Chat(), taskID)
 		}
 		return handleRevisePlan(s.Messenger(), s.Chat(), taskID, text)
+	}
+
+	if (status == domain.TaskStatusPaused || status == domain.TaskStatusCancelled || (status == domain.TaskStatusWaitingInput && cmdIsNil)) && HasAgentConflict(task, ActiveAgentName) {
+		task.Lock()
+		task.CurrentPrompt = text
+		task.Unlock()
+		domain.GlobalTaskManager.SaveTask(task)
+		return sendAgentConflictDialog(s, task)
 	}
 
 	task, qLen, isAnswer, err := domain.GlobalTaskManager.AddFollowup(taskID, text)
@@ -2469,13 +2655,20 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 		task.Lock()
 		curStatus := task.Status
 		proj := task.Project
-		cmdIsNil := (task.Cmd == nil || task.Cmd.Process == nil)
+		cmdIsNil = (task.Cmd == nil || task.Cmd.Process == nil)
 		task.Unlock()
 
 		if curStatus == domain.TaskStatusQueued {
 			return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
 				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
 		} else if (curStatus == domain.TaskStatusRunning || curStatus == domain.TaskStatusWaitingInput) && cmdIsNil {
+			if HasAgentConflict(task, ActiveAgentName) {
+				task.Lock()
+				task.CurrentPrompt = text
+				task.Unlock()
+				domain.GlobalTaskManager.SaveTask(task)
+				return sendAgentConflictDialog(s, task)
+			}
 			task.Lock()
 			if task.RequiresPlan && !task.PlanApproved {
 				task.Status = domain.TaskStatusPlanning
@@ -2573,9 +2766,14 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
 
+	if HasAgentConflict(task, ActiveAgentName) {
+		domain.GlobalTaskManager.SaveTask(task)
+		return sendAgentConflictDialogWithMessenger(m, chat, task)
+	}
+
 	_, _ = m.Send(context.Background(), chat, fmt.Sprintf("🚀 <b>План задачи #%d утверждён!</b>\nПриступаю к автономной реализации в <code>%s</code>...", taskID, html.EscapeString(projectName)), ports.Rich())
 
-	domain.GlobalTokenTracker.StartTask(projectName, modelName, initialPrompt)
+	domain.GlobalTokenTracker.StartTaskWithAgent(projectName, modelName, initialPrompt, ActiveAgentName)
 	workDir := filepath.Join(config.ProjectsRoot, projectName)
 	go runAgentTaskPipeline(m, chat, task, workDir)
 
@@ -2598,6 +2796,11 @@ func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback
 
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
+
+	if HasAgentConflict(task, ActiveAgentName) {
+		domain.GlobalTaskManager.SaveTask(task)
+		return sendAgentConflictDialogWithMessenger(m, chat, task)
+	}
 
 	_, _ = m.Send(context.Background(), chat, fmt.Sprintf("📝 <b>Задача #%d: Обновляю план с учётом замечаний...</b>\n<i>«%s»</i>", taskID, html.EscapeString(truncateString(feedback, 100))), ports.Rich())
 
@@ -2818,6 +3021,16 @@ func checkAndStartQueuedTask(m ports.Messenger, project, root string) {
 		return
 	}
 
+	if HasAgentConflict(nextTask, ActiveAgentName) {
+		nextTask.Lock()
+		nextTask.Status = domain.TaskStatusPaused
+		chat := nextTask.Chat
+		nextTask.Unlock()
+		domain.GlobalTaskManager.SaveTask(nextTask)
+		_ = sendAgentConflictDialogWithMessenger(m, chat, nextTask)
+		return
+	}
+
 	nextTask.Lock()
 	isPlanning := nextTask.RequiresPlan && !nextTask.PlanApproved
 	if isPlanning {
@@ -2830,6 +3043,10 @@ func checkAndStartQueuedTask(m ports.Messenger, project, root string) {
 	nextID := nextTask.ID
 	prompt := nextTask.InitialPrompt
 	model := nextTask.Model
+	tAgent := nextTask.Agent
+	if tAgent == "" {
+		tAgent = ActiveAgentName
+	}
 	nextTask.Unlock()
 
 	syncLegacySession(nextTask)
@@ -2843,7 +3060,7 @@ func checkAndStartQueuedTask(m ports.Messenger, project, root string) {
 			nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), ports.Rich())
 	}
 
-	domain.GlobalTokenTracker.StartTask(project, model, prompt)
+	domain.GlobalTokenTracker.StartTaskWithAgent(project, model, prompt, tAgent)
 	workDir := filepath.Join(root, project)
 	go runAgentTaskPipeline(m, chat, nextTask, workDir)
 }
@@ -3002,7 +3219,7 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "add", Description: "[id] <текст> Дополнить задачу текстом"},
 		{Name: "new", Description: "[проект] <текст> Создать новую задачу в проекте"},
 		{Name: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
-		{Name: "retry", Description: "[id] Перезапустить задачу с новой сессией agy"},
+		{Name: "retry", Description: "[id] Перезапустить задачу с чистого листа"},
 		{Name: "pause", Description: "[id] Приостановить выполнение задачи"},
 		{Name: "cancel", Description: "[id] Остановить задачу"},
 		{Name: "tokens", Description: "Статистика токенов, скорости и кэша"},
@@ -3019,4 +3236,113 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "rebuild", Description: "Собрать свежий билд и перезапустить"},
 		{Name: "start", Description: "Главное меню и справка по командам"},
 	}
+}
+
+// SwitchActiveAgent переключает глобального активного агента CLI (agy или claude) и сохраняет выбор в базе данных.
+func SwitchActiveAgent(name string) (string, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "agy":
+		adapter := agy.NewAgyAdapter()
+		Agent = adapter
+		models.Agent = adapter
+		ActiveAgentName = "agy"
+		if st := domain.GlobalTaskManager.Storage(); st != nil {
+			_ = st.SetSetting(context.Background(), "current_agent", "agy")
+		}
+		return "✅ CLI агент переключен на: <b>agy</b>", nil
+	case "claude":
+		adapter := claude.NewClaudeAdapter()
+		Agent = adapter
+		models.Agent = adapter
+		ActiveAgentName = "claude"
+		config.ProjectState.Lock()
+		curModel := config.ProjectState.CurrentModel
+		suggested := ""
+		if strings.Contains(strings.ToLower(curModel), "gemini") || strings.Contains(strings.ToLower(curModel), "gpt") {
+			config.ProjectState.CurrentModel = "sonnet"
+			suggested = "\nМодель автоматически переключена на <b>sonnet</b> (Claude Sonnet 4.6)."
+			if st := domain.GlobalTaskManager.Storage(); st != nil {
+				_ = st.SetSetting(context.Background(), "current_model", "sonnet")
+			}
+		}
+		config.ProjectState.Unlock()
+		if st := domain.GlobalTaskManager.Storage(); st != nil {
+			_ = st.SetSetting(context.Background(), "current_agent", "claude")
+		}
+		return "✅ CLI агент переключен на: <b>claude</b>" + suggested, nil
+	default:
+		return "", fmt.Errorf("неизвестный агент: <code>%s</code>. Доступны: <b>agy</b>, <b>claude</b>", html.EscapeString(name))
+	}
+}
+
+// HasAgentConflict проверяет, есть ли несовместимость между активным агентом и агентом задачи.
+// Конфликт возникает, только если задача уже имеет сессию CLI (ConversationID != "") и её агент не совпадает с активным.
+func HasAgentConflict(task *domain.TaskSession, activeAgent string) bool {
+	if task == nil {
+		return false
+	}
+	task.Lock()
+	defer task.Unlock()
+
+	taskAgent := task.Agent
+	if taskAgent == "" {
+		taskAgent = "agy"
+	}
+	return task.ConversationID != "" && !strings.EqualFold(taskAgent, activeAgent)
+}
+
+func buildAgentConflictMarkup(taskID int, taskAgent string) *ports.Keyboard {
+	if taskAgent == "" {
+		taskAgent = "agy"
+	}
+	return &ports.Keyboard{
+		Rows: [][]ports.Button{
+			{
+				{Text: "🔄 Начать заново", Action: "task_agent_restart", Payload: strconv.Itoa(taskID)},
+				{Text: fmt.Sprintf("🔀 Переключиться на %s", taskAgent), Action: "task_agent_switch", Payload: strconv.Itoa(taskID)},
+			},
+		},
+	}
+}
+
+func sendAgentConflictDialog(s ports.Session, task *domain.TaskSession) error {
+	task.Lock()
+	id := task.ID
+	agent := task.Agent
+	if agent == "" {
+		agent = "agy"
+	}
+	convID := task.ConversationID
+	task.Unlock()
+
+	markup := buildAgentConflictMarkup(id, agent)
+	msg := fmt.Sprintf(
+		"⚠️ <b>Задача #%d была начата агентом %s</b> (сессия: <code>%s</code>).\n"+
+			"Текущий активный агент бота: <b>%s</b>.\n\n"+
+			"Сессии разных агентов несовместимы. Выберите действие:",
+		id, html.EscapeString(agent), html.EscapeString(convID), html.EscapeString(ActiveAgentName),
+	)
+	return s.Send(msg, ports.RichWith(markup))
+}
+
+func sendAgentConflictDialogWithMessenger(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession) error {
+	task.Lock()
+	id := task.ID
+	agent := task.Agent
+	if agent == "" {
+		agent = "agy"
+	}
+	convID := task.ConversationID
+	task.Unlock()
+
+	markup := buildAgentConflictMarkup(id, agent)
+	msg := fmt.Sprintf(
+		"⚠️ <b>Задача #%d была начата агентом %s</b> (сессия: <code>%s</code>).\n"+
+			"Текущий активный агент бота: <b>%s</b>.\n\n"+
+			"Сессии разных агентов несовместимы. Выберите действие:",
+		id, html.EscapeString(agent), html.EscapeString(convID), html.EscapeString(ActiveAgentName),
+	)
+	_, err := m.Send(context.Background(), chat, msg, ports.RichWith(markup))
+	return err
 }

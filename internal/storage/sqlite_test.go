@@ -446,3 +446,43 @@ func TestStorageUpdateTaskConversationID(t *testing.T) {
 		t.Fatalf("expected ConversationID %q, got %q", testConvID, got2.ConversationID)
 	}
 }
+
+func TestStorageUpdateTaskAgent(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	task := &TaskRecord{
+		Project:       "agent-proj",
+		Model:         "sonnet",
+		Agent:         "claude",
+		InitialPrompt: "Task with claude agent",
+		Status:        "running",
+	}
+
+	id, err := s.CreateTask(ctx, task)
+	if err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	got, err := s.GetTask(ctx, id)
+	if err != nil {
+		t.Fatalf("GetTask failed: %v", err)
+	}
+	if got.Agent != "claude" {
+		t.Fatalf("expected Agent 'claude', got %q", got.Agent)
+	}
+
+	// Update agent to agy
+	if err := s.UpdateTaskAgent(ctx, id, "agy"); err != nil {
+		t.Fatalf("UpdateTaskAgent failed: %v", err)
+	}
+
+	got2, err := s.GetTask(ctx, id)
+	if err != nil {
+		t.Fatalf("GetTask failed: %v", err)
+	}
+	if got2.Agent != "agy" {
+		t.Fatalf("expected Agent 'agy', got %q", got2.Agent)
+	}
+}
+

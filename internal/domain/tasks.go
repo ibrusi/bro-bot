@@ -87,6 +87,7 @@ type TaskSession struct {
 	ID               int
 	Project          string
 	Model            string
+	Agent            string
 	InitialPrompt    string
 	CurrentPrompt    string
 	Status           TaskStatus
@@ -247,6 +248,7 @@ func taskRecordToSession(rec *storage.TaskRecord, s storage.Storage) *TaskSessio
 		ID:              rec.ID,
 		Project:         rec.Project,
 		Model:           rec.Model,
+		Agent:           rec.Agent,
 		InitialPrompt:   rec.InitialPrompt,
 		CurrentPrompt:   rec.CurrentPrompt,
 		Status:          TaskStatus(rec.Status),
@@ -376,13 +378,22 @@ func (tm *TaskManager) Storage() storage.Storage {
 
 // CreateTask создаёт задачу без обязательного плана и регистрирует её в менеджере.
 func (tm *TaskManager) CreateTask(project, model, prompt string, chat ports.ChatID) *TaskSession {
-	return tm.CreateTaskWithPlan(project, model, prompt, chat, false)
+	return tm.CreateTaskWithPlanAndAgent(project, model, "agy", prompt, chat, false)
 }
 
-// CreateTaskWithPlan создаёт задачу с возможностью требования предварительного плана.
+// CreateTaskWithPlan создаёт задачу с возможностью требования предварительного плана (по умолчанию агент agy).
 func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, chat ports.ChatID, requiresPlan bool) *TaskSession {
+	return tm.CreateTaskWithPlanAndAgent(project, model, "agy", prompt, chat, requiresPlan)
+}
+
+// CreateTaskWithPlanAndAgent создаёт задачу с указанием агента и требования предварительного плана.
+func (tm *TaskManager) CreateTaskWithPlanAndAgent(project, model, agent, prompt string, chat ports.ChatID, requiresPlan bool) *TaskSession {
 	tm.Lock()
 	defer tm.Unlock()
+
+	if agent == "" {
+		agent = "agy"
+	}
 
 	id := tm.nextID
 	tm.nextID++
@@ -391,6 +402,7 @@ func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, chat po
 		ID:            id,
 		Project:       project,
 		Model:         model,
+		Agent:         agent,
 		InitialPrompt: prompt,
 		CurrentPrompt: prompt,
 		Status:        TaskStatusQueued,
@@ -405,6 +417,7 @@ func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, chat po
 		rec := &storage.TaskRecord{
 			Project:       project,
 			Model:         model,
+			Agent:         agent,
 			InitialPrompt: prompt,
 			CurrentPrompt: prompt,
 			Status:        string(TaskStatusQueued),
@@ -766,6 +779,33 @@ func (tm *TaskManager) ClearTaskConversationID(id int) {
 	}
 }
 
+// SetTaskAgent обновляет привязку агента для задачи и персистирует её в хранилище.
+func (tm *TaskManager) SetTaskAgent(id int, agent string) {
+	if tm == nil || agent == "" {
+		return
+	}
+	tm.RLock()
+	task, ok := tm.tasks[id]
+	s := tm.storage
+	tm.RUnlock()
+
+	if !ok || task == nil {
+		return
+	}
+
+	task.Lock()
+	if task.Agent == agent {
+		task.Unlock()
+		return
+	}
+	task.Agent = agent
+	task.Unlock()
+
+	if s != nil {
+		_ = s.UpdateTaskAgent(context.Background(), id, agent)
+	}
+}
+
 // AddFollowup добавляет дополнение к конкретной задаче или отправляет ответ в stdin / AnswerChan, если задача ждёт ввода или на паузе.
 func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool, error) {
 	tm.RLock()
@@ -997,8 +1037,13 @@ func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
 				focusBadge = "👉 🎯 "
 			}
 
-			bldr.WriteString(fmt.Sprintf("%s<b>#%d</b> %s <code>%s</code> — <b>%s</b>\n",
-				focusBadge, id, status.Emoji(), html.EscapeString(proj), status.RussianTitle()))
+			agentName := t.Agent
+			if agentName == "" {
+				agentName = "agy"
+			}
+
+			bldr.WriteString(fmt.Sprintf("%s<b>#%d</b> %s <code>%s</code> [<code>%s</code>] — <b>%s</b>\n",
+				focusBadge, id, status.Emoji(), html.EscapeString(proj), html.EscapeString(agentName), status.RussianTitle()))
 			bldr.WriteString(fmt.Sprintf("   📝 <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(prompt, 60))))
 
 			extraInfo := fmt.Sprintf("⏱ <code>%s</code>", durStr)
@@ -1030,6 +1075,10 @@ func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
 			t.Lock()
 			id := t.ID
 			proj := t.Project
+			agentName := t.Agent
+			if agentName == "" {
+				agentName = "agy"
+			}
 			status := t.Status
 			prompt := t.InitialPrompt
 			prURL := t.LastPRURL
@@ -1045,8 +1094,8 @@ func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
 				prSnippet = fmt.Sprintf(" | 🔗 <a href=\"%s\">PR</a>", html.EscapeString(prURL))
 			}
 
-			bldr.WriteString(fmt.Sprintf("%s<b>#%d</b> %s <code>%s</code> — %s%s\n",
-				focusBadge, id, status.Emoji(), html.EscapeString(proj), status.RussianTitle(), prSnippet))
+			bldr.WriteString(fmt.Sprintf("%s<b>#%d</b> %s <code>%s</code> [<code>%s</code>] — %s%s\n",
+				focusBadge, id, status.Emoji(), html.EscapeString(proj), html.EscapeString(agentName), status.RussianTitle(), prSnippet))
 			bldr.WriteString(fmt.Sprintf("   📝 <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(prompt, 50))))
 		}
 		bldr.WriteString("\n")
@@ -1106,6 +1155,11 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	id := task.ID
 	proj := task.Project
 	model := task.Model
+	agent := task.Agent
+	if agent == "" {
+		agent = "agy"
+	}
+	convID := task.ConversationID
 	status := task.Status
 	requiresPlan := task.RequiresPlan
 	planApproved := task.PlanApproved
@@ -1126,8 +1180,12 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	}
 	bldr.WriteString(fmt.Sprintf("📊 <b>Задача #%d:</b> <code>%s</code>%s\n\n", id, html.EscapeString(proj), focusTitle))
 	bldr.WriteString(fmt.Sprintf("• <b>Статус:</b> %s <b>%s</b>\n", status.Emoji(), status.RussianTitle()))
+	bldr.WriteString(fmt.Sprintf("• <b>Агент:</b> <code>%s</code>\n", html.EscapeString(agent)))
 	bldr.WriteString(fmt.Sprintf("• <b>Модель:</b> <code>%s</code>\n", html.EscapeString(model)))
 	bldr.WriteString(fmt.Sprintf("• <b>Время:</b> <code>%s</code>\n", durStr))
+	if convID != "" {
+		bldr.WriteString(fmt.Sprintf("• 🧵 <b>Сессия %s:</b> <code>%s</code>\n", html.EscapeString(agent), html.EscapeString(convID)))
+	}
 	bldr.WriteString(fmt.Sprintf("• <b>Задача:</b> <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(initialPrompt, MaxTaskDetailsPromptRunes))))
 
 	if requiresPlan {
