@@ -40,6 +40,22 @@ func TestReadHostLoadAndMemory(t *testing.T) {
 	}
 }
 
+func TestReadHostDisk(t *testing.T) {
+	disk := readHostDisk()
+	if disk.TotalBytes <= 0 {
+		t.Errorf("expected positive total disk, got %d", disk.TotalBytes)
+	}
+	if disk.FreeBytes < 0 {
+		t.Errorf("expected non-negative free disk, got %d", disk.FreeBytes)
+	}
+	if disk.FreeBytes > disk.TotalBytes {
+		t.Errorf("expected free disk <= total disk, got free=%d total=%d", disk.FreeBytes, disk.TotalBytes)
+	}
+	if disk.FreePercent < 0 || disk.FreePercent > 100 {
+		t.Errorf("expected free percent between 0 and 100, got %f", disk.FreePercent)
+	}
+}
+
 func TestFormatResourcesMessageIdle(t *testing.T) {
 	report := ResourcesReport{
 		Host: HostLoadStats{
@@ -319,6 +335,37 @@ func TestFormatResourcesMessageUnifiedAgentSections(t *testing.T) {
 	countNotFound := strings.Count(msg2, "• CLI: 🔴 <i>не найден в PATH</i>")
 	if countNotFound != 2 {
 		t.Fatalf("expected 2 instances of CLI not found, got %d in: %s", countNotFound, msg2)
+	}
+}
+
+func TestFormatResourcesMessageWithDisk(t *testing.T) {
+	report := ResourcesReport{
+		Host: HostLoadStats{
+			Load1:  0.15,
+			Load5:  0.20,
+			Load15: 0.10,
+			Cores:  2,
+		},
+		Memory: HostMemoryStats{
+			TotalBytes:  4 * 1024 * 1024 * 1024,
+			UsedBytes:   1 * 1024 * 1024 * 1024,
+			UsedPercent: 25.0,
+		},
+		Disk: HostDiskStats{
+			TotalBytes:  60 * 1024 * 1024 * 1024,
+			FreeBytes:   45 * 1024 * 1024 * 1024,
+			UsedBytes:   15 * 1024 * 1024 * 1024,
+			FreePercent: 75.0,
+			UsedPercent: 25.0,
+		},
+	}
+
+	msg := FormatResourcesMessage(report)
+	if !strings.Contains(msg, "💻 <b>Сервер:</b>") {
+		t.Fatalf("expected Server header in message: %s", msg)
+	}
+	if !strings.Contains(msg, "• Диск: свободно <b>45.00 GB</b> из <b>60.00 GB</b> (<code>75.0%</code> свободно)") {
+		t.Fatalf("expected disk line in message: %s", msg)
 	}
 }
 
