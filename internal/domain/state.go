@@ -29,5 +29,24 @@ type ProjectState struct {
 	sync.RWMutex
 	CurrentProject string
 	CurrentModel   string
+	CurrentAgent   string
 	PlanMode       bool
 }
+
+// GetCurrentAgent возвращает имя активного CLI агента (по умолчанию agy).
+func (ps *ProjectState) GetCurrentAgent() string {
+	ps.RLock()
+	defer ps.RUnlock()
+	if ps.CurrentAgent == "" {
+		return "agy"
+	}
+	return ps.CurrentAgent
+}
+
+// SetCurrentAgent обновляет имя активного CLI агента.
+func (ps *ProjectState) SetCurrentAgent(agent string) {
+	ps.Lock()
+	defer ps.Unlock()
+	ps.CurrentAgent = agent
+}
+

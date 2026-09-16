@@ -175,6 +175,8 @@ func Start(t ports.Transport) {
 		if _, err := SwitchActiveAgent(savedAgent); err == nil {
 			log.Printf("Восстановлен активный агент из SQLite: %s", savedAgent)
 		}
+	} else {
+		config.ProjectState.SetCurrentAgent(ActiveAgentName)
 	}
 
 	if err := t.SetCommands(context.Background(), getDefaultCommands()); err != nil {
@@ -3224,7 +3226,7 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "cancel", Description: "[id] Остановить задачу"},
 		{Name: "tokens", Description: "Статистика токенов, скорости и кэша"},
 		{Name: "context", Description: "[id] Распределение окна контекста модели"},
-		{Name: "top", Description: "Мониторинг CPU и памяти бота и agy"},
+		{Name: "top", Description: "Мониторинг CPU и памяти бота, agy и claude"},
 		{Name: "usage", Description: "Остаток квот и лимиты аккаунта"},
 		{Name: "models", Description: "Список доступных моделей"},
 		{Name: "model", Description: "[имя] Переключить активную модель"},
@@ -3233,8 +3235,8 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "use", Description: "<имя> Переключить активный проект"},
 		{Name: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
 		{Name: "restart", Description: "Перезапустить бота"},
-		{Name: "rebuild", Description: "Собрать свежий билд и перезапустить"},
-		{Name: "start", Description: "Главное меню и справка по командам"},
+		{Name: "rebuild", Description: "Собрать и перезапустить бота"},
+		{Name: "start", Description: "Перезапуск и приветственное сообщение"},
 	}
 }
 
@@ -3247,6 +3249,7 @@ func SwitchActiveAgent(name string) (string, error) {
 		Agent = adapter
 		models.Agent = adapter
 		ActiveAgentName = "agy"
+		config.ProjectState.SetCurrentAgent("agy")
 		if st := domain.GlobalTaskManager.Storage(); st != nil {
 			_ = st.SetSetting(context.Background(), "current_agent", "agy")
 		}
@@ -3256,6 +3259,7 @@ func SwitchActiveAgent(name string) (string, error) {
 		Agent = adapter
 		models.Agent = adapter
 		ActiveAgentName = "claude"
+		config.ProjectState.SetCurrentAgent("claude")
 		config.ProjectState.Lock()
 		curModel := config.ProjectState.CurrentModel
 		suggested := ""
