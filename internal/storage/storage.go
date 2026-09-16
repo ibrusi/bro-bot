@@ -89,10 +89,10 @@ type Storage interface {
 	GetMetrics(ctx context.Context, taskID int) (*TokenMetricsRecord, error)
 	GetAggregateMetrics(ctx context.Context) (*AggregateMetrics, error)
 
-	// Telegram message mapping
-	RegisterMessageTask(ctx context.Context, messageID int, chatID int64, taskID int) error
-	GetTaskIDByMessage(ctx context.Context, messageID int) (int, error)
-	ListAllMessageTasks(ctx context.Context) (map[int]int, error)
+	// Messenger message mapping
+	RegisterMessageTask(ctx context.Context, chatID, messageID string, taskID int) error
+	GetTaskIDByMessage(ctx context.Context, messageID string) (int, error)
+	ListAllMessageTasks(ctx context.Context) (map[string]int, error)
 
 	// Settings
 	GetSetting(ctx context.Context, key string) (string, error)

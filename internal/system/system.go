@@ -9,15 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"tg-agent-bot/internal/config"
 	"tg-agent-bot/internal/domain"
+	"tg-agent-bot/internal/ports"
 	"tg-agent-bot/internal/utils"
 	"time"
-
-	tele "gopkg.in/telebot.v3"
 )
 
 const (
@@ -32,12 +32,45 @@ var (
 )
 
 type RestartMarker struct {
-	ChatID      int64     `json:"chat_id"`
-	MessageID   int       `json:"message_id,omitempty"`
+	ChatID      string    `json:"chat_id"`
+	MessageID   string    `json:"message_id,omitempty"`
 	Action      string    `json:"action"` // "restart" or "rebuild"
 	TriggeredAt time.Time `json:"triggered_at"`
 	GitCommit   string    `json:"git_commit,omitempty"`
 	GitBranch   string    `json:"git_branch,omitempty"`
+}
+
+// scalarToString конвертирует JSON-скаляр (число или строку) в строку. Нужен, чтобы
+// UnmarshalJSON понимал как новый формат маркера (строковые ID), так и старый,
+// сохранённый ещё telegram-специфичным кодом с числовыми chat_id/message_id.
+func scalarToString(v interface{}) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case float64:
+		return strconv.FormatInt(int64(x), 10)
+	default:
+		return fmt.Sprintf("%v", x)
+	}
+}
+
+// UnmarshalJSON поддерживает и текущий формат (строковые ChatID/MessageID), и старый
+// маркер, сохранённый до введения абстракции мессенджера (числовые значения).
+func (m *RestartMarker) UnmarshalJSON(data []byte) error {
+	type alias RestartMarker
+	aux := &struct {
+		ChatID    interface{} `json:"chat_id"`
+		MessageID interface{} `json:"message_id,omitempty"`
+		*alias
+	}{alias: (*alias)(m)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	m.ChatID = scalarToString(aux.ChatID)
+	m.MessageID = scalarToString(aux.MessageID)
+	return nil
 }
 
 type SystemFlags struct {
@@ -125,7 +158,7 @@ func loadAndClearRestartMarker(botDir string) (*RestartMarker, error) {
 	return &marker, nil
 }
 
-func CheckAndNotifyRestart(b *tele.Bot, defaultAdminID int64) {
+func CheckAndNotifyRestart(m ports.Messenger, defaultAdminChat ports.ChatID) {
 	time.Sleep(1500 * time.Millisecond)
 
 	botDir := getBotDir()
@@ -143,11 +176,11 @@ func CheckAndNotifyRestart(b *tele.Bot, defaultAdminID int64) {
 		return
 	}
 
-	targetChatID := marker.ChatID
-	if targetChatID == 0 {
-		targetChatID = defaultAdminID
+	targetChat := ports.ChatID(marker.ChatID)
+	if targetChat == "" {
+		targetChat = defaultAdminChat
 	}
-	if targetChatID == 0 {
+	if targetChat == "" {
 		return
 	}
 
@@ -174,7 +207,7 @@ func CheckAndNotifyRestart(b *tele.Bot, defaultAdminID int64) {
 		html.EscapeString(nowStr),
 	)
 
-	_, sendErr := b.Send(tele.ChatID(targetChatID), msg, tele.ModeHTML)
+	_, sendErr := m.Send(context.Background(), targetChat, msg, ports.Rich())
 	if sendErr != nil {
 		log.Printf("Не удалось отправить уведомление о перезапуске: %v", sendErr)
 	}
@@ -192,7 +225,7 @@ func parseSystemFlags(args []string) SystemFlags {
 			}
 			continue
 		}
-		
+
 		switch lower {
 		case "pull", "-p", "--pull":
 			f.Pull = true
@@ -267,7 +300,7 @@ func performBuild(ctx context.Context, botDir string) (string, error) {
 	return outStr, nil
 }
 
-func executeRestart(b *tele.Bot, recipient tele.Recipient) {
+func executeRestart(t ports.Transport) {
 	serviceName := os.Getenv("BOT_SERVICE_NAME")
 	if serviceName == "" {
 		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр BOT_SERVICE_NAME не задан")
@@ -275,11 +308,11 @@ func executeRestart(b *tele.Bot, recipient tele.Recipient) {
 
 	log.Printf("Инициирован перезапуск бота (сервис: %s)...", serviceName)
 
-	// Небольшая задержка, чтобы сообщение в Telegram гарантированно ушло
+	// Небольшая задержка, чтобы сообщение гарантированно ушло получателю
 	time.Sleep(800 * time.Millisecond)
 
-	// Останавливаем polling обновлений Telegram
-	b.Stop()
+	// Останавливаем получение апдейтов
+	t.Stop()
 
 	// 1. Пробуем безопасный неблокирующий перезапуск через systemctl
 	cmd := exec.Command("sudo", "systemctl", "restart", "--no-block", serviceName)
@@ -503,11 +536,11 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 	return "", false
 }
 
-func HandleRebuild(b *tele.Bot, c tele.Context) error {
+func HandleRebuild(t ports.Transport, s ports.Session) error {
 	systemActionLock.Lock()
 	if isSystemAction {
 		systemActionLock.Unlock()
-		return c.Send("⚠️ Операция сборки или перезапуска уже выполняется, подождите...")
+		return s.Send("⚠️ Операция сборки или перезапуска уже выполняется, подождите...", nil)
 	}
 	isSystemAction = true
 	systemActionLock.Unlock()
@@ -518,7 +551,7 @@ func HandleRebuild(b *tele.Bot, c tele.Context) error {
 		systemActionLock.Unlock()
 	}()
 
-	flags := parseSystemFlags(c.Args())
+	flags := parseSystemFlags(s.Args())
 	botDir := getBotDir()
 
 	cmdName := "/rebuild"
@@ -527,18 +560,20 @@ func HandleRebuild(b *tele.Bot, c tele.Context) error {
 	}
 
 	if warnMsg, blocked := checkActiveTasksForSystemAction(cmdName, flags, botDir, config.ProjectsRoot); blocked {
-		return c.Send(warnMsg, tele.ModeHTML)
+		return s.Send(warnMsg, ports.Rich())
 	}
 
-	statusMsg, _ := b.Send(c.Recipient(), "🔨 <b>Инициализация сборки бота...</b>", tele.ModeHTML)
+	ctx := context.Background()
+	chat := s.Chat()
+	statusRef, _ := t.Send(ctx, chat, "🔨 <b>Инициализация сборки бота...</b>", ports.Rich())
 
 	updateStatus := func(text string) {
-		if statusMsg != nil {
-			if _, err := b.Edit(statusMsg, text, tele.ModeHTML); err == nil {
+		if statusRef.ID != "" {
+			if err := t.Edit(ctx, statusRef, text, ports.Rich()); err == nil {
 				return
 			}
 		}
-		statusMsg, _ = b.Send(c.Recipient(), text, tele.ModeHTML)
+		statusRef, _ = t.Send(ctx, chat, text, ports.Rich())
 	}
 
 	// Опциональный git checkout и git pull
@@ -547,7 +582,7 @@ func HandleRebuild(b *tele.Bot, c tele.Context) error {
 		if flags.Branch != "" {
 			targetBranch = flags.Branch
 		}
-		
+
 		updateStatus(fmt.Sprintf("🌿 <b>Переключаюсь на ветку %s...</b>", html.EscapeString(targetBranch)))
 		ctxCheckout, cancelCheckout := context.WithTimeout(context.Background(), 30*time.Second)
 		checkoutOut, checkoutErr := performGitCheckout(ctxCheckout, botDir, targetBranch, flags.Force)
@@ -613,13 +648,9 @@ func HandleRebuild(b *tele.Bot, c tele.Context) error {
 	}
 
 	// Сохраняем маркер для отправки подтверждения после перезапуска
-	var msgID int
-	if statusMsg != nil {
-		msgID = statusMsg.ID
-	}
 	_ = saveRestartMarker(botDir, RestartMarker{
-		ChatID:      c.Sender().ID,
-		MessageID:   msgID,
+		ChatID:      string(chat),
+		MessageID:   string(statusRef.ID),
 		Action:      "rebuild",
 		TriggeredAt: time.Now(),
 		GitCommit:   commit,
@@ -635,15 +666,15 @@ func HandleRebuild(b *tele.Bot, c tele.Context) error {
 		html.EscapeString(commit),
 	))
 
-	go executeRestart(b, c.Recipient())
+	go executeRestart(t)
 	return nil
 }
 
-func HandleRestart(b *tele.Bot, c tele.Context) error {
+func HandleRestart(t ports.Transport, s ports.Session) error {
 	systemActionLock.Lock()
 	if isSystemAction {
 		systemActionLock.Unlock()
-		return c.Send("⚠️ Операция сборки или перезапуска уже выполняется, подождите...")
+		return s.Send("⚠️ Операция сборки или перезапуска уже выполняется, подождите...", nil)
 	}
 	isSystemAction = true
 	systemActionLock.Unlock()
@@ -654,31 +685,29 @@ func HandleRestart(b *tele.Bot, c tele.Context) error {
 		systemActionLock.Unlock()
 	}()
 
-	flags := parseSystemFlags(c.Args())
+	flags := parseSystemFlags(s.Args())
 	botDir := getBotDir()
 
 	if warnMsg, blocked := checkActiveTasksForSystemAction("/restart", flags, botDir, config.ProjectsRoot); blocked {
-		return c.Send(warnMsg, tele.ModeHTML)
+		return s.Send(warnMsg, ports.Rich())
 	}
 
 	branch := getGitBranch(botDir)
 	commit := getGitCommit(botDir)
 
-	statusMsg, _ := b.Send(c.Recipient(), "🔄 <b>Инициирован перезапуск бота...</b>", tele.ModeHTML)
+	ctx := context.Background()
+	chat := s.Chat()
+	statusRef, _ := t.Send(ctx, chat, "🔄 <b>Инициирован перезапуск бота...</b>", ports.Rich())
 
-	var msgID int
-	if statusMsg != nil {
-		msgID = statusMsg.ID
-	}
 	_ = saveRestartMarker(botDir, RestartMarker{
-		ChatID:      c.Sender().ID,
-		MessageID:   msgID,
+		ChatID:      string(chat),
+		MessageID:   string(statusRef.ID),
 		Action:      "restart",
 		TriggeredAt: time.Now(),
 		GitCommit:   commit,
 		GitBranch:   branch,
 	})
 
-	go executeRestart(b, c.Recipient())
+	go executeRestart(t)
 	return nil
 }

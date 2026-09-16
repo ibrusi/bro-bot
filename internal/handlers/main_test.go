@@ -16,14 +16,15 @@ import (
 	"tg-agent-bot/internal/config"
 	"tg-agent-bot/internal/domain"
 	"tg-agent-bot/internal/models"
+	"tg-agent-bot/internal/ports"
 	"tg-agent-bot/internal/storage"
 	"tg-agent-bot/internal/utils"
 	"time"
 
 	"github.com/creack/pty"
-	tele "gopkg.in/telebot.v3"
 )
 
+const testChatID ports.ChatID = "12345"
 
 func TestInitDefaultProject(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -189,7 +190,7 @@ func TestBuildQuestionMarkup(t *testing.T) {
 	}
 
 	menu := buildQuestionMarkup(task)
-	if menu == nil || len(menu.InlineKeyboard) == 0 {
+	if menu == nil || len(menu.Rows) == 0 {
 		t.Fatalf("expected inline keyboard to be generated")
 	}
 
@@ -199,16 +200,16 @@ func TestBuildQuestionMarkup(t *testing.T) {
 	foundPause := false
 	foundCancel := false
 
-	for _, row := range menu.InlineKeyboard {
+	for _, row := range menu.Rows {
 		for _, btn := range row {
 			totalButtons++
-			if btn.Unique == "q_choice" {
+			if btn.Action == "q_choice" {
 				foundChoice = true
 			}
-			if btn.Unique == "q_pause" || btn.Text == "⏸ Приостановить" {
+			if btn.Action == "q_pause" || btn.Text == "⏸ Приостановить" {
 				foundPause = true
 			}
-			if btn.Unique == "plan_cancel" || btn.Text == "❌ Отменить" {
+			if btn.Action == "plan_cancel" || btn.Text == "❌ Отменить" {
 				foundCancel = true
 			}
 		}
@@ -227,12 +228,12 @@ func TestBuildQuestionMarkup(t *testing.T) {
 
 func TestBuildResumeMarkup(t *testing.T) {
 	menu := buildResumeMarkup(99)
-	if menu == nil || len(menu.InlineKeyboard) == 0 {
+	if menu == nil || len(menu.Rows) == 0 {
 		t.Fatalf("expected resume markup")
 	}
 
 	foundResume := false
-	for _, row := range menu.InlineKeyboard {
+	for _, row := range menu.Rows {
 		for _, btn := range row {
 			if btn.Text == "▶️ Возобновить задачу" {
 				foundResume = true
@@ -258,20 +259,19 @@ func TestPlanApprovalWithVariantsMarkup(t *testing.T) {
 		t.Errorf("expected Docker in variant 1, got %s", variants[0])
 	}
 
-	planMenu := &tele.ReplyMarkup{}
-	var rows []tele.Row
+	var rows [][]ports.Button
 	for i, v := range variants {
 		btnText := "Утвердить: " + v
-		btn := planMenu.Data(btnText, "plan_appr_var", "10:"+string(rune('0'+i)))
-		rows = append(rows, planMenu.Row(btn))
+		rows = append(rows, []ports.Button{{Text: btnText, Action: "plan_appr_var", Payload: "10:" + string(rune('0'+i))}})
 	}
-	btnApprove := planMenu.Data("✅ Утвердить и начать", "plan_approve", "10")
-	btnCancel := planMenu.Data("❌ Отменить", "plan_cancel", "10")
-	rows = append(rows, planMenu.Row(btnApprove, btnCancel))
-	planMenu.Inline(rows...)
+	rows = append(rows, []ports.Button{
+		{Text: "✅ Утвердить и начать", Action: "plan_approve", Payload: "10"},
+		{Text: "❌ Отменить", Action: "plan_cancel", Payload: "10"},
+	})
+	planMenu := &ports.Keyboard{Rows: rows}
 
-	if len(planMenu.InlineKeyboard) != 3 {
-		t.Errorf("expected 3 rows in plan menu, got %d", len(planMenu.InlineKeyboard))
+	if len(planMenu.Rows) != 3 {
+		t.Errorf("expected 3 rows in plan menu, got %d", len(planMenu.Rows))
 	}
 }
 
@@ -312,19 +312,19 @@ func TestGetDefaultCommands(t *testing.T) {
 
 	seen := make(map[string]bool)
 	for _, cmd := range commands {
-		if seen[cmd.Text] {
-			t.Errorf("duplicate command found in getDefaultCommands: %s", cmd.Text)
+		if seen[cmd.Name] {
+			t.Errorf("duplicate command found in getDefaultCommands: %s", cmd.Name)
 		}
-		seen[cmd.Text] = true
+		seen[cmd.Name] = true
 
-		if len(cmd.Text) < 1 || len(cmd.Text) > 32 {
-			t.Errorf("invalid command length for '%s': %d (must be 1-32)", cmd.Text, len(cmd.Text))
+		if len(cmd.Name) < 1 || len(cmd.Name) > 32 {
+			t.Errorf("invalid command length for '%s': %d (must be 1-32)", cmd.Name, len(cmd.Name))
 		}
-		if strings.ToLower(cmd.Text) != cmd.Text {
-			t.Errorf("command text must be lowercase: %s", cmd.Text)
+		if strings.ToLower(cmd.Name) != cmd.Name {
+			t.Errorf("command text must be lowercase: %s", cmd.Name)
 		}
 		if len(cmd.Description) < 1 || len(cmd.Description) > 256 {
-			t.Errorf("invalid description length for '%s': %d (must be 1-256)", cmd.Text, len(cmd.Description))
+			t.Errorf("invalid description length for '%s': %d (must be 1-256)", cmd.Name, len(cmd.Description))
 		}
 	}
 
@@ -337,7 +337,7 @@ func TestGetDefaultCommands(t *testing.T) {
 
 func TestPlanApprovalPreservesPendingFollowups(t *testing.T) {
 	tm := domain.NewTaskManager()
-	task := tm.CreateTaskWithPlan("test-proj", "flash", "Build feature", dummyRecipient{}, true)
+	task := tm.CreateTaskWithPlan("test-proj", "flash", "Build feature", testChatID, true)
 	task.Lock()
 	task.Status = domain.TaskStatusWaitingApproval
 	task.Plan = "1. Step one\n2. Step two"
@@ -403,9 +403,6 @@ func TestWaitForTaskInputPlanningStatusLogic(t *testing.T) {
 	}
 }
 
-type dummyRecipient struct{}
-func (d dummyRecipient) Recipient() string { return "12345" }
-
 func TestPTYLaunchProcessGroup(t *testing.T) {
 	cmd := exec.Command("sleep", "1")
 	ptmx, err := pty.Start(cmd)
@@ -437,26 +434,25 @@ func TestPlanMenuForLongPlanIncludesDocumentButton(t *testing.T) {
 		t.Fatalf("expected longPlan to be > maxInlinePlanRunes (%d), got %d", maxInlinePlanRunes, len(planRunes))
 	}
 
-	planMenu := &tele.ReplyMarkup{}
-	var rows []tele.Row
-	btnApprove := planMenu.Data("✅ Утвердить и начать", "plan_approve", "42")
-	btnCancel := planMenu.Data("❌ Отменить", "plan_cancel", "42")
-	rows = append(rows, planMenu.Row(btnApprove, btnCancel))
+	var rows [][]ports.Button
+	rows = append(rows, []ports.Button{
+		{Text: "✅ Утвердить и начать", Action: "plan_approve", Payload: "42"},
+		{Text: "❌ Отменить", Action: "plan_cancel", Payload: "42"},
+	})
 
 	if isLong {
-		btnDoc := planMenu.Data("📄 Скачать план (.md)", "plan_doc", "42")
-		rows = append(rows, planMenu.Row(btnDoc))
+		rows = append(rows, []ports.Button{{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: "42"}})
 	}
-	planMenu.Inline(rows...)
+	planMenu := &ports.Keyboard{Rows: rows}
 
-	if len(planMenu.InlineKeyboard) != 2 {
-		t.Fatalf("expected 2 rows in long plan menu (actions + doc button), got %d", len(planMenu.InlineKeyboard))
+	if len(planMenu.Rows) != 2 {
+		t.Fatalf("expected 2 rows in long plan menu (actions + doc button), got %d", len(planMenu.Rows))
 	}
 
 	foundDocBtn := false
-	for _, row := range planMenu.InlineKeyboard {
+	for _, row := range planMenu.Rows {
 		for _, btn := range row {
-			if strings.Contains(btn.Text, "Скачать план") && btn.Data == "plan_doc|42" || btn.Unique == "plan_doc" {
+			if btn.Action == "plan_doc" {
 				foundDocBtn = true
 			}
 		}
@@ -467,11 +463,11 @@ func TestPlanMenuForLongPlanIncludesDocumentButton(t *testing.T) {
 
 	// 2. Document file creation
 	docName := fmt.Sprintf("plan_task_%d.md", 42)
-	doc := &tele.Document{
-		File:     tele.FromReader(strings.NewReader(longPlan)),
+	doc := ports.Document{
 		FileName: docName,
 		MIME:     "text/markdown",
 		Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", 42, "test-proj"),
+		Content:  []byte(longPlan),
 	}
 
 	if doc.FileName != "plan_task_42.md" {
@@ -501,7 +497,7 @@ func TestSyncLegacySessionSavesToSQLite(t *testing.T) {
 
 	domain.GlobalTaskManager.InitWithStorage(s)
 
-	task := domain.GlobalTaskManager.CreateTaskWithPlan("test-sync-proj", "flash", "Build sqlite feature", dummyRecipient{}, true)
+	task := domain.GlobalTaskManager.CreateTaskWithPlan("test-sync-proj", "flash", "Build sqlite feature", testChatID, true)
 
 	task.Lock()
 	task.Status = domain.TaskStatusWaitingApproval
@@ -553,7 +549,6 @@ func TestHandlersSQLiteSettingsPersistence(t *testing.T) {
 	}
 }
 
-
 func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	memStore, err := storage.NewSQLiteStorage(":memory:")
 	if err != nil {
@@ -564,7 +559,7 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	tm := domain.NewTaskManagerWithStorage(memStore)
 	domain.GlobalTaskManager = tm
 
-	task := tm.CreateTask("proj-timeout", "m", "Prompt", dummyRecipient{})
+	task := tm.CreateTask("proj-timeout", "m", "Prompt", testChatID)
 	task.Lock()
 	task.ConversationID = "conv-timeout-123"
 	task.Status = domain.TaskStatusRunning
@@ -572,7 +567,7 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	tm.SaveTask(task)
 
 	// 1. Проверяем перевод задачи в статус paused при таймауте
-	handleTaskStepTimeout(nil, dummyRecipient{}, task, "proj-timeout", task.ID, false)
+	handleTaskStepTimeout(nil, testChatID, task, "proj-timeout", task.ID, false)
 
 	task.Lock()
 	st := task.Status
@@ -587,14 +582,14 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	}
 
 	// 2. Проверяем перевод задачи в статус failed при ошибке
-	task2 := tm.CreateTask("proj-err", "m", "Prompt 2", dummyRecipient{})
+	task2 := tm.CreateTask("proj-err", "m", "Prompt 2", testChatID)
 	task2.Lock()
 	task2.ConversationID = "conv-err-456"
 	task2.Status = domain.TaskStatusRunning
 	task2.Unlock()
 	tm.SaveTask(task2)
 
-	handleTaskStepError(nil, dummyRecipient{}, task2, "proj-err", task2.ID, fmt.Errorf("exit status 127"))
+	handleTaskStepError(nil, testChatID, task2, "proj-err", task2.ID, fmt.Errorf("exit status 127"))
 
 	task2.Lock()
 	st2 := task2.Status
@@ -724,20 +719,19 @@ func TestTaskCompletionMessageWithPlanAndPrompt(t *testing.T) {
 	}
 
 	// Inline buttons
-	compMenu := &tele.ReplyMarkup{}
-	var actButtons []tele.Btn
+	var actButtons []ports.Button
 	if prURL != "" {
-		actButtons = append(actButtons, compMenu.URL("🔗 Открыть PR", prURL))
+		actButtons = append(actButtons, ports.Button{Text: "🔗 Открыть PR", URL: prURL})
 	}
 	if hasPlan {
-		actButtons = append(actButtons, compMenu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(taskID)))
+		actButtons = append(actButtons, ports.Button{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: strconv.Itoa(taskID)})
 	}
-	compMenu.Inline(compMenu.Row(actButtons...))
+	compMenu := &ports.Keyboard{Rows: [][]ports.Button{actButtons}}
 
-	if len(compMenu.InlineKeyboard) != 1 || len(compMenu.InlineKeyboard[0]) != 2 {
+	if len(compMenu.Rows) != 1 || len(compMenu.Rows[0]) != 2 {
 		t.Fatalf("expected 1 row with 2 buttons in completion menu")
 	}
-	if !strings.Contains(compMenu.InlineKeyboard[0][1].Text, "Скачать план") {
+	if !strings.Contains(compMenu.Rows[0][1].Text, "Скачать план") {
 		t.Errorf("expected plan download button in completion menu")
 	}
 }
@@ -746,7 +740,7 @@ func TestSendPlanForApprovalSingleMessageFormatting(t *testing.T) {
 	taskID := 12
 	projectName := "plan-project"
 	initialPrompt := strings.Repeat("Разработай сложный модуль. ", 15) // ~400 chars
-	planText := strings.Repeat("1. Шаг архитектурного плана.\n", 60) // ~1800 runes
+	planText := strings.Repeat("1. Шаг архитектурного плана.\n", 60)   // ~1800 runes
 
 	promptSnippet := utils.TruncateString(initialPrompt, 250)
 	if len([]rune(promptSnippet)) > 250 {
@@ -869,7 +863,7 @@ func TestEvaluateStepCompletion_ExecutionQuestions(t *testing.T) {
 
 func TestTaskWaitingInputResumeAndDeliver(t *testing.T) {
 	tm := domain.NewTaskManager()
-	task := tm.CreateTask("test-proj", "flash", "Test question answer flow", dummyRecipient{})
+	task := tm.CreateTask("test-proj", "flash", "Test question answer flow", testChatID)
 
 	task.Lock()
 	task.Status = domain.TaskStatusWaitingInput
@@ -975,7 +969,7 @@ func TestIsLikelyErrorMessage(t *testing.T) {
 
 func TestExtractStepErrorMessage(t *testing.T) {
 	tm := domain.NewTaskManager()
-	task := tm.CreateTask("test-proj", "flash", "Test extract error", dummyRecipient{})
+	task := tm.CreateTask("test-proj", "flash", "Test extract error", testChatID)
 
 	// 1. При наличии resultError возвращается именно он
 	got1 := extractStepErrorMessage(task, "result error message from agy", errors.New("exit status 1"))
@@ -1021,7 +1015,7 @@ func TestExtractStepErrorMessage(t *testing.T) {
 func TestExecuteStepErrorEvaluation(t *testing.T) {
 	// Эмуляция завершения executeStepForTask при ошибках
 	tm := domain.NewTaskManager()
-	task := tm.CreateTask("test-proj", "flash", "Task with error", dummyRecipient{})
+	task := tm.CreateTask("test-proj", "flash", "Task with error", testChatID)
 
 	// Случай: hasResult = true, но status = "ERROR" и waitErr != nil
 	resultStatus := "ERROR"
@@ -1177,6 +1171,3 @@ func TestStepTimeoutSimulation(t *testing.T) {
 		t.Fatalf("expected realTimedOut to be TRUE when terminal output contains [agy] print timeout banner")
 	}
 }
-
-
-

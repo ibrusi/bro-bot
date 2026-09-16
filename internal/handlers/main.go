@@ -24,8 +24,6 @@ import (
 	"tg-agent-bot/internal/system"
 	"tg-agent-bot/internal/utils"
 	"time"
-
-	tele "gopkg.in/telebot.v3"
 )
 
 var (
@@ -75,18 +73,13 @@ var (
 	modelRegexp  = regexp.MustCompile(`(?i)model:\s*([a-zA-Z0-9.\-_]+)`)
 )
 
-func Start() {
-	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
-	if botToken == "" {
-		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр TELEGRAM_BOT_TOKEN не задан")
-	}
-
+func Start(t ports.Transport) {
 	adminIDStr := os.Getenv("TELEGRAM_ADMIN_ID")
-	var err error
-	config.AdminID, err = strconv.ParseInt(adminIDStr, 10, 64)
-	if err != nil || config.AdminID == 0 {
+	adminIDNum, err := strconv.ParseInt(adminIDStr, 10, 64)
+	if err != nil || adminIDNum == 0 {
 		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр TELEGRAM_ADMIN_ID не задан или некорректен")
 	}
+	config.AdminID = ports.ChatID(strconv.FormatInt(adminIDNum, 10))
 
 	envProjectsRoot := os.Getenv("PROJECTS_ROOT")
 	if envProjectsRoot == "" {
@@ -176,31 +169,21 @@ func Start() {
 		}
 	}
 
-	b, err := tele.NewBot(tele.Settings{
-
-		Token:  botToken,
-		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	commands := getDefaultCommands()
-	if err := b.SetCommands(commands); err != nil {
+	if err := t.SetCommands(context.Background(), getDefaultCommands()); err != nil {
 		log.Printf("Предупреждение: не удалось зарегистрировать команды: %v", err)
 	}
 
-	b.Use(func(next tele.HandlerFunc) tele.HandlerFunc {
-		return func(c tele.Context) error {
-			if c.Sender().ID != config.AdminID {
+	t.Use(func(next ports.Handler) ports.Handler {
+		return func(s ports.Session) error {
+			if s.SenderID() != string(config.AdminID) {
 				return nil
 			}
-			return next(&autoSplitContext{Context: c, bot: b})
+			return next(s)
 		}
 	})
 
-	b.Handle("/start", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("start", func(s ports.Session) error {
+		args := s.Args()
 		if len(args) > 0 {
 			payload := strings.TrimSpace(args[0])
 			if strings.HasPrefix(payload, "plan_") || strings.HasPrefix(payload, "planfile_") {
@@ -209,9 +192,9 @@ func Start() {
 				if id, err := strconv.Atoi(rawID); err == nil {
 					target := domain.GlobalTaskManager.GetTask(id)
 					if target != nil {
-						return sendTaskPlanDocument(c, target)
+						return sendTaskPlanDocument(s, target)
 					}
-					return c.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), tele.ModeHTML)
+					return s.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), ports.Rich())
 				}
 			}
 		}
@@ -253,48 +236,41 @@ func Start() {
 			html.EscapeString(curProj),
 			html.EscapeString(curMod),
 		)
-		return c.Send(msg, tele.ModeHTML)
+		return s.Send(msg, ports.Rich())
 	})
 
-	b.Handle("/tasks", func(c tele.Context) error {
+	t.OnCommand("tasks", func(s ports.Session) error {
 		msg, menu := domain.FormatTasksList(domain.GlobalTaskManager)
-		if menu != nil {
-			return c.Send(msg, menu, tele.ModeHTML)
-		}
-		return c.Send(msg, tele.ModeHTML)
+		return s.Send(msg, ports.RichWith(menu))
 	})
 
-	btnTaskSel := tele.Btn{Unique: "task_sel"}
-	b.Handle(&btnTaskSel, func(c tele.Context) error {
-		idStr := strings.TrimSpace(c.Data())
+	t.OnCallback("task_sel", func(s ports.Session) error {
+		idStr := s.Callback().Payload
 		id, err := strconv.Atoi(idStr)
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+			return s.Respond("Некорректный номер задачи")
 		}
 		task, err := domain.GlobalTaskManager.SetActiveTask(id)
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: err.Error()})
+			return s.Respond(err.Error())
 		}
 		syncLegacySession(task)
-		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Выбрана задача #%d", id)})
+		_ = s.Respond(fmt.Sprintf("Выбрана задача #%d", id))
 
 		details := domain.FormatTaskDetails(task, true)
 		markup := domain.BuildTaskDetailsMarkup(task)
-		if markup != nil {
-			return c.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), markup, tele.ModeHTML)
-		}
-		return c.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), tele.ModeHTML)
+		return s.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), ports.RichWith(markup))
 	})
 
-	b.Handle("/status", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("status", func(s ports.Session) error {
+		args := s.Args()
 		var target *domain.TaskSession
 		if len(args) > 0 {
 			first := strings.TrimPrefix(args[0], "#")
 			if id, err := strconv.Atoi(first); err == nil {
 				target = domain.GlobalTaskManager.GetTask(id)
 				if target == nil {
-					return c.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), tele.ModeHTML)
+					return s.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), ports.Rich())
 				}
 			}
 		}
@@ -315,7 +291,7 @@ func Start() {
 				idleMsg += "\n\n" + resSnippet
 			}
 			idleMsg += "\n\n💡 <i>Отправьте задачу сообщением в чат, /tasks для списка или /new для новой задачи.</i>"
-			return c.Send(idleMsg, tele.ModeHTML)
+			return s.Send(idleMsg, ports.Rich())
 		}
 
 		activeTask := domain.GlobalTaskManager.GetActiveTask()
@@ -348,31 +324,28 @@ func Start() {
 		}
 
 		statusMarkup := domain.BuildTaskDetailsMarkup(target)
-		if statusMarkup != nil {
-			return c.Send(msg, statusMarkup, tele.ModeHTML)
-		}
-		return c.Send(msg, tele.ModeHTML)
+		return s.Send(msg, ports.RichWith(statusMarkup))
 	})
 
-	b.Handle("/tokens", func(c tele.Context) error {
+	t.OnCommand("tokens", func(s ports.Session) error {
 		msg := domain.GlobalTokenTracker.GetTokensCommandMessage()
-		return c.Send(msg, tele.ModeHTML)
+		return s.Send(msg, ports.Rich())
 	})
 
-	b.Handle("/stats", func(c tele.Context) error {
+	t.OnCommand("stats", func(s ports.Session) error {
 		msg := domain.GlobalTokenTracker.GetTokensCommandMessage()
-		return c.Send(msg, tele.ModeHTML)
+		return s.Send(msg, ports.Rich())
 	})
 
-	b.Handle("/context", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("context", func(s ports.Session) error {
+		args := s.Args()
 		var target *domain.TaskSession
 		if len(args) > 0 {
 			first := strings.TrimPrefix(args[0], "#")
 			if id, err := strconv.Atoi(first); err == nil {
 				target = domain.GlobalTaskManager.GetTask(id)
 				if target == nil {
-					return c.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), tele.ModeHTML)
+					return s.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), ports.Rich())
 				}
 			}
 		}
@@ -387,16 +360,15 @@ func Start() {
 		config.ProjectState.RUnlock()
 
 		msg := domain.GlobalTokenTracker.GetContextCommandMessage(target, curProj, curMod)
-		return c.Send(msg, tele.ModeHTML)
+		return s.Send(msg, ports.Rich())
 	})
 
-	b.Handle("/models", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("models", func(s ports.Session) error {
+		args := s.Args()
 		forceRefresh := len(args) > 0 && (args[0] == "refresh" || args[0] == "update")
 		if forceRefresh {
-			_ = c.Notify(tele.Typing)
 			if _, err := models.GlobalModelRegistry.RefreshModels(true); err != nil {
-				return c.Send(fmt.Sprintf("⚠️ Ошибка синхронизации с agy: %v\nПоказан кэшированный список.", err))
+				return s.Send(fmt.Sprintf("⚠️ Ошибка синхронизации с agy: %v\nПоказан кэшированный список.", err), nil)
 			}
 		}
 
@@ -405,39 +377,39 @@ func Start() {
 		config.ProjectState.RUnlock()
 
 		msg := models.GlobalModelRegistry.FormatModelsMessage(curModel)
-		return c.Send(msg, tele.ModeHTML)
+		return s.Send(msg, ports.Rich())
 	})
 
-	b.Handle("/model", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("model", func(s ports.Session) error {
+		args := s.Args()
 		if len(args) == 0 {
 			config.ProjectState.RLock()
 			cur := config.ProjectState.CurrentModel
 			config.ProjectState.RUnlock()
-			return c.Send(fmt.Sprintf("Текущая модель: <code>%s</code>\nИспользование: <code>/model &lt;имя&gt;</code> (например, <code>/model sonnet</code>)", html.EscapeString(cur)), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("Текущая модель: <code>%s</code>\nИспользование: <code>/model &lt;имя&gt;</code> (например, <code>/model sonnet</code>)", html.EscapeString(cur)), ports.Rich())
 		}
 
 		target := strings.TrimSpace(args[0])
 		resolved, ok := models.GlobalModelRegistry.ResolveModel(target)
 		if !ok {
-			return c.Send(fmt.Sprintf("❌ Неизвестная модель: <code>%s</code>. Список: /models", html.EscapeString(target)), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ Неизвестная модель: <code>%s</code>. Список: /models", html.EscapeString(target)), ports.Rich())
 		}
 
 		config.ProjectState.Lock()
 		config.ProjectState.CurrentModel = resolved
 		config.ProjectState.Unlock()
 
-		if s := domain.GlobalTaskManager.Storage(); s != nil {
-			_ = s.SetSetting(context.Background(), "current_model", resolved)
+		if st := domain.GlobalTaskManager.Storage(); st != nil {
+			_ = st.SetSetting(context.Background(), "current_model", resolved)
 		}
 
-		return c.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", html.EscapeString(resolved)), tele.ModeHTML)
-
+		return s.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", html.EscapeString(resolved)), ports.Rich())
 	})
 
-	handleUsage := func(c tele.Context) error {
-		_ = c.Notify(tele.Typing)
-		statusMsg, _ := b.Send(c.Recipient(), "⏳ <i>Запрашиваю актуальные лимиты и квоты из agy...</i>", tele.ModeHTML)
+	handleUsage := func(s ports.Session) error {
+		m := s.Messenger()
+		chat := s.Chat()
+		statusRef, _ := m.Send(context.Background(), chat, "⏳ <i>Запрашиваю актуальные лимиты и квоты из agy...</i>", ports.Rich())
 
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -553,20 +525,20 @@ func Start() {
 		bldr.WriteString("💡 <i>Лимиты 5-часового окна и недели сглаживают общую нагрузку и обновляются автоматически.</i>")
 
 		resultMsg := bldr.String()
-		if statusMsg != nil {
-			if _, editErr := b.Edit(statusMsg, resultMsg, tele.ModeHTML); editErr == nil {
+		if statusRef.ID != "" {
+			if editErr := m.Edit(context.Background(), statusRef, resultMsg, ports.Rich()); editErr == nil {
 				return nil
 			}
 		}
-		return c.Send(resultMsg, tele.ModeHTML)
+		return s.Send(resultMsg, ports.Rich())
 	}
-	b.Handle("/usage", handleUsage)
-	b.Handle("/limits", handleUsage)
+	t.OnCommand("usage", handleUsage)
+	t.OnCommand("limits", handleUsage)
 
-	b.Handle("/projects", func(c tele.Context) error {
+	t.OnCommand("projects", func(s ports.Session) error {
 		entries, err := os.ReadDir(config.ProjectsRoot)
 		if err != nil {
-			return c.Send(fmt.Sprintf("❌ Ошибка чтения директории: %v", err))
+			return s.Send(fmt.Sprintf("❌ Ошибка чтения директории: %v", err), nil)
 		}
 
 		config.ProjectState.RLock()
@@ -593,55 +565,51 @@ func Start() {
 		}
 
 		if !found {
-			return c.Send("В каталоге проектов пока нет склонированных репозиториев.\n\n💡 Клонировать: <code>/clone &lt;url&gt; [имя]</code>", tele.ModeHTML)
+			return s.Send("В каталоге проектов пока нет склонированных репозиториев.\n\n💡 Клонировать: <code>/clone &lt;url&gt; [имя]</code>", ports.Rich())
 		}
 
 		bldr.WriteString("\n💡 Клонировать новый: <code>/clone &lt;url&gt; [имя]</code>")
-		return c.Send(bldr.String(), tele.ModeHTML)
+		return s.Send(bldr.String(), ports.Rich())
 	})
 
-	b.Handle("/use", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("use", func(s ports.Session) error {
+		args := s.Args()
 		if len(args) == 0 {
-			return c.Send("Укажите имя проекта. Пример: <code>/use my-repo</code>", tele.ModeHTML)
+			return s.Send("Укажите имя проекта. Пример: <code>/use my-repo</code>", ports.Rich())
 		}
 
 		target := strings.TrimSpace(args[0])
 		targetPath := filepath.Join(config.ProjectsRoot, target)
 
 		if fi, err := os.Stat(targetPath); err != nil || !fi.IsDir() {
-			return c.Send(fmt.Sprintf("❌ Проект <code>%s</code> не найден.", html.EscapeString(target)), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ Проект <code>%s</code> не найден.", html.EscapeString(target)), ports.Rich())
 		}
 
 		config.ProjectState.Lock()
 		config.ProjectState.CurrentProject = target
 		config.ProjectState.Unlock()
 
-		if s := domain.GlobalTaskManager.Storage(); s != nil {
-			_ = s.SetSetting(context.Background(), "current_project", target)
+		if st := domain.GlobalTaskManager.Storage(); st != nil {
+			_ = st.SetSetting(context.Background(), "current_project", target)
 		}
 
-		return c.Send(fmt.Sprintf("✅ Проект переключен на: <code>%s</code>", html.EscapeString(target)), tele.ModeHTML)
-
+		return s.Send(fmt.Sprintf("✅ Проект переключен на: <code>%s</code>", html.EscapeString(target)), ports.Rich())
 	})
 
-	b.Handle("/clone", func(c tele.Context) error {
-		return handleCloneCommand(b, c)
+	t.OnCommand("clone", func(s ports.Session) error {
+		return handleCloneCommand(s)
 	})
 
-	b.Handle("/task", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("task", func(s ports.Session) error {
+		args := s.Args()
 		if len(args) == 0 {
 			active := domain.GlobalTaskManager.GetActiveTask()
 			if active == nil {
-				return c.Send("💤 Нет активных задач. Создать: <code>/new &lt;текст&gt;</code>", tele.ModeHTML)
+				return s.Send("💤 Нет активных задач. Создать: <code>/new &lt;текст&gt;</code>", ports.Rich())
 			}
 			details := domain.FormatTaskDetails(active, true)
 			markup := domain.BuildTaskDetailsMarkup(active)
-			if markup != nil {
-				return c.Send(details, markup, tele.ModeHTML)
-			}
-			return c.Send(details, tele.ModeHTML)
+			return s.Send(details, ports.RichWith(markup))
 		}
 
 		first := strings.TrimPrefix(args[0], "#")
@@ -649,66 +617,63 @@ func Start() {
 		if err != nil {
 			if strings.ToLower(first) == "new" && len(args) > 1 {
 				prompt := strings.Join(args[1:], " ")
-				return handleCreateNewTask(b, c, prompt)
+				return handleCreateNewTask(s, prompt)
 			}
 			if strings.ToLower(first) == "plan" && len(args) > 1 {
 				prompt := strings.Join(args[1:], " ")
-				return handleCreatePlanTask(b, c, prompt)
+				return handleCreatePlanTask(s, prompt)
 			}
-			return c.Send("Использование:\n• <code>/task &lt;id&gt;</code> — переключить активную задачу\n• <code>/task &lt;id&gt; &lt;текст&gt;</code> — дополнить задачу", tele.ModeHTML)
+			return s.Send("Использование:\n• <code>/task &lt;id&gt;</code> — переключить активную задачу\n• <code>/task &lt;id&gt; &lt;текст&gt;</code> — дополнить задачу", ports.Rich())
 		}
 
 		// Если передан текст дополнения: /task 2 сделай ещё это
 		if len(args) > 1 {
 			followupText := strings.TrimSpace(strings.Join(args[1:], " "))
-			return handleAddFollowupToTask(b, c, id, followupText)
+			return handleAddFollowupToTask(s, id, followupText)
 		}
 
 		task, err := domain.GlobalTaskManager.SetActiveTask(id)
 		if err != nil {
-			return c.Send(fmt.Sprintf("❌ %s", err.Error()), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
 		}
 		syncLegacySession(task)
 
 		details := domain.FormatTaskDetails(task, true)
 		markup := domain.BuildTaskDetailsMarkup(task)
-		if markup != nil {
-			return c.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), markup, tele.ModeHTML)
-		}
-		return c.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), tele.ModeHTML)
+		return s.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s", id, details), ports.RichWith(markup))
 	})
 
-	b.Handle("/add", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("add", func(s ports.Session) error {
+		args := s.Args()
 		if len(args) == 0 {
-			return c.Send("Использование:\n• <code>/add &lt;id&gt; &lt;текст&gt;</code> — дополнить задачу #id\n• <code>/add &lt;текст&gt;</code> — дополнить активную задачу", tele.ModeHTML)
+			return s.Send("Использование:\n• <code>/add &lt;id&gt; &lt;текст&gt;</code> — дополнить задачу #id\n• <code>/add &lt;текст&gt;</code> — дополнить активную задачу", ports.Rich())
 		}
 
 		first := strings.TrimPrefix(args[0], "#")
 		if id, err := strconv.Atoi(first); err == nil && len(args) > 1 {
 			followupText := strings.TrimSpace(strings.Join(args[1:], " "))
-			return handleAddFollowupToTask(b, c, id, followupText)
+			return handleAddFollowupToTask(s, id, followupText)
 		}
 
 		active := domain.GlobalTaskManager.GetActiveTask()
 		if active == nil {
-			return c.Send("❌ Нет активной задачи. Укажите ID: <code>/add &lt;id&gt; &lt;текст&gt;</code>", tele.ModeHTML)
+			return s.Send("❌ Нет активной задачи. Укажите ID: <code>/add &lt;id&gt; &lt;текст&gt;</code>", ports.Rich())
 		}
 		followupText := strings.TrimSpace(strings.Join(args, " "))
-		return handleAddFollowupToTask(b, c, active.ID, followupText)
+		return handleAddFollowupToTask(s, active.ID, followupText)
 	})
 
-	b.Handle("/new", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("new", func(s ports.Session) error {
+		args := s.Args()
 		if len(args) == 0 {
-			return c.Send("Использование: <code>/new &lt;описание задачи&gt;</code>\n(или <code>/new &lt;проект&gt; &lt;описание&gt;</code>)", tele.ModeHTML)
+			return s.Send("Использование: <code>/new &lt;описание задачи&gt;</code>\n(или <code>/new &lt;проект&gt; &lt;описание&gt;</code>)", ports.Rich())
 		}
 		text := strings.TrimSpace(strings.Join(args, " "))
-		return handleCreateNewTask(b, c, text)
+		return handleCreateNewTask(s, text)
 	})
 
-	b.Handle("/plan", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("plan", func(s ports.Session) error {
+		args := s.Args()
 		if len(args) == 0 {
 			config.ProjectState.RLock()
 			mode := config.ProjectState.PlanMode
@@ -732,17 +697,17 @@ func Start() {
 				statusStr,
 			)
 
-			menu := &tele.ReplyMarkup{}
-			btnToggle := menu.Data("🔄 Переключить Plan Mode", "plan_mode_toggle")
-			menu.Inline(menu.Row(btnToggle))
-			return c.Send(msg, menu, tele.ModeHTML)
+			menu := &ports.Keyboard{Rows: [][]ports.Button{
+				{{Text: "🔄 Переключить Plan Mode", Action: "plan_mode_toggle"}},
+			}}
+			return s.Send(msg, ports.RichWith(menu))
 		}
 		text := strings.TrimSpace(strings.Join(args, " "))
-		return handleCreatePlanTask(b, c, text)
+		return handleCreatePlanTask(s, text)
 	})
 
-	b.Handle("/planmode", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("planmode", func(s ports.Session) error {
+		args := s.Args()
 		config.ProjectState.Lock()
 		if len(args) == 0 {
 			config.ProjectState.PlanMode = !config.ProjectState.PlanMode
@@ -757,25 +722,25 @@ func Start() {
 				config.ProjectState.PlanMode = !config.ProjectState.PlanMode
 			default:
 				config.ProjectState.Unlock()
-				return c.Send("Использование: <code>/planmode [on|off|toggle]</code>", tele.ModeHTML)
+				return s.Send("Использование: <code>/planmode [on|off|toggle]</code>", ports.Rich())
 			}
 		}
 		newMode := config.ProjectState.PlanMode
 		config.ProjectState.Unlock()
 
-		if s := domain.GlobalTaskManager.Storage(); s != nil {
-			_ = s.SetSetting(context.Background(), "plan_mode", strconv.FormatBool(newMode))
+		if st := domain.GlobalTaskManager.Storage(); st != nil {
+			_ = st.SetSetting(context.Background(), "plan_mode", strconv.FormatBool(newMode))
 		}
 
 		if newMode {
-			return c.Send("✅ <b>Режим обязательного планирования ВКЛЮЧЕН.</b>\nВсе новые задачи будут сначала составлять план и ожидать вашего утверждения.", tele.ModeHTML)
+			return s.Send("✅ <b>Режим обязательного планирования ВКЛЮЧЕН.</b>\nВсе новые задачи будут сначала составлять план и ожидать вашего утверждения.", ports.Rich())
 		}
 
-		return c.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nНовые задачи будут сразу приступать к реализации (для плана используйте <code>/plan &lt;задача&gt;</code>).", tele.ModeHTML)
+		return s.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nНовые задачи будут сразу приступать к реализации (для плана используйте <code>/plan &lt;задача&gt;</code>).", ports.Rich())
 	})
 
-	b.Handle("/planfile", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("planfile", func(s ports.Session) error {
+		args := s.Args()
 		var target *domain.TaskSession
 		if len(args) > 0 {
 			first := strings.TrimPrefix(args[0], "#")
@@ -783,7 +748,7 @@ func Start() {
 			if id, err := strconv.Atoi(first); err == nil {
 				target = domain.GlobalTaskManager.GetTask(id)
 				if target == nil {
-					return c.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), tele.ModeHTML)
+					return s.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), ports.Rich())
 				}
 			}
 		}
@@ -793,146 +758,141 @@ func Start() {
 		}
 
 		if target == nil {
-			return c.Send("❌ Нет активных задач. Список задач: /tasks", tele.ModeHTML)
+			return s.Send("❌ Нет активных задач. Список задач: /tasks", ports.Rich())
 		}
 
-		return sendTaskPlanDocument(c, target)
+		return sendTaskPlanDocument(s, target)
 	})
 
-	b.Handle("/approve", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("approve", func(s ports.Session) error {
+		args := s.Args()
 		var targetID int
 		if len(args) > 0 {
 			first := strings.TrimPrefix(args[0], "#")
 			var err error
 			targetID, err = strconv.Atoi(first)
 			if err != nil {
-				return c.Send("Укажите номер задачи. Пример: <code>/approve 1</code>", tele.ModeHTML)
+				return s.Send("Укажите номер задачи. Пример: <code>/approve 1</code>", ports.Rich())
 			}
 		} else {
 			active := domain.GlobalTaskManager.GetActiveTask()
 			if active == nil {
-				return c.Send("Нет активных задач для утверждения.")
+				return s.Send("Нет активных задач для утверждения.", nil)
 			}
 			targetID = active.ID
 		}
-		return handleApprovePlan(b, c.Recipient(), targetID)
+		return handleApprovePlan(s.Messenger(), s.Chat(), targetID)
 	})
 
-	b.Handle("/confirm", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("confirm", func(s ports.Session) error {
+		args := s.Args()
 		var targetID int
 		if len(args) > 0 {
 			first := strings.TrimPrefix(args[0], "#")
 			var err error
 			targetID, err = strconv.Atoi(first)
 			if err != nil {
-				return c.Send("Укажите номер задачи. Пример: <code>/confirm 1</code>", tele.ModeHTML)
+				return s.Send("Укажите номер задачи. Пример: <code>/confirm 1</code>", ports.Rich())
 			}
 		} else {
 			active := domain.GlobalTaskManager.GetActiveTask()
 			if active == nil {
-				return c.Send("Нет активных задач для утверждения.")
+				return s.Send("Нет активных задач для утверждения.", nil)
 			}
 			targetID = active.ID
 		}
-		return handleApprovePlan(b, c.Recipient(), targetID)
+		return handleApprovePlan(s.Messenger(), s.Chat(), targetID)
 	})
 
-	btnPlanApprove := tele.Btn{Unique: "plan_approve"}
-	b.Handle(&btnPlanApprove, func(c tele.Context) error {
-		idStr := strings.TrimSpace(c.Data())
+	t.OnCallback("plan_approve", func(s ports.Session) error {
+		idStr := s.Callback().Payload
 		id, err := strconv.Atoi(idStr)
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+			return s.Respond("Некорректный номер задачи")
 		}
-		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("План #%d утверждён", id)})
-		return handleApprovePlan(b, c.Recipient(), id)
+		_ = s.Respond(fmt.Sprintf("План #%d утверждён", id))
+		return handleApprovePlan(s.Messenger(), s.Chat(), id)
 	})
 
-	btnPlanCancel := tele.Btn{Unique: "plan_cancel"}
-	b.Handle(&btnPlanCancel, func(c tele.Context) error {
-		idStr := strings.TrimSpace(c.Data())
+	t.OnCallback("plan_cancel", func(s ports.Session) error {
+		idStr := s.Callback().Payload
 		id, err := strconv.Atoi(idStr)
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+			return s.Respond("Некорректный номер задачи")
 		}
-		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Задача #%d отменена", id)})
+		_ = s.Respond(fmt.Sprintf("Задача #%d отменена", id))
 		task, err := domain.GlobalTaskManager.CancelTask(id)
 		if err != nil {
-			return c.Send(fmt.Sprintf("❌ %s", err.Error()), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
 		}
 		syncLegacySession(domain.GlobalTaskManager.GetActiveTask())
 		domain.GlobalTokenTracker.CancelTask()
-		checkAndStartQueuedTask(b, task.Project, config.ProjectsRoot)
-		return c.Send(fmt.Sprintf("🛑 <b>Задача #%d (<code>%s</code>) остановлена.</b>", id, html.EscapeString(task.Project)), tele.ModeHTML)
+		checkAndStartQueuedTask(s.Messenger(), task.Project, config.ProjectsRoot)
+		return s.Send(fmt.Sprintf("🛑 <b>Задача #%d (<code>%s</code>) остановлена.</b>", id, html.EscapeString(task.Project)), ports.Rich())
 	})
 
-	btnPlanModeToggle := tele.Btn{Unique: "plan_mode_toggle"}
-	b.Handle(&btnPlanModeToggle, func(c tele.Context) error {
+	t.OnCallback("plan_mode_toggle", func(s ports.Session) error {
 		config.ProjectState.Lock()
 		config.ProjectState.PlanMode = !config.ProjectState.PlanMode
 		newMode := config.ProjectState.PlanMode
 		config.ProjectState.Unlock()
 
-		if s := domain.GlobalTaskManager.Storage(); s != nil {
-			_ = s.SetSetting(context.Background(), "plan_mode", strconv.FormatBool(newMode))
+		if st := domain.GlobalTaskManager.Storage(); st != nil {
+			_ = st.SetSetting(context.Background(), "plan_mode", strconv.FormatBool(newMode))
 		}
 
 		if newMode {
-
-			_ = c.Respond(&tele.CallbackResponse{Text: "Режим планирования включен"})
-			return c.Send("✅ <b>Режим обязательного планирования ВКЛЮЧЕН.</b>\nВсе новые задачи будут сначала формировать план и ожидать вашего утверждения.", tele.ModeHTML)
+			_ = s.Respond("Режим планирования включен")
+			return s.Send("✅ <b>Режим обязательного планирования ВКЛЮЧЕН.</b>\nВсе новые задачи будут сначала формировать план и ожидать вашего утверждения.", ports.Rich())
 		}
-		_ = c.Respond(&tele.CallbackResponse{Text: "Режим планирования выключен"})
-		return c.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nДля создания задач с планом используйте <code>/plan &lt;задача&gt;</code>.", tele.ModeHTML)
+		_ = s.Respond("Режим планирования выключен")
+		return s.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nДля создания задач с планом используйте <code>/plan &lt;задача&gt;</code>.", ports.Rich())
 	})
 
-	b.Handle("/cancel", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("cancel", func(s ports.Session) error {
+		args := s.Args()
 		var targetID int
 		if len(args) > 0 {
 			idStr := strings.TrimPrefix(args[0], "#")
 			var err error
 			targetID, err = strconv.Atoi(idStr)
 			if err != nil {
-				return c.Send("Укажите номер задачи. Пример: <code>/cancel 2</code>", tele.ModeHTML)
+				return s.Send("Укажите номер задачи. Пример: <code>/cancel 2</code>", ports.Rich())
 			}
 		} else {
 			active := domain.GlobalTaskManager.GetActiveTask()
 			if active == nil || !active.IsActive() {
-				return c.Send("Сейчас нет активных задач.")
+				return s.Send("Сейчас нет активных задач.", nil)
 			}
 			targetID = active.ID
 		}
 
 		task, err := domain.GlobalTaskManager.CancelTask(targetID)
 		if err != nil {
-			return c.Send(fmt.Sprintf("❌ %s", err.Error()), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
 		}
 
 		syncLegacySession(domain.GlobalTaskManager.GetActiveTask())
 		domain.GlobalTokenTracker.CancelTask()
 
-		checkAndStartQueuedTask(b, task.Project, config.ProjectsRoot)
+		checkAndStartQueuedTask(s.Messenger(), task.Project, config.ProjectsRoot)
 
-		return c.Send(fmt.Sprintf("🛑 Задача <b>#%d</b> (<code>%s</code>) остановлена.", task.ID, html.EscapeString(task.Project)), tele.ModeHTML)
+		return s.Send(fmt.Sprintf("🛑 Задача <b>#%d</b> (<code>%s</code>) остановлена.", task.ID, html.EscapeString(task.Project)), ports.Rich())
 	})
 
-	btnPlanApproveVar := tele.Btn{Unique: "plan_appr_var"}
-	b.Handle(&btnPlanApproveVar, func(c tele.Context) error {
-		parts := strings.Split(strings.TrimSpace(c.Data()), ":")
+	t.OnCallback("plan_appr_var", func(s ports.Session) error {
+		parts := strings.Split(s.Callback().Payload, ":")
 		if len(parts) < 2 {
-			return c.Respond(&tele.CallbackResponse{Text: "Некорректные параметры"})
+			return s.Respond("Некорректные параметры")
 		}
 		id, err1 := strconv.Atoi(parts[0])
 		varIdx, err2 := strconv.Atoi(parts[1])
 		if err1 != nil || err2 != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи или варианта"})
+			return s.Respond("Некорректный номер задачи или варианта")
 		}
 		task := domain.GlobalTaskManager.GetTask(id)
 		if task == nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Задача не найдена"})
+			return s.Respond("Задача не найдена")
 		}
 		task.Lock()
 		planText := task.Plan
@@ -942,48 +902,46 @@ func Start() {
 		if varIdx >= 0 && varIdx < len(variants) {
 			chosenVar = variants[varIdx]
 		}
-		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Утверждён вариант: %s", truncateString(chosenVar, 20))})
-		return handleApprovePlanWithVariant(b, c.Recipient(), id, chosenVar)
+		_ = s.Respond(fmt.Sprintf("Утверждён вариант: %s", truncateString(chosenVar, 20)))
+		return handleApprovePlanWithVariant(s.Messenger(), s.Chat(), id, chosenVar)
 	})
 
-	btnPlanDoc := tele.Btn{Unique: "plan_doc"}
-	b.Handle(&btnPlanDoc, func(c tele.Context) error {
-		idStr := strings.TrimSpace(c.Data())
+	t.OnCallback("plan_doc", func(s ports.Session) error {
+		idStr := s.Callback().Payload
 		id, err := strconv.Atoi(idStr)
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+			return s.Respond("Некорректный номер задачи")
 		}
 		task := domain.GlobalTaskManager.GetTask(id)
 		if task == nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Задача не найдена"})
+			return s.Respond("Задача не найдена")
 		}
 		task.Lock()
 		planText := strings.TrimSpace(task.Plan)
 		task.Unlock()
 
 		if planText == "" {
-			return c.Respond(&tele.CallbackResponse{Text: "У задачи нет сформированного плана"})
+			return s.Respond("У задачи нет сформированного плана")
 		}
 
-		_ = c.Respond(&tele.CallbackResponse{Text: "Отправляю файл плана..."})
-		return sendTaskPlanDocument(c, task)
+		_ = s.Respond("Отправляю файл плана...")
+		return sendTaskPlanDocument(s, task)
 	})
 
-	btnQuestionChoice := tele.Btn{Unique: "q_choice"}
-	b.Handle(&btnQuestionChoice, func(c tele.Context) error {
-		parts := strings.Split(strings.TrimSpace(c.Data()), ":")
+	t.OnCallback("q_choice", func(s ports.Session) error {
+		parts := strings.Split(s.Callback().Payload, ":")
 		if len(parts) < 2 {
-			return c.Respond(&tele.CallbackResponse{Text: "Некорректные данные кнопки"})
+			return s.Respond("Некорректные данные кнопки")
 		}
 		taskID, err1 := strconv.Atoi(parts[0])
 		optIdx, err2 := strconv.Atoi(parts[1])
 		if err1 != nil || err2 != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Некорректные параметры"})
+			return s.Respond("Некорректные параметры")
 		}
 
 		task := domain.GlobalTaskManager.GetTask(taskID)
 		if task == nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Задача не найдена"})
+			return s.Respond("Задача не найдена")
 		}
 
 		task.Lock()
@@ -996,24 +954,24 @@ func Start() {
 		task.Unlock()
 
 		if chosenText == "" {
-			return c.Respond(&tele.CallbackResponse{Text: "Вариант не найден"})
+			return s.Respond("Вариант не найден")
 		}
 
-		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Выбрано: %s", truncateString(chosenText, 25))})
+		_ = s.Respond(fmt.Sprintf("Выбрано: %s", truncateString(chosenText, 25)))
 
-		if c.Message() != nil {
-			_ = c.Edit(fmt.Sprintf("%s\n\n✅ <b>Выбран вариант %d:</b> <i>«%s»</i>",
-				c.Message().Text, optIdx+1, html.EscapeString(chosenText)), tele.ModeHTML)
+		if cb := s.Callback(); cb != nil && cb.MessageText != "" {
+			_ = s.Edit(fmt.Sprintf("%s\n\n✅ <b>Выбран вариант %d:</b> <i>«%s»</i>",
+				cb.MessageText, optIdx+1, html.EscapeString(chosenText)), ports.Rich())
 		}
 
 		if status == domain.TaskStatusWaitingInput {
 			if !cmdIsNil {
 				task.DeliverAnswer(chosenText)
-				return c.Send(fmt.Sprintf("💬 <b>Выбран вариант %d для задачи #%d:</b>\n<i>«%s»</i>", optIdx+1, taskID, html.EscapeString(chosenText)), tele.ModeHTML)
+				return s.Send(fmt.Sprintf("💬 <b>Выбран вариант %d для задачи #%d:</b>\n<i>«%s»</i>", optIdx+1, taskID, html.EscapeString(chosenText)), ports.Rich())
 			}
 			resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, chosenText)
 			if err != nil {
-				return c.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", taskID, err.Error()), tele.ModeHTML)
+				return s.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", taskID, err.Error()), ports.Rich())
 			}
 			syncLegacySession(resumedTask)
 			resumedTask.Lock()
@@ -1022,17 +980,17 @@ func Start() {
 			resumedTask.Unlock()
 
 			if resumedStatus == domain.TaskStatusQueued {
-				return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
-					taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), tele.ModeHTML)
+				return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
+					taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 			}
 			workDir := filepath.Join(config.ProjectsRoot, projectName)
-			go runAgentTaskPipeline(b, c.Recipient(), resumedTask, workDir)
-			return c.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>",
-				taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), tele.ModeHTML)
+			go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+			return s.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>",
+				taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 		} else if status == domain.TaskStatusPaused {
 			resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, chosenText)
 			if err != nil {
-				return c.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", taskID, err.Error()), tele.ModeHTML)
+				return s.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", taskID, err.Error()), ports.Rich())
 			}
 			syncLegacySession(resumedTask)
 			resumedTask.Lock()
@@ -1041,64 +999,62 @@ func Start() {
 			resumedTask.Unlock()
 
 			if resumedStatus == domain.TaskStatusQueued {
-				return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
-					taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), tele.ModeHTML)
+				return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
+					taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 			}
 			workDir := filepath.Join(config.ProjectsRoot, projectName)
-			go runAgentTaskPipeline(b, c.Recipient(), resumedTask, workDir)
-			return c.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>",
-				taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), tele.ModeHTML)
+			go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+			return s.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>",
+				taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 		}
 
-		return c.Send(fmt.Sprintf("ℹ️ Задача #%d сейчас не ожидает ответа (текущий статус: %s).", taskID, status.RussianTitle()))
+		return s.Send(fmt.Sprintf("ℹ️ Задача #%d сейчас не ожидает ответа (текущий статус: %s).", taskID, status.RussianTitle()), nil)
 	})
 
-	btnQuestionPause := tele.Btn{Unique: "q_pause"}
-	b.Handle(&btnQuestionPause, func(c tele.Context) error {
-		idStr := strings.TrimSpace(c.Data())
+	t.OnCallback("q_pause", func(s ports.Session) error {
+		idStr := s.Callback().Payload
 		taskID, err := strconv.Atoi(idStr)
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+			return s.Respond("Некорректный номер задачи")
 		}
 
 		task := domain.GlobalTaskManager.GetTask(taskID)
 		if task == nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Задача не найдена"})
+			return s.Respond("Задача не найдена")
 		}
 
 		if !task.PauseTask() {
-			return c.Respond(&tele.CallbackResponse{Text: "Задача не ожидает ответа"})
+			return s.Respond("Задача не ожидает ответа")
 		}
 
-		_ = c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("Задача #%d приостановлена", taskID)})
+		_ = s.Respond(fmt.Sprintf("Задача #%d приостановлена", taskID))
 		syncLegacySession(task)
 
-		if c.Message() != nil {
-			_ = c.Edit(fmt.Sprintf("%s\n\n⏸ <i>Задача приостановлена пользователем.</i>", c.Message().Text), tele.ModeHTML)
+		if cb := s.Callback(); cb != nil && cb.MessageText != "" {
+			_ = s.Edit(fmt.Sprintf("%s\n\n⏸ <i>Задача приостановлена пользователем.</i>", cb.MessageText), ports.Rich())
 		}
 
 		task.Lock()
 		projectName := task.Project
 		task.Unlock()
 
-		checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+		checkAndStartQueuedTask(s.Messenger(), projectName, config.ProjectsRoot)
 
 		resumeMenu := buildResumeMarkup(taskID)
 		msg := fmt.Sprintf("⏸ <b>Задача #%d (<code>%s</code>) приостановлена.</b>\nОчередь проекта освобождена.\nНажмите кнопку ниже или используйте <code>/resume %d &lt;ответ&gt;</code>, чтобы продолжить.", taskID, html.EscapeString(projectName), taskID)
-		return c.Send(msg, resumeMenu, tele.ModeHTML)
+		return s.Send(msg, ports.RichWith(resumeMenu))
 	})
 
-	btnTaskResume := tele.Btn{Unique: "q_resume"}
-	b.Handle(&btnTaskResume, func(c tele.Context) error {
-		idStr := strings.TrimSpace(c.Data())
+	t.OnCallback("q_resume", func(s ports.Session) error {
+		idStr := s.Callback().Payload
 		taskID, err := strconv.Atoi(idStr)
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Некорректный номер задачи"})
+			return s.Respond("Некорректный номер задачи")
 		}
 
 		task := domain.GlobalTaskManager.GetTask(taskID)
 		if task == nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Задача не найдена"})
+			return s.Respond("Задача не найдена")
 		}
 
 		task.Lock()
@@ -1108,28 +1064,28 @@ func Start() {
 		proj := task.Project
 		task.Unlock()
 
-		_ = c.Respond(&tele.CallbackResponse{})
+		_ = s.Respond("")
 
 		if status != domain.TaskStatusPaused && status != domain.TaskStatusWaitingInput {
-			return c.Send(fmt.Sprintf("ℹ️ Задача #%d не находится на паузе (текущий статус: %s).", taskID, status.RussianTitle()))
+			return s.Send(fmt.Sprintf("ℹ️ Задача #%d не находится на паузе (текущий статус: %s).", taskID, status.RussianTitle()), nil)
 		}
 
 		if lastQ != "" && len(opts) > 0 {
 			menu := buildQuestionMarkup(task)
 			promptMsg := fmt.Sprintf("❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Выберите вариант кнопкой или ответьте сообщением в чат:</i>",
 				taskID, html.EscapeString(proj), utils.MarkdownToTelegramHTML(lastQ))
-			return c.Send(promptMsg, menu, tele.ModeHTML)
+			return s.Send(promptMsg, ports.RichWith(menu))
 		}
 
 		if lastQ != "" {
-			return c.Send(fmt.Sprintf("💡 Задача #%d ждёт ответа на вопрос:\n\n<i>«%s»</i>\n\nОтправьте ответ сообщением в чат или <code>/resume %d &lt;ответ&gt;</code>.",
-				taskID, html.EscapeString(lastQ), taskID), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("💡 Задача #%d ждёт ответа на вопрос:\n\n<i>«%s»</i>\n\nОтправьте ответ сообщением в чат или <code>/resume %d &lt;ответ&gt;</code>.",
+				taskID, html.EscapeString(lastQ), taskID), ports.Rich())
 		}
 
 		// Если вопроса не было (например, пауза по таймауту выполнения шага) — возобновляем выполнение
 		resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, "")
 		if err != nil {
-			return c.Send(fmt.Sprintf("❌ Не удалось возобновить задачу #%d: %v", taskID, err), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ Не удалось возобновить задачу #%d: %v", taskID, err), ports.Rich())
 		}
 		syncLegacySession(resumedTask)
 
@@ -1138,42 +1094,42 @@ func Start() {
 		resumedTask.Unlock()
 
 		if resStatus == domain.TaskStatusQueued {
-			return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.\nОна запустится автоматически, как только проект освободится.", taskID, html.EscapeString(proj)), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.\nОна запустится автоматически, как только проект освободится.", taskID, html.EscapeString(proj)), ports.Rich())
 		}
 
 		workDir := filepath.Join(config.ProjectsRoot, proj)
-		go runAgentTaskPipeline(b, c.Recipient(), resumedTask, workDir)
-		return c.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с сохранённой сессии agy!</b>", taskID, html.EscapeString(proj)), tele.ModeHTML)
+		go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+		return s.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с сохранённой сессии agy!</b>", taskID, html.EscapeString(proj)), ports.Rich())
 	})
 
-	b.Handle("/pause", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("pause", func(s ports.Session) error {
+		args := s.Args()
 		var targetID int
 		if len(args) > 0 {
 			idStr := strings.TrimPrefix(args[0], "#")
 			var err error
 			targetID, err = strconv.Atoi(idStr)
 			if err != nil {
-				return c.Send("Укажите номер задачи. Пример: <code>/pause 2</code>", tele.ModeHTML)
+				return s.Send("Укажите номер задачи. Пример: <code>/pause 2</code>", ports.Rich())
 			}
 		} else {
 			active := domain.GlobalTaskManager.GetActiveTask()
 			if active == nil {
-				return c.Send("Сейчас нет активных задач.")
+				return s.Send("Сейчас нет активных задач.", nil)
 			}
 			targetID = active.ID
 		}
 
 		task := domain.GlobalTaskManager.GetTask(targetID)
 		if task == nil {
-			return c.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), ports.Rich())
 		}
 
 		if !task.PauseTask() {
 			task.Lock()
 			st := task.Status
 			task.Unlock()
-			return c.Send(fmt.Sprintf("ℹ️ Задачу #%d нельзя приостановить (текущий статус: %s). Пауза доступна при ожидании ответа.", targetID, st.RussianTitle()), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("ℹ️ Задачу #%d нельзя приостановить (текущий статус: %s). Пауза доступна при ожидании ответа.", targetID, st.RussianTitle()), ports.Rich())
 		}
 
 		syncLegacySession(task)
@@ -1181,15 +1137,15 @@ func Start() {
 		projectName := task.Project
 		task.Unlock()
 
-		checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+		checkAndStartQueuedTask(s.Messenger(), projectName, config.ProjectsRoot)
 
 		resumeMenu := buildResumeMarkup(targetID)
 		msg := fmt.Sprintf("⏸ <b>Задача #%d (<code>%s</code>) приостановлена.</b>\nОчередь проекта освобождена.\nЧтобы возобновить, используйте <code>/resume %d &lt;ответ&gt;</code> или кнопку ниже.", targetID, html.EscapeString(projectName), targetID)
-		return c.Send(msg, resumeMenu, tele.ModeHTML)
+		return s.Send(msg, ports.RichWith(resumeMenu))
 	})
 
-	b.Handle("/resume", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("resume", func(s ports.Session) error {
+		args := s.Args()
 		var targetID int
 		var answer string
 
@@ -1226,12 +1182,12 @@ func Start() {
 		}
 
 		if targetID == 0 {
-			return c.Send("❌ Не указана задача для возобновления. Использование: <code>/resume &lt;id&gt; [ответ]</code>", tele.ModeHTML)
+			return s.Send("❌ Не указана задача для возобновления. Использование: <code>/resume &lt;id&gt; [ответ]</code>", ports.Rich())
 		}
 
 		task := domain.GlobalTaskManager.GetTask(targetID)
 		if task == nil {
-			return c.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), ports.Rich())
 		}
 
 		task.Lock()
@@ -1247,12 +1203,12 @@ func Start() {
 
 				if !cmdIsNil {
 					task.DeliverAnswer(answer)
-					return c.Send(fmt.Sprintf("💬 <b>Ответ передан задаче #%d</b> (<code>%s</code>)...", targetID, html.EscapeString(proj)), tele.ModeHTML)
+					return s.Send(fmt.Sprintf("💬 <b>Ответ передан задаче #%d</b> (<code>%s</code>)...", targetID, html.EscapeString(proj)), ports.Rich())
 				}
 
 				resumedTask, err := domain.GlobalTaskManager.ResumeTask(targetID, answer)
 				if err != nil {
-					return c.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", targetID, err.Error()), tele.ModeHTML)
+					return s.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", targetID, err.Error()), ports.Rich())
 				}
 				syncLegacySession(resumedTask)
 				resumedTask.Lock()
@@ -1260,21 +1216,20 @@ func Start() {
 				resumedTask.Unlock()
 
 				if resStatus == domain.TaskStatusQueued {
-					return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>", targetID, html.EscapeString(proj), html.EscapeString(answer)), tele.ModeHTML)
+					return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>", targetID, html.EscapeString(proj), html.EscapeString(answer)), ports.Rich())
 				}
 
 				workDir := filepath.Join(config.ProjectsRoot, proj)
-				go runAgentTaskPipeline(b, c.Recipient(), resumedTask, workDir)
-				return c.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>", targetID, html.EscapeString(proj), html.EscapeString(answer)), tele.ModeHTML)
+				go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+				return s.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>", targetID, html.EscapeString(proj), html.EscapeString(answer)), ports.Rich())
 			}
 			menu := buildQuestionMarkup(task)
-			return c.Send(fmt.Sprintf("❓ Задача #%d ждёт ответа. Выберите вариант или отправьте: <code>/resume %d &lt;ответ&gt;</code>", targetID, targetID), menu, tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❓ Задача #%d ждёт ответа. Выберите вариант или отправьте: <code>/resume %d &lt;ответ&gt;</code>", targetID, targetID), ports.RichWith(menu))
 		}
-
 
 		resumedTask, err := domain.GlobalTaskManager.ResumeTask(targetID, answer)
 		if err != nil {
-			return c.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", targetID, err.Error()), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", targetID, err.Error()), ports.Rich())
 		}
 		syncLegacySession(resumedTask)
 
@@ -1284,16 +1239,16 @@ func Start() {
 		resumedTask.Unlock()
 
 		if resStatus == domain.TaskStatusQueued {
-			return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.\nОна запустится автоматически, как только текущая задача завершится.", targetID, html.EscapeString(proj)), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.\nОна запустится автоматически, как только текущая задача завершится.", targetID, html.EscapeString(proj)), ports.Rich())
 		}
 
 		workDir := filepath.Join(config.ProjectsRoot, proj)
-		go runAgentTaskPipeline(b, c.Recipient(), resumedTask, workDir)
-		return c.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code>!</b>", targetID, html.EscapeString(proj)), tele.ModeHTML)
+		go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+		return s.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code>!</b>", targetID, html.EscapeString(proj)), ports.Rich())
 	})
 
-	b.Handle("/retry", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("retry", func(s ports.Session) error {
+		args := s.Args()
 		var targetID int
 		if len(args) > 0 {
 			idStr := strings.TrimPrefix(args[0], "#")
@@ -1319,18 +1274,18 @@ func Start() {
 			}
 		}
 		if targetID == 0 {
-			return c.Send("❌ Укажите номер задачи. Пример: <code>/retry 2</code>", tele.ModeHTML)
+			return s.Send("❌ Укажите номер задачи. Пример: <code>/retry 2</code>", ports.Rich())
 		}
 
 		task := domain.GlobalTaskManager.GetTask(targetID)
 		if task == nil {
-			return c.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), ports.Rich())
 		}
 
 		task.Lock()
 		if task.Status == domain.TaskStatusRunning || task.Status == domain.TaskStatusPlanning {
 			task.Unlock()
-			return c.Send(fmt.Sprintf("ℹ️ Задача #%d сейчас выполняется. Сначала остановите её: <code>/cancel %d</code>", targetID, targetID), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("ℹ️ Задача #%d сейчас выполняется. Сначала остановите её: <code>/cancel %d</code>", targetID, targetID), ports.Rich())
 		}
 		proj := task.Project
 		task.ConversationID = ""
@@ -1351,65 +1306,61 @@ func Start() {
 		syncLegacySession(task)
 
 		workDir := filepath.Join(config.ProjectsRoot, proj)
-		go runAgentTaskPipeline(b, c.Recipient(), task, workDir)
-		return c.Send(fmt.Sprintf("🔄 <b>Задача #%d перезапущена с чистого листа</b> (новая сессия agy в <code>%s</code>).", targetID, html.EscapeString(proj)), tele.ModeHTML)
+		go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
+		return s.Send(fmt.Sprintf("🔄 <b>Задача #%d перезапущена с чистого листа</b> (новая сессия agy в <code>%s</code>).", targetID, html.EscapeString(proj)), ports.Rich())
 	})
 
-	b.Handle("/restart", func(c tele.Context) error {
-		return system.HandleRestart(b, c)
+	t.OnCommand("restart", func(s ports.Session) error {
+		return system.HandleRestart(t, s)
 	})
 
-	b.Handle("/rebuild", func(c tele.Context) error {
-		return system.HandleRebuild(b, c)
+	t.OnCommand("rebuild", func(s ports.Session) error {
+		return system.HandleRebuild(t, s)
 	})
 
-	b.Handle("/build", func(c tele.Context) error {
-		return system.HandleRebuild(b, c)
+	t.OnCommand("build", func(s ports.Session) error {
+		return system.HandleRebuild(t, s)
 	})
 
-	handleResources := func(c tele.Context) error {
-		_ = c.Notify(tele.Typing)
+	handleResources := func(s ports.Session) error {
 		report := system.CollectResourceReport(true)
 		msg := system.FormatResourcesMessage(report)
-		return c.Send(msg, tele.ModeHTML)
+		return s.Send(msg, ports.Rich())
 	}
 
-	b.Handle("/top", handleResources)
-	b.Handle("/ps", handleResources)
-	b.Handle("/resources", handleResources)
-	b.Handle("/res", handleResources)
+	t.OnCommand("top", handleResources)
+	t.OnCommand("ps", handleResources)
+	t.OnCommand("resources", handleResources)
+	t.OnCommand("res", handleResources)
 
-	b.Handle("/script", func(c tele.Context) error {
-		args := c.Args()
+	t.OnCommand("script", func(s ports.Session) error {
+		args := s.Args()
 		if len(args) == 0 {
-			return c.Send("Пожалуйста, укажите название скрипта: /script <name>")
+			return s.Send("Пожалуйста, укажите название скрипта: /script <name>", nil)
 		}
 		scriptName := args[0]
 		if config.ScriptsDir == "" {
-			return c.Send("Директория скриптов не настроена (SCRIPTS_DIR)")
+			return s.Send("Директория скриптов не настроена (SCRIPTS_DIR)", nil)
 		}
 		scriptPath := filepath.Join(config.ScriptsDir, scriptName)
 		if !strings.HasPrefix(filepath.Clean(scriptPath), filepath.Clean(config.ScriptsDir)) {
-			return c.Send("Недопустимое имя скрипта")
+			return s.Send("Недопустимое имя скрипта", nil)
 		}
 		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-			return c.Send(fmt.Sprintf("Скрипт %s не найден в %s", scriptName, config.ScriptsDir))
+			return s.Send(fmt.Sprintf("Скрипт %s не найден в %s", scriptName, config.ScriptsDir), nil)
 		}
-		
+
 		cmd := exec.Command(scriptPath)
 		out, err := cmd.CombinedOutput()
 		msg := fmt.Sprintf("Результат выполнения %s:\n\n%s", scriptName, string(out))
 		if err != nil {
 			msg += fmt.Sprintf("\nОшибка: %v", err)
 		}
-		for _, chunk := range utils.SplitMessageByMode(msg, "", 3800) {
-			_ = c.Send(chunk)
-		}
-		return nil
+		return s.Send(msg, nil)
 	})
 
-	b.Handle(tele.OnText, func(c tele.Context) error {
-		userText := strings.TrimSpace(c.Text())
+	t.OnText(func(s ports.Session) error {
+		userText := strings.TrimSpace(s.Text())
 		if strings.HasPrefix(userText, "/planfile_") || strings.HasPrefix(userText, "/plan_") {
 			rawID := strings.TrimPrefix(userText, "/planfile_")
 			rawID = strings.TrimPrefix(rawID, "/plan_")
@@ -1419,9 +1370,9 @@ func Start() {
 			if id, err := strconv.Atoi(strings.TrimSpace(rawID)); err == nil {
 				target := domain.GlobalTaskManager.GetTask(id)
 				if target != nil {
-					return sendTaskPlanDocument(c, target)
+					return sendTaskPlanDocument(s, target)
 				}
-				return c.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), tele.ModeHTML)
+				return s.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), ports.Rich())
 			}
 		}
 
@@ -1430,10 +1381,9 @@ func Start() {
 		}
 
 		// 1. Проверяем, является ли сообщение ответом (Reply) на статус/вопрос конкретной задачи
-		if c.Message().ReplyTo != nil {
-			repliedMsgID := c.Message().ReplyTo.ID
-			if task := domain.GlobalTaskManager.GetTaskByMessageID(repliedMsgID); task != nil {
-				return handleAddFollowupToTask(b, c, task.ID, userText)
+		if msg := s.Message(); msg != nil && msg.ReplyTo != nil {
+			if task := domain.GlobalTaskManager.GetTaskByMessageID(msg.ReplyTo.ID); task != nil {
+				return handleAddFollowupToTask(s, task.ID, userText)
 			}
 		}
 
@@ -1444,18 +1394,20 @@ func Start() {
 			st := active.Status
 			active.Unlock()
 			if active.IsActive() || st == domain.TaskStatusPaused {
-				return handleAddFollowupToTask(b, c, active.ID, userText)
+				return handleAddFollowupToTask(s, active.ID, userText)
 			}
 		}
 
 		// 3. Нет активных задач — запускаем новую задачу
-		return handleCreateNewTask(b, c, userText)
+		return handleCreateNewTask(s, userText)
 	})
 
-	go system.CheckAndNotifyRestart(b, config.AdminID)
+	go system.CheckAndNotifyRestart(t, config.AdminID)
 
 	log.Println("Мультипроектный агент-бот запущен...")
-	b.Start()
+	if err := t.Start(context.Background()); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func initDefaultProject(root string) {
@@ -1503,22 +1455,22 @@ func initDefaultModel() {
 	log.Printf("Инициализирована модель по умолчанию: %s", defaultModel)
 }
 
-func runAgentPipeline(b *tele.Bot, recipient tele.Recipient, workDir, projectName, initialPrompt string) {
+func runAgentPipeline(m ports.Messenger, chat ports.ChatID, workDir, projectName, initialPrompt string) {
 	config.ProjectState.RLock()
 	modelName := config.ProjectState.CurrentModel
 	config.ProjectState.RUnlock()
 
-	task := domain.GlobalTaskManager.CreateTask(projectName, modelName, initialPrompt, recipient)
+	task := domain.GlobalTaskManager.CreateTask(projectName, modelName, initialPrompt, chat)
 	task.Lock()
 	task.Status = domain.TaskStatusRunning
 	task.StartedAt = time.Now()
 	task.Unlock()
 
 	syncLegacySession(task)
-	runAgentTaskPipeline(b, recipient, task, workDir)
+	runAgentTaskPipeline(m, chat, task, workDir)
 }
 
-func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession, workDir string) {
+func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir string) {
 	projectName := task.Project
 	taskID := task.ID
 
@@ -1601,7 +1553,7 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 			task.Lock()
 			if task.Status == domain.TaskStatusCancelled {
 				task.Unlock()
-				checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+				checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 				return
 			}
 			task.Status = domain.TaskStatusPlanning
@@ -1610,19 +1562,19 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 
 			syncLegacySession(task)
 
-			res := executeStepForTask(b, recipient, task, workDir, planningPrompt, activeModel)
+			res := executeStepForTask(m, chat, task, workDir, planningPrompt, activeModel)
 
 			task.Lock()
 			if task.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
 				task.Unlock()
-				checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+				checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 				return
 			}
 			st := task.Status
 			task.Unlock()
 
 			if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
-				answer, ok := waitForTaskInput(b, recipient, task, projectName, taskID)
+				answer, ok := waitForTaskInput(m, chat, task, projectName, taskID)
 				if !ok {
 					return
 				}
@@ -1631,12 +1583,12 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 			}
 
 			if res.Outcome == StepOutcomeTimeout {
-				handleTaskStepTimeout(b, recipient, task, projectName, taskID, true)
+				handleTaskStepTimeout(m, chat, task, projectName, taskID, true)
 				return
 			}
 
 			if res.Outcome == StepOutcomeError {
-				handleTaskStepError(b, recipient, task, projectName, taskID, res.Error)
+				handleTaskStepError(m, chat, task, projectName, taskID, res.Error)
 				return
 			}
 
@@ -1645,7 +1597,7 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 
 		planText := strings.TrimSpace(task.FullOutput.String())
 		if isLikelyErrorMessage(planText) {
-			handleTaskStepError(b, recipient, task, projectName, taskID, errors.New(planText))
+			handleTaskStepError(m, chat, task, projectName, taskID, errors.New(planText))
 			return
 		}
 		if planText == "" {
@@ -1660,7 +1612,7 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 
 		syncLegacySession(task)
 
-		sendPlanForApproval(b, recipient, task)
+		sendPlanForApproval(m, chat, task)
 		return
 	}
 
@@ -1683,19 +1635,19 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 
 		syncLegacySession(task)
 
-		res := executeStepForTask(b, recipient, task, workDir, currentPrompt, activeModel)
+		res := executeStepForTask(m, chat, task, workDir, currentPrompt, activeModel)
 
 		task.Lock()
 		if task.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
 			task.Unlock()
-			checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+			checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 			return
 		}
 		st := task.Status
 		task.Unlock()
 
 		if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
-			answer, ok := waitForTaskInput(b, recipient, task, projectName, taskID)
+			answer, ok := waitForTaskInput(m, chat, task, projectName, taskID)
 			if !ok {
 				return
 			}
@@ -1704,12 +1656,12 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 		}
 
 		if res.Outcome == StepOutcomeTimeout {
-			handleTaskStepTimeout(b, recipient, task, projectName, taskID, false)
+			handleTaskStepTimeout(m, chat, task, projectName, taskID, false)
 			return
 		}
 
 		if res.Outcome == StepOutcomeError {
-			handleTaskStepError(b, recipient, task, projectName, taskID, res.Error)
+			handleTaskStepError(m, chat, task, projectName, taskID, res.Error)
 			return
 		}
 
@@ -1751,28 +1703,21 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 
 			compBldr.WriteString("\n" + statsSummary)
 
-			compMenu := &tele.ReplyMarkup{}
-			var actButtons []tele.Btn
+			var compMenu *ports.Keyboard
+			var actButtons []ports.Button
 			if prURL != "" {
-				actButtons = append(actButtons, compMenu.URL("🔗 Открыть PR", prURL))
+				actButtons = append(actButtons, ports.Button{Text: "🔗 Открыть PR", URL: prURL})
 			}
 			if hasPlan {
-				actButtons = append(actButtons, compMenu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(taskID)))
+				actButtons = append(actButtons, ports.Button{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: strconv.Itoa(taskID)})
 			}
 			if len(actButtons) > 0 {
-				compMenu.Inline(compMenu.Row(actButtons...))
-			} else {
-				compMenu = nil
+				compMenu = &ports.Keyboard{Rows: [][]ports.Button{actButtons}}
 			}
 
-			var compMsg *tele.Message
-			if compMenu != nil && len(compMenu.InlineKeyboard) > 0 {
-				compMsg, _ = SendSplit(b, recipient, compBldr.String(), compMenu, tele.ModeHTML)
-			} else {
-				compMsg, _ = SendSplit(b, recipient, compBldr.String(), tele.ModeHTML)
-			}
-			if compMsg != nil {
-				domain.GlobalTaskManager.RegisterMessageTask(compMsg.ID, taskID)
+			compRef, _ := m.Send(context.Background(), chat, compBldr.String(), ports.RichWith(compMenu))
+			if compRef.ID != "" {
+				domain.GlobalTaskManager.RegisterMessageTask(compRef, taskID)
 			}
 
 			finalReport = strings.TrimSpace(finalReport)
@@ -1781,34 +1726,33 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 				if len(reportRunes) > 1500 {
 					summary := utils.ExtractPlanSummary(finalReport, 1200)
 					summaryHTML := utils.MarkdownToTelegramHTML(summary)
-					_, _ = SendSplit(b, recipient, fmt.Sprintf("📑 <b>Отчет о выполнении задачи #%d:</b>\n\n%s\n\n📄 <i>Полный отчет (%d знаков) прикреплен файлом.</i>", taskID, summaryHTML, len(reportRunes)), tele.ModeHTML)
+					_, _ = m.Send(context.Background(), chat, fmt.Sprintf("📑 <b>Отчет о выполнении задачи #%d:</b>\n\n%s\n\n📄 <i>Полный отчет (%d знаков) прикреплен файлом.</i>", taskID, summaryHTML, len(reportRunes)), ports.Rich())
 
 					docName := fmt.Sprintf("report_task_%d.md", taskID)
-					doc := &tele.Document{
-						File:     tele.FromReader(strings.NewReader(finalReport)),
+					doc := ports.Document{
 						FileName: docName,
 						MIME:     "text/markdown",
 						Caption:  fmt.Sprintf("📄 Полный отчет выполнения задачи #%d (%s)", taskID, projectName),
+						Content:  []byte(finalReport),
 					}
-					docMsg, docErr := b.Send(recipient, doc)
+					docRef, docErr := m.SendDocument(context.Background(), chat, doc)
 					if docErr != nil {
-						sendLongMarkdown(b, recipient, finalReport)
-					} else if docMsg != nil {
-						domain.GlobalTaskManager.RegisterMessageTask(docMsg.ID, taskID)
+						sendLongMarkdown(m, chat, finalReport)
+					} else if docRef.ID != "" {
+						domain.GlobalTaskManager.RegisterMessageTask(docRef, taskID)
 					}
 				} else {
-					sendLongMarkdown(b, recipient, finalReport)
+					sendLongMarkdown(m, chat, finalReport)
 				}
 			}
 
 			// Запускаем следующую задачу из очереди для этого проекта, если есть
-			checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+			checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 			return
 		}
 
 		followups := task.PendingFollowups
 		task.ClearPendingFollowups()
-
 
 		var bldr strings.Builder
 		bldr.WriteString("ВНИМАНИЕ: Продолжай работу в ТЕКУЩЕЙ ветке git (НЕ создавай новую ветку, НЕ делай checkout в main). ")
@@ -1826,7 +1770,7 @@ func runAgentTaskPipeline(b *tele.Bot, recipient tele.Recipient, task *domain.Ta
 
 		domain.GlobalTokenTracker.StartNextStep(activeModel)
 
-		b.Send(recipient, fmt.Sprintf("🔄 <b>Задача #%d: Беру в работу дополнения (%d шт.)...</b>", taskID, len(followups)), tele.ModeHTML)
+		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("🔄 <b>Задача #%d: Беру в работу дополнения (%d шт.)...</b>", taskID, len(followups)), ports.Rich())
 	}
 }
 
@@ -1962,7 +1906,7 @@ func evaluateStepCompletion(
 	return StepOutcomeSuccess, false, "", nil
 }
 
-func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession, workDir, prompt, modelName string) StepResult {
+func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir, prompt, modelName string) StepResult {
 	projectName := task.Project
 	taskID := task.ID
 
@@ -1981,14 +1925,14 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 		statusMsgText = fmt.Sprintf("🚀 <b>Шаг задачи #%d в работе:</b> <code>%s</code> [<code>%s</code>]\n<i>Инициализация сессии агента...</i>", taskID, html.EscapeString(projectName), html.EscapeString(modelName))
 	}
 
-	statusMsg, _ := b.Send(recipient, statusMsgText, tele.ModeHTML)
-	if statusMsg != nil {
-		domain.GlobalTaskManager.RegisterMessageTask(statusMsg.ID, taskID)
+	statusRef, _ := m.Send(context.Background(), chat, statusMsgText, ports.Rich())
+	if statusRef.ID != "" {
+		domain.GlobalTaskManager.RegisterMessageTask(statusRef, taskID)
 	}
 
 	task.Lock()
 	task.LastModelUsed = modelName
-	task.LiveMsg = statusMsg
+	task.LiveMsg = &statusRef
 	task.Unlock()
 
 	syncLegacySession(task)
@@ -2013,7 +1957,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 
 	agentProcess, err := Agent.ExecuteTask(stepCtx, args)
 	if err != nil {
-		SendSplit(b, recipient, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, err))
+		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, err), nil)
 		task.Lock()
 		task.Status = domain.TaskStatusFailed
 		task.Unlock()
@@ -2059,7 +2003,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 
 				tokenSnippet := domain.GlobalTokenTracker.GetLiveStatusSnippet()
 
-				if statusMsg != nil {
+				if statusRef.ID != "" {
 					queueInfo := ""
 					if followupsCount > 0 {
 						queueInfo = fmt.Sprintf(" | Правок в очереди: %d", followupsCount)
@@ -2088,7 +2032,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 					}
 					bldr.WriteString(fmt.Sprintf("<i>(Лог: /status %d | Дополнить: /add %d | Стоп: /cancel %d)</i>", taskID, taskID, taskID))
 
-					_, _ = b.Edit(statusMsg, bldr.String(), tele.ModeHTML)
+					_ = m.Edit(context.Background(), statusRef, bldr.String(), ports.Rich())
 				}
 			}
 		}
@@ -2276,17 +2220,9 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 			header = "❓ <b>Вопрос по плану задачи #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или выберите вариант кнопкой.</i>"
 		}
 		msgText := fmt.Sprintf(header, taskID, html.EscapeString(projectName), formattedQ)
-		qMsg, err := SendSplit(b, recipient, msgText, menu, tele.ModeHTML)
-		if err != nil {
-			fallbackHeader := "❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или выберите вариант кнопкой.</i>"
-			if isPlanning {
-				fallbackHeader = "❓ <b>Вопрос по плану задачи #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или выберите вариант кнопкой.</i>"
-			}
-			fallbackText := fmt.Sprintf(fallbackHeader, taskID, html.EscapeString(projectName), html.EscapeString(qText))
-			qMsg, _ = SendSplit(b, recipient, fallbackText, menu, tele.ModeHTML)
-		}
-		if qMsg != nil {
-			domain.GlobalTaskManager.RegisterMessageTask(qMsg.ID, taskID)
+		qRef, _ := m.Send(context.Background(), chat, msgText, ports.RichWith(menu))
+		if qRef.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(qRef, taskID)
 		}
 
 		return StepResult{
@@ -2305,7 +2241,7 @@ func executeStepForTask(b *tele.Bot, recipient tele.Recipient, task *domain.Task
 	}
 }
 
-func handleTaskStepTimeout(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession, projectName string, taskID int, isPlanning bool) {
+func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName string, taskID int, isPlanning bool) {
 	task.Lock()
 	task.Status = domain.TaskStatusPaused
 	convID := task.ConversationID
@@ -2335,18 +2271,18 @@ func handleTaskStepTimeout(b *tele.Bot, recipient tele.Recipient, task *domain.T
 		html.EscapeString(convID), taskID,
 	)
 
-	if b != nil && recipient != nil {
+	if m != nil && chat != "" {
 		defer func() { _ = recover() }()
-		tMsg, _ := b.Send(recipient, timeoutMsg, resumeMenu, tele.ModeHTML)
-		if tMsg != nil {
-			domain.GlobalTaskManager.RegisterMessageTask(tMsg.ID, taskID)
+		tRef, _ := m.Send(context.Background(), chat, timeoutMsg, ports.RichWith(resumeMenu))
+		if tRef.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(tRef, taskID)
 		}
 	}
 
-	checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+	checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 }
 
-func handleTaskStepError(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession, projectName string, taskID int, err error) {
+func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName string, taskID int, err error) {
 	task.Lock()
 	task.Status = domain.TaskStatusFailed
 	task.FinishedAt = time.Now()
@@ -2375,29 +2311,29 @@ func handleTaskStepError(b *tele.Bot, recipient tele.Recipient, task *domain.Tas
 		html.EscapeString(convID), taskID, taskID,
 	)
 
-	if b != nil && recipient != nil {
+	if m != nil && chat != "" {
 		defer func() { _ = recover() }()
-		eMsg, _ := b.Send(recipient, msg, retryMenu, tele.ModeHTML)
-		if eMsg != nil {
-			domain.GlobalTaskManager.RegisterMessageTask(eMsg.ID, taskID)
+		eRef, _ := m.Send(context.Background(), chat, msg, ports.RichWith(retryMenu))
+		if eRef.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(eRef, taskID)
 		}
 	}
 
-	checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+	checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 }
 
-func handleCreateNewTask(b *tele.Bot, c tele.Context, text string) error {
+func handleCreateNewTask(s ports.Session, text string) error {
 	config.ProjectState.RLock()
 	requiresPlan := config.ProjectState.PlanMode
 	config.ProjectState.RUnlock()
-	return handleCreateNewTaskWithOptions(b, c, text, requiresPlan)
+	return handleCreateNewTaskWithOptions(s, text, requiresPlan)
 }
 
-func handleCreatePlanTask(b *tele.Bot, c tele.Context, text string) error {
-	return handleCreateNewTaskWithOptions(b, c, text, true)
+func handleCreatePlanTask(s ports.Session, text string) error {
+	return handleCreateNewTaskWithOptions(s, text, true)
 }
 
-func handleCreateNewTaskWithOptions(b *tele.Bot, c tele.Context, text string, requiresPlan bool) error {
+func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan bool) error {
 	config.ProjectState.RLock()
 	curProj := config.ProjectState.CurrentProject
 	curMod := config.ProjectState.CurrentModel
@@ -2414,10 +2350,10 @@ func handleCreateNewTaskWithOptions(b *tele.Bot, c tele.Context, text string, re
 	}
 
 	if curProj == "" {
-		return c.Send("❌ Сначала выберите проект: /projects")
+		return s.Send("❌ Сначала выберите проект: /projects", nil)
 	}
 
-	task := domain.GlobalTaskManager.CreateTaskWithPlan(curProj, curMod, text, c.Recipient(), requiresPlan)
+	task := domain.GlobalTaskManager.CreateTaskWithPlan(curProj, curMod, text, s.Chat(), requiresPlan)
 	syncLegacySession(task)
 
 	if domain.GlobalTaskManager.HasRunningTaskInProject(curProj) {
@@ -2431,7 +2367,7 @@ func handleCreateNewTaskWithOptions(b *tele.Bot, c tele.Context, text string, re
 				"💡 В этом проекте уже выполняется задача. Задача #%d начнется автоматически после ее завершения.%s",
 			task.ID, html.EscapeString(curProj), html.EscapeString(utils.TruncateString(text, 250)), task.ID, planNote,
 		)
-		return c.Send(msg, tele.ModeHTML)
+		return s.Send(msg, ports.Rich())
 	}
 
 	task.Lock()
@@ -2448,15 +2384,15 @@ func handleCreateNewTaskWithOptions(b *tele.Bot, c tele.Context, text string, re
 	domain.GlobalTokenTracker.StartTask(curProj, curMod, text)
 	workDir := filepath.Join(config.ProjectsRoot, curProj)
 
-	go runAgentTaskPipeline(b, c.Recipient(), task, workDir)
+	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
 
 	return nil
 }
 
-func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text string) error {
+func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 	task := domain.GlobalTaskManager.GetTask(taskID)
 	if task == nil {
-		return c.Send(fmt.Sprintf("❌ Задача #%d не найдена.", taskID), tele.ModeHTML)
+		return s.Send(fmt.Sprintf("❌ Задача #%d не найдена.", taskID), ports.Rich())
 	}
 
 	task.Lock()
@@ -2465,14 +2401,14 @@ func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text strin
 
 	if status == domain.TaskStatusWaitingApproval {
 		if isConfirmationText(text) {
-			return handleApprovePlan(b, c.Recipient(), taskID)
+			return handleApprovePlan(s.Messenger(), s.Chat(), taskID)
 		}
-		return handleRevisePlan(b, c.Recipient(), taskID, text)
+		return handleRevisePlan(s.Messenger(), s.Chat(), taskID, text)
 	}
 
 	task, qLen, isAnswer, err := domain.GlobalTaskManager.AddFollowup(taskID, text)
 	if err != nil {
-		return c.Send(fmt.Sprintf("❌ Не удалось отправить дополнение к задаче #%d: %s", taskID, err.Error()), tele.ModeHTML)
+		return s.Send(fmt.Sprintf("❌ Не удалось отправить дополнение к задаче #%d: %s", taskID, err.Error()), ports.Rich())
 	}
 
 	syncLegacySession(task)
@@ -2485,8 +2421,8 @@ func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text strin
 		task.Unlock()
 
 		if curStatus == domain.TaskStatusQueued {
-			return c.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
-				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), tele.ModeHTML)
+			return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
+				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
 		} else if (curStatus == domain.TaskStatusRunning || curStatus == domain.TaskStatusWaitingInput) && cmdIsNil {
 			task.Lock()
 			if task.RequiresPlan && !task.PlanApproved {
@@ -2502,12 +2438,12 @@ func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text strin
 			syncLegacySession(task)
 
 			workDir := filepath.Join(config.ProjectsRoot, proj)
-			go runAgentTaskPipeline(b, c.Recipient(), task, workDir)
-			return c.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с ответом:</b>\n<i>«%s»</i>",
-				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), tele.ModeHTML)
+			go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
+			return s.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с ответом:</b>\n<i>«%s»</i>",
+				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
 		}
 
-		return c.Send(fmt.Sprintf("💬 <b>Ответ передан задаче #%d</b> (<code>%s</code>)...", taskID, html.EscapeString(task.Project)), tele.ModeHTML)
+		return s.Send(fmt.Sprintf("💬 <b>Ответ передан задаче #%d</b> (<code>%s</code>)...", taskID, html.EscapeString(task.Project)), ports.Rich())
 	}
 
 	msg := fmt.Sprintf(
@@ -2516,7 +2452,7 @@ func handleAddFollowupToTask(b *tele.Bot, c tele.Context, taskID int, text strin
 			"Агент завершит текущий шаг и применит эти правки в ветку задачи #%d.",
 		taskID, html.EscapeString(task.Project), qLen, html.EscapeString(utils.TruncateString(text, 250)), taskID,
 	)
-	return c.Send(msg, tele.ModeHTML)
+	return s.Send(msg, ports.Rich())
 }
 
 func isConfirmationText(s string) bool {
@@ -2529,14 +2465,14 @@ func isConfirmationText(s string) bool {
 	}
 }
 
-func handleApprovePlan(b *tele.Bot, recipient tele.Recipient, taskID int) error {
-	return handleApprovePlanWithVariant(b, recipient, taskID, "")
+func handleApprovePlan(m ports.Messenger, chat ports.ChatID, taskID int) error {
+	return handleApprovePlanWithVariant(m, chat, taskID, "")
 }
 
-func handleApprovePlanWithVariant(b *tele.Bot, recipient tele.Recipient, taskID int, variant string) error {
+func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID int, variant string) error {
 	task := domain.GlobalTaskManager.GetTask(taskID)
 	if task == nil {
-		_, err := b.Send(recipient, fmt.Sprintf("❌ Задача #%d не найдена.", taskID))
+		_, err := m.Send(context.Background(), chat, fmt.Sprintf("❌ Задача #%d не найдена.", taskID), nil)
 		return err
 	}
 
@@ -2544,7 +2480,7 @@ func handleApprovePlanWithVariant(b *tele.Bot, recipient tele.Recipient, taskID 
 	if task.Status != domain.TaskStatusWaitingApproval {
 		statusTitle := task.Status.RussianTitle()
 		task.Unlock()
-		_, err := b.Send(recipient, fmt.Sprintf("ℹ️ Задача #%d не ожидает утверждения плана (текущий статус: %s).", taskID, statusTitle))
+		_, err := m.Send(context.Background(), chat, fmt.Sprintf("ℹ️ Задача #%d не ожидает утверждения плана (текущий статус: %s).", taskID, statusTitle), nil)
 		return err
 	}
 
@@ -2585,16 +2521,16 @@ func handleApprovePlanWithVariant(b *tele.Bot, recipient tele.Recipient, taskID 
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
 
-	b.Send(recipient, fmt.Sprintf("🚀 <b>План задачи #%d утверждён!</b>\nПриступаю к автономной реализации в <code>%s</code>...", taskID, html.EscapeString(projectName)), tele.ModeHTML)
+	_, _ = m.Send(context.Background(), chat, fmt.Sprintf("🚀 <b>План задачи #%d утверждён!</b>\nПриступаю к автономной реализации в <code>%s</code>...", taskID, html.EscapeString(projectName)), ports.Rich())
 
 	domain.GlobalTokenTracker.StartTask(projectName, modelName, initialPrompt)
 	workDir := filepath.Join(config.ProjectsRoot, projectName)
-	go runAgentTaskPipeline(b, recipient, task, workDir)
+	go runAgentTaskPipeline(m, chat, task, workDir)
 
 	return nil
 }
 
-func handleRevisePlan(b *tele.Bot, recipient tele.Recipient, taskID int, feedback string) error {
+func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback string) error {
 	task := domain.GlobalTaskManager.GetTask(taskID)
 	if task == nil {
 		return fmt.Errorf("задача #%d не найдена", taskID)
@@ -2611,17 +2547,17 @@ func handleRevisePlan(b *tele.Bot, recipient tele.Recipient, taskID int, feedbac
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
 
-	b.Send(recipient, fmt.Sprintf("📝 <b>Задача #%d: Обновляю план с учётом замечаний...</b>\n<i>«%s»</i>", taskID, html.EscapeString(truncateString(feedback, 100))), tele.ModeHTML)
+	_, _ = m.Send(context.Background(), chat, fmt.Sprintf("📝 <b>Задача #%d: Обновляю план с учётом замечаний...</b>\n<i>«%s»</i>", taskID, html.EscapeString(truncateString(feedback, 100))), ports.Rich())
 
 	workDir := filepath.Join(config.ProjectsRoot, projectName)
-	go runAgentTaskPipeline(b, recipient, task, workDir)
+	go runAgentTaskPipeline(m, chat, task, workDir)
 
 	return nil
 }
 
-func sendTaskPlanDocument(c tele.Context, task *domain.TaskSession) error {
+func sendTaskPlanDocument(s ports.Session, task *domain.TaskSession) error {
 	if task == nil {
-		return c.Send("❌ Задача не найдена. Список задач: /tasks", tele.ModeHTML)
+		return s.Send("❌ Задача не найдена. Список задач: /tasks", ports.Rich())
 	}
 
 	task.Lock()
@@ -2631,22 +2567,22 @@ func sendTaskPlanDocument(c tele.Context, task *domain.TaskSession) error {
 	task.Unlock()
 
 	if planText == "" {
-		return c.Send(fmt.Sprintf("ℹ️ У задачи #%d нет сформированного плана.", id), tele.ModeHTML)
+		return s.Send(fmt.Sprintf("ℹ️ У задачи #%d нет сформированного плана.", id), ports.Rich())
 	}
 
 	docName := fmt.Sprintf("plan_task_%d.md", id)
-	doc := &tele.Document{
-		File:     tele.FromReader(strings.NewReader(planText)),
+	doc := ports.Document{
 		FileName: docName,
 		MIME:     "text/markdown",
 		Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", id, proj),
+		Content:  []byte(planText),
 	}
-	return c.Send(doc)
+	return s.SendDocument(doc)
 }
 
 const maxInlinePlanRunes = 1200
 
-func sendPlanForApproval(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession) {
+func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession) {
 	task.Lock()
 	taskID := task.ID
 	projectName := task.Project
@@ -2654,26 +2590,23 @@ func sendPlanForApproval(b *tele.Bot, recipient tele.Recipient, task *domain.Tas
 	planText := strings.TrimSpace(task.Plan)
 	task.Unlock()
 
-	planMenu := &tele.ReplyMarkup{}
-	var rows []tele.Row
+	var rows [][]ports.Button
 
 	// Проверяем наличие альтернативных вариантов в плане
 	variants := utils.ExtractPlanVariantOptions(planText)
 	if len(variants) > 0 {
 		for i, v := range variants {
 			btnText := fmt.Sprintf("Утвердить: %s", truncateString(v, 24))
-			btn := planMenu.Data(btnText, "plan_appr_var", fmt.Sprintf("%d:%d", taskID, i))
-			rows = append(rows, planMenu.Row(btn))
+			rows = append(rows, []ports.Button{{Text: btnText, Action: "plan_appr_var", Payload: fmt.Sprintf("%d:%d", taskID, i)}})
 		}
 	}
 
-	btnApprove := planMenu.Data("✅ Утвердить и начать", "plan_approve", strconv.Itoa(taskID))
-	btnCancel := planMenu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(taskID))
-	rows = append(rows, planMenu.Row(btnApprove, btnCancel))
-
-	btnDoc := planMenu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(taskID))
-	rows = append(rows, planMenu.Row(btnDoc))
-	planMenu.Inline(rows...)
+	rows = append(rows, []ports.Button{
+		{Text: "✅ Утвердить и начать", Action: "plan_approve", Payload: strconv.Itoa(taskID)},
+		{Text: "❌ Отменить", Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
+	})
+	rows = append(rows, []ports.Button{{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: strconv.Itoa(taskID)}})
+	planMenu := &ports.Keyboard{Rows: rows}
 
 	planRunes := []rune(planText)
 	isLongPlan := len(planRunes) > maxInlinePlanRunes
@@ -2705,48 +2638,35 @@ func sendPlanForApproval(b *tele.Bot, recipient tele.Recipient, task *domain.Tas
 		taskID, taskID, taskID,
 	)
 
-	ctlMsg, err := SendSplit(b, recipient, msgText, planMenu, tele.ModeHTML)
-	if err != nil {
-		plainText := fmt.Sprintf(
-			"📋 План реализации задачи #%d (%s):\n\n"+
-				"Задача: «%s»\n\n"+
-				"%s\n\n"+
-				"Полный план: /planfile_%d\n\n"+
-				"Утвердить: /approve %d | Дополнить: /add %d | Отменить: /cancel %d",
-			taskID, projectName, promptSnippet, utils.StripTelegramHTML(planDisplayHTML),
-			taskID, taskID, taskID, taskID,
-		)
-		ctlMsg, _ = SendSplit(b, recipient, plainText, planMenu)
-	}
-	if ctlMsg != nil {
-		domain.GlobalTaskManager.RegisterMessageTask(ctlMsg.ID, taskID)
+	ctlRef, _ := m.Send(context.Background(), chat, msgText, ports.RichWith(planMenu))
+	if ctlRef.ID != "" {
+		domain.GlobalTaskManager.RegisterMessageTask(ctlRef, taskID)
 	}
 }
 
-func buildResumeMarkup(taskID int) *tele.ReplyMarkup {
-	menu := &tele.ReplyMarkup{}
-	btnResume := menu.Data("▶️ Возобновить задачу", "q_resume", strconv.Itoa(taskID))
-	btnCancel := menu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(taskID))
-	menu.Inline(menu.Row(btnResume, btnCancel))
-	return menu
+func buildResumeMarkup(taskID int) *ports.Keyboard {
+	return &ports.Keyboard{Rows: [][]ports.Button{
+		{
+			{Text: "▶️ Возобновить задачу", Action: "q_resume", Payload: strconv.Itoa(taskID)},
+			{Text: "❌ Отменить", Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
+		},
+	}}
 }
 
-func buildQuestionMarkup(task *domain.TaskSession) *tele.ReplyMarkup {
-	menu := &tele.ReplyMarkup{}
+func buildQuestionMarkup(task *domain.TaskSession) *ports.Keyboard {
 	task.Lock()
 	taskID := task.ID
 	options := append([]string(nil), task.QuestionOptions...)
 	task.Unlock()
 
-	var rows []tele.Row
+	var rows [][]ports.Button
 
 	if len(options) > 0 {
-		var optButtons []tele.Btn
+		var optButtons []ports.Button
 		for i, opt := range options {
 			cleanOpt := strings.TrimSpace(opt)
 			btnText := fmt.Sprintf("%d. %s", i+1, truncateString(cleanOpt, 30))
-			btn := menu.Data(btnText, "q_choice", fmt.Sprintf("%d:%d", taskID, i))
-			optButtons = append(optButtons, btn)
+			optButtons = append(optButtons, ports.Button{Text: btnText, Action: "q_choice", Payload: fmt.Sprintf("%d:%d", taskID, i)})
 		}
 
 		allShort := true
@@ -2760,27 +2680,27 @@ func buildQuestionMarkup(task *domain.TaskSession) *tele.ReplyMarkup {
 		if allShort && len(optButtons) > 1 {
 			for i := 0; i < len(optButtons); i += 2 {
 				if i+1 < len(optButtons) {
-					rows = append(rows, menu.Row(optButtons[i], optButtons[i+1]))
+					rows = append(rows, []ports.Button{optButtons[i], optButtons[i+1]})
 				} else {
-					rows = append(rows, menu.Row(optButtons[i]))
+					rows = append(rows, []ports.Button{optButtons[i]})
 				}
 			}
 		} else {
 			for _, b := range optButtons {
-				rows = append(rows, menu.Row(b))
+				rows = append(rows, []ports.Button{b})
 			}
 		}
 	}
 
-	btnPause := menu.Data("⏸ Приостановить", "q_pause", strconv.Itoa(taskID))
-	btnCancel := menu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(taskID))
-	rows = append(rows, menu.Row(btnPause, btnCancel))
+	rows = append(rows, []ports.Button{
+		{Text: "⏸ Приостановить", Action: "q_pause", Payload: strconv.Itoa(taskID)},
+		{Text: "❌ Отменить", Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
+	})
 
-	menu.Inline(rows...)
-	return menu
+	return &ports.Keyboard{Rows: rows}
 }
 
-func waitForTaskInput(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSession, projectName string, taskID int) (string, bool) {
+func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName string, taskID int) (string, bool) {
 	timeout := config.QuestionTimeout
 
 	select {
@@ -2798,7 +2718,7 @@ func waitForTaskInput(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSe
 		task.Unlock()
 		syncLegacySession(task)
 
-		b.Send(recipient, fmt.Sprintf("▶️ <b>Задача #%d: Ответ получен, продолжаю выполнение...</b>", taskID), tele.ModeHTML)
+		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("▶️ <b>Задача #%d: Ответ получен, продолжаю выполнение...</b>", taskID), ports.Rich())
 		return answer, true
 
 	case <-task.PauseChan:
@@ -2811,7 +2731,7 @@ func waitForTaskInput(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSe
 		syncLegacySession(task)
 
 		if !isCancelled {
-			checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+			checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 		}
 		return "", false
 
@@ -2830,17 +2750,17 @@ func waitForTaskInput(b *tele.Bot, recipient tele.Recipient, task *domain.TaskSe
 				"Чтобы возобновить с места вопроса, нажмите <b>«▶️ Возобновить задачу»</b> или введите <code>/resume %d &lt;ответ&gt;</code>.",
 			taskID, html.EscapeString(projectName), timeout, taskID,
 		)
-		tMsg, _ := b.Send(recipient, timeoutMsg, resumeMenu, tele.ModeHTML)
-		if tMsg != nil {
-			domain.GlobalTaskManager.RegisterMessageTask(tMsg.ID, taskID)
+		tRef, _ := m.Send(context.Background(), chat, timeoutMsg, ports.RichWith(resumeMenu))
+		if tRef.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(tRef, taskID)
 		}
 
-		checkAndStartQueuedTask(b, projectName, config.ProjectsRoot)
+		checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 		return "", false
 	}
 }
 
-func checkAndStartQueuedTask(b *tele.Bot, project, root string) {
+func checkAndStartQueuedTask(m ports.Messenger, project, root string) {
 	nextTask := domain.GlobalTaskManager.GetNextQueuedTaskForProject(project)
 	if nextTask == nil {
 		return
@@ -2854,7 +2774,7 @@ func checkAndStartQueuedTask(b *tele.Bot, project, root string) {
 		nextTask.Status = domain.TaskStatusRunning
 	}
 	nextTask.StartedAt = time.Now()
-	recipient := nextTask.Recipient
+	chat := nextTask.Chat
 	nextID := nextTask.ID
 	prompt := nextTask.InitialPrompt
 	model := nextTask.Model
@@ -2864,16 +2784,16 @@ func checkAndStartQueuedTask(b *tele.Bot, project, root string) {
 	_, _ = domain.GlobalTaskManager.SetActiveTask(nextID)
 
 	if isPlanning {
-		b.Send(recipient, fmt.Sprintf("📝 <b>Запуск планирования задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",
-			nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), tele.ModeHTML)
+		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("📝 <b>Запуск планирования задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",
+			nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), ports.Rich())
 	} else {
-		b.Send(recipient, fmt.Sprintf("🚀 <b>Запуск задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",
-			nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), tele.ModeHTML)
+		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("🚀 <b>Запуск задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",
+			nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), ports.Rich())
 	}
 
 	domain.GlobalTokenTracker.StartTask(project, model, prompt)
 	workDir := filepath.Join(root, project)
-	go runAgentTaskPipeline(b, recipient, nextTask, workDir)
+	go runAgentTaskPipeline(m, chat, nextTask, workDir)
 }
 
 func syncLegacySession(task *domain.TaskSession) {
@@ -2907,7 +2827,6 @@ func syncLegacySession(task *domain.TaskSession) {
 	domain.GlobalTaskManager.SaveTask(task)
 }
 
-
 func isQuestionText(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -2920,7 +2839,7 @@ func isQuestionText(s string) bool {
 		strings.Contains(lower, "do you want to")
 }
 
-func sendLongMarkdown(b *tele.Bot, recipient tele.Recipient, text string) {
+func sendLongMarkdown(m ports.Messenger, chat ports.ChatID, text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -2934,11 +2853,7 @@ func sendLongMarkdown(b *tele.Bot, recipient tele.Recipient, text string) {
 		}
 
 		htmlContent := utils.MarkdownToTelegramHTML(chunk)
-		_, err := b.Send(recipient, htmlContent, tele.ModeHTML)
-		if err != nil {
-			// Если Telegram отклонил HTML-разметку, отправляем обычным текстом без стилей
-			b.Send(recipient, chunk)
-		}
+		_, _ = m.Send(context.Background(), chat, htmlContent, ports.Rich())
 	}
 }
 
@@ -3022,33 +2937,33 @@ func formatResetDuration(resetTimeStr string) string {
 	return fmt.Sprintf("через %s (%s)", strings.Join(parts, " "), formattedTime)
 }
 
-// getDefaultCommands возвращает список команд для регистрации в Telegram (меню подсказок).
-func getDefaultCommands() []tele.Command {
-	return []tele.Command{
-		{Text: "status", Description: "[id] Статус текущей задачи, логи и очередь"},
-		{Text: "tasks", Description: "Список всех задач и переключение"},
-		{Text: "task", Description: "<id> [текст] Переключить фокус на задачу или дополнить её"},
-		{Text: "plan", Description: "[проект] <текст> Составить план для новой задачи"},
-		{Text: "planmode", Description: "[on|off] Включить/выключить обязательный план"},
-		{Text: "approve", Description: "[id] Утвердить план и начать реализацию"},
-		{Text: "planfile", Description: "[id] Скачать полный план задачи в виде .md файла"},
-		{Text: "add", Description: "[id] <текст> Дополнить задачу текстом"},
-		{Text: "new", Description: "[проект] <текст> Создать новую задачу в проекте"},
-		{Text: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
-		{Text: "retry", Description: "[id] Перезапустить задачу с новой сессией agy"},
-		{Text: "pause", Description: "[id] Приостановить выполнение задачи"},
-		{Text: "cancel", Description: "[id] Остановить задачу"},
-		{Text: "tokens", Description: "Статистика токенов, скорости и кэша"},
-		{Text: "context", Description: "[id] Распределение окна контекста модели"},
-		{Text: "top", Description: "Мониторинг CPU и памяти бота и agy"},
-		{Text: "usage", Description: "Остаток квот и лимиты аккаунта"},
-		{Text: "models", Description: "Список доступных моделей"},
-		{Text: "model", Description: "[имя] Переключить активную модель"},
-		{Text: "projects", Description: "Список доступных проектов"},
-		{Text: "use", Description: "<имя> Переключить активный проект"},
-		{Text: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
-		{Text: "restart", Description: "Перезапустить бота"},
-		{Text: "rebuild", Description: "Собрать свежий билд и перезапустить"},
-		{Text: "start", Description: "Главное меню и справка по командам"},
+// getDefaultCommands возвращает список команд для регистрации в мессенджере (меню подсказок).
+func getDefaultCommands() []ports.BotCommand {
+	return []ports.BotCommand{
+		{Name: "status", Description: "[id] Статус текущей задачи, логи и очередь"},
+		{Name: "tasks", Description: "Список всех задач и переключение"},
+		{Name: "task", Description: "<id> [текст] Переключить фокус на задачу или дополнить её"},
+		{Name: "plan", Description: "[проект] <текст> Составить план для новой задачи"},
+		{Name: "planmode", Description: "[on|off] Включить/выключить обязательный план"},
+		{Name: "approve", Description: "[id] Утвердить план и начать реализацию"},
+		{Name: "planfile", Description: "[id] Скачать полный план задачи в виде .md файла"},
+		{Name: "add", Description: "[id] <текст> Дополнить задачу текстом"},
+		{Name: "new", Description: "[проект] <текст> Создать новую задачу в проекте"},
+		{Name: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
+		{Name: "retry", Description: "[id] Перезапустить задачу с новой сессией agy"},
+		{Name: "pause", Description: "[id] Приостановить выполнение задачи"},
+		{Name: "cancel", Description: "[id] Остановить задачу"},
+		{Name: "tokens", Description: "Статистика токенов, скорости и кэша"},
+		{Name: "context", Description: "[id] Распределение окна контекста модели"},
+		{Name: "top", Description: "Мониторинг CPU и памяти бота и agy"},
+		{Name: "usage", Description: "Остаток квот и лимиты аккаунта"},
+		{Name: "models", Description: "Список доступных моделей"},
+		{Name: "model", Description: "[имя] Переключить активную модель"},
+		{Name: "projects", Description: "Список доступных проектов"},
+		{Name: "use", Description: "<имя> Переключить активный проект"},
+		{Name: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
+		{Name: "restart", Description: "Перезапустить бота"},
+		{Name: "rebuild", Description: "Собрать свежий билд и перезапустить"},
+		{Name: "start", Description: "Главное меню и справка по командам"},
 	}
 }

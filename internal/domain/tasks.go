@@ -10,13 +10,11 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"tg-agent-bot/internal/ports"
 	"tg-agent-bot/internal/storage"
 	"tg-agent-bot/internal/utils"
 	"time"
-
-	tele "gopkg.in/telebot.v3"
 )
-
 
 // TaskStatus определяет текущий жизненный цикл задачи.
 type TaskStatus string
@@ -103,8 +101,8 @@ type TaskSession struct {
 	FullOutput       strings.Builder
 	Cmd              *exec.Cmd
 	Stdin            io.WriteCloser
-	LiveMsg          *tele.Message
-	Recipient        tele.Recipient
+	LiveMsg          *ports.MessageRef
+	Chat             ports.ChatID
 	LastModelUsed    string
 	LastTokensUsed   string
 	ConversationID   string
@@ -115,13 +113,6 @@ type TaskSession struct {
 	PauseChan        chan struct{}
 	TokenMetrics     *TaskTokenMetrics
 	storage          storage.Storage
-}
-
-// stringRecipient реализует tele.Recipient для строкового ID получателя.
-type stringRecipient string
-
-func (r stringRecipient) Recipient() string {
-	return string(r)
 }
 
 // durationLocked возвращает время работы задачи без захвата мьютекса (мьютекс должен быть уже захвачен вызывающим кодом).
@@ -245,17 +236,13 @@ type TaskManager struct {
 	taskOrder    []int
 	activeTaskID int
 	nextID       int
-	msgToTask    map[int]int // messageID -> taskID
+	msgToTask    map[string]int // messageID -> taskID
 	storage      storage.Storage
 }
 
 var GlobalTaskManager = NewTaskManager()
 
 func taskRecordToSession(rec *storage.TaskRecord, s storage.Storage) *TaskSession {
-	var recipient tele.Recipient
-	if rec.RecipientID != "" {
-		recipient = stringRecipient(rec.RecipientID)
-	}
 	return &TaskSession{
 		ID:              rec.ID,
 		Project:         rec.Project,
@@ -275,7 +262,7 @@ func taskRecordToSession(rec *storage.TaskRecord, s storage.Storage) *TaskSessio
 		QuestionAskedAt: rec.QuestionAskedAt,
 		LastModelUsed:   rec.LastModelUsed,
 		LastTokensUsed:  rec.LastTokensUsed,
-		Recipient:       recipient,
+		Chat:            ports.ChatID(rec.RecipientID),
 		AnswerChan:      make(chan string, 1),
 		PauseChan:       make(chan struct{}, 1),
 		storage:         s,
@@ -292,7 +279,7 @@ func NewTaskManagerWithStorage(s storage.Storage) *TaskManager {
 	tm := &TaskManager{
 		tasks:     make(map[int]*TaskSession),
 		taskOrder: make([]int, 0),
-		msgToTask: make(map[int]int),
+		msgToTask: make(map[string]int),
 		nextID:    1,
 	}
 	if s != nil {
@@ -387,14 +374,13 @@ func (tm *TaskManager) Storage() storage.Storage {
 	return tm.storage
 }
 
-
 // CreateTask создаёт задачу без обязательного плана и регистрирует её в менеджере.
-func (tm *TaskManager) CreateTask(project, model, prompt string, recipient tele.Recipient) *TaskSession {
-	return tm.CreateTaskWithPlan(project, model, prompt, recipient, false)
+func (tm *TaskManager) CreateTask(project, model, prompt string, chat ports.ChatID) *TaskSession {
+	return tm.CreateTaskWithPlan(project, model, prompt, chat, false)
 }
 
 // CreateTaskWithPlan создаёт задачу с возможностью требования предварительного плана.
-func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, recipient tele.Recipient, requiresPlan bool) *TaskSession {
+func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, chat ports.ChatID, requiresPlan bool) *TaskSession {
 	tm.Lock()
 	defer tm.Unlock()
 
@@ -409,7 +395,7 @@ func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, recipie
 		CurrentPrompt: prompt,
 		Status:        TaskStatusQueued,
 		RequiresPlan:  requiresPlan,
-		Recipient:     recipient,
+		Chat:          chat,
 		AnswerChan:    make(chan string, 1),
 		PauseChan:     make(chan struct{}, 1),
 		storage:       tm.storage,
@@ -424,8 +410,8 @@ func (tm *TaskManager) CreateTaskWithPlan(project, model, prompt string, recipie
 			Status:        string(TaskStatusQueued),
 			RequiresPlan:  requiresPlan,
 		}
-		if recipient != nil {
-			rec.RecipientID = recipient.Recipient()
+		if chat != "" {
+			rec.RecipientID = string(chat)
 		}
 		dbID, err := tm.storage.CreateTask(context.Background(), rec)
 		if err == nil && dbID > 0 {
@@ -507,7 +493,6 @@ func (tm *TaskManager) SetActiveTask(id int) (*TaskSession, error) {
 	}
 	return task, nil
 }
-
 
 // ListTasks возвращает все задачи в хронологическом порядке.
 func (tm *TaskManager) ListTasks() []*TaskSession {
@@ -781,7 +766,6 @@ func (tm *TaskManager) ClearTaskConversationID(id int) {
 	}
 }
 
-
 // AddFollowup добавляет дополнение к конкретной задаче или отправляет ответ в stdin / AnswerChan, если задача ждёт ввода или на паузе.
 func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool, error) {
 	tm.RLock()
@@ -831,15 +815,20 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 	return task, queueLen, false, nil
 }
 
-// RegisterMessageTask связывает ID сообщения Telegram с ID задачи.
-func (tm *TaskManager) RegisterMessageTask(msgID int, taskID int) {
+// RegisterMessageTask связывает отправленное сообщение с ID задачи.
+func (tm *TaskManager) RegisterMessageTask(ref ports.MessageRef, taskID int) {
+	if ref.ID == "" {
+		return
+	}
+	msgID := string(ref.ID)
+
 	tm.Lock()
 	tm.msgToTask[msgID] = taskID
 	s := tm.storage
 	tm.Unlock()
 
 	if s != nil {
-		_ = s.RegisterMessageTask(context.Background(), msgID, 0, taskID)
+		_ = s.RegisterMessageTask(context.Background(), string(ref.Chat), msgID, taskID)
 	}
 }
 
@@ -876,8 +865,8 @@ func (tm *TaskManager) SaveTask(task *TaskSession) {
 		LastModelUsed:   task.LastModelUsed,
 		LastTokensUsed:  task.LastTokensUsed,
 	}
-	if task.Recipient != nil {
-		rec.RecipientID = task.Recipient.Recipient()
+	if task.Chat != "" {
+		rec.RecipientID = string(task.Chat)
 	}
 	task.Unlock()
 
@@ -918,12 +907,11 @@ func (tm *TaskManager) SaveTaskMetrics(taskID int, metrics *TaskTokenMetrics) {
 	_ = s.SaveMetrics(context.Background(), rec)
 }
 
-
-// GetTaskByMessageID возвращает задачу, к которой относится сообщение Telegram.
-func (tm *TaskManager) GetTaskByMessageID(msgID int) *TaskSession {
+// GetTaskByMessageID возвращает задачу, к которой относится сообщение.
+func (tm *TaskManager) GetTaskByMessageID(msgID ports.MessageID) *TaskSession {
 	tm.RLock()
 	defer tm.RUnlock()
-	taskID, ok := tm.msgToTask[msgID]
+	taskID, ok := tm.msgToTask[string(msgID)]
 	if !ok {
 		return nil
 	}
@@ -966,7 +954,7 @@ func (tm *TaskManager) GetRunningWorkerPids() (int, []int) {
 }
 
 // FormatTasksList формирует сообщение со списком всех задач и кнопками быстрого переключения.
-func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
+func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
 	tasks := tm.ListTasks()
 	activeTask := tm.GetActiveTask()
 	activeID := 0
@@ -1074,8 +1062,7 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 	bldr.WriteString("• <code>/cancel &lt;id&gt;</code> — отменить задачу")
 
 	// Формируем инлайн-клавиатуру для активных задач
-	menu := &tele.ReplyMarkup{}
-	var buttons []tele.Btn
+	var buttons []ports.Button
 	for _, t := range activeList {
 		t.Lock()
 		id := t.ID
@@ -1088,22 +1075,20 @@ func FormatTasksList(tm *TaskManager) (string, *tele.ReplyMarkup) {
 			badge = "🎯 "
 		}
 		btnText := fmt.Sprintf("%s#%d %s %s", badge, id, emoji, utils.TruncateString(proj, 12))
-		btn := menu.Data(btnText, "task_sel", strconv.Itoa(id))
-		buttons = append(buttons, btn)
+		buttons = append(buttons, ports.Button{Text: btnText, Action: "task_sel", Payload: strconv.Itoa(id)})
 	}
 
 	if len(buttons) > 0 {
-		var rows []tele.Row
+		var rows [][]ports.Button
 		// По 2 кнопки в ряд
 		for i := 0; i < len(buttons); i += 2 {
 			if i+1 < len(buttons) {
-				rows = append(rows, menu.Row(buttons[i], buttons[i+1]))
+				rows = append(rows, []ports.Button{buttons[i], buttons[i+1]})
 			} else {
-				rows = append(rows, menu.Row(buttons[i]))
+				rows = append(rows, []ports.Button{buttons[i]})
 			}
 		}
-		menu.Inline(rows...)
-		return bldr.String(), menu
+		return bldr.String(), &ports.Keyboard{Rows: rows}
 	}
 
 	return bldr.String(), nil
@@ -1213,42 +1198,40 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 
 // BuildTaskDetailsMarkup формирует инлайн-клавиатуру для карточки задачи,
 // включая кнопку скачивания плана (если он есть) и управляющие кнопки по статусу.
-func BuildTaskDetailsMarkup(task *TaskSession) *tele.ReplyMarkup {
+func BuildTaskDetailsMarkup(task *TaskSession) *ports.Keyboard {
 	task.Lock()
 	id := task.ID
 	hasPlan := task.Plan != ""
 	status := task.Status
 	task.Unlock()
 
-	menu := &tele.ReplyMarkup{}
-	var rows []tele.Row
+	var rows [][]ports.Button
 
 	if hasPlan {
-		btnDoc := menu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(id))
-		rows = append(rows, menu.Row(btnDoc))
+		rows = append(rows, []ports.Button{{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: strconv.Itoa(id)}})
 	}
 
 	if status == TaskStatusWaitingApproval {
-		btnApprove := menu.Data("✅ Утвердить план", "plan_approve", strconv.Itoa(id))
-		btnCancel := menu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(id))
-		rows = append(rows, menu.Row(btnApprove, btnCancel))
+		rows = append(rows, []ports.Button{
+			{Text: "✅ Утвердить план", Action: "plan_approve", Payload: strconv.Itoa(id)},
+			{Text: "❌ Отменить", Action: "plan_cancel", Payload: strconv.Itoa(id)},
+		})
 	} else if status == TaskStatusPaused {
-		btnResume := menu.Data("▶️ Возобновить", "q_resume", strconv.Itoa(id))
-		btnCancel := menu.Data("❌ Отменить", "plan_cancel", strconv.Itoa(id))
-		rows = append(rows, menu.Row(btnResume, btnCancel))
+		rows = append(rows, []ports.Button{
+			{Text: "▶️ Возобновить", Action: "q_resume", Payload: strconv.Itoa(id)},
+			{Text: "❌ Отменить", Action: "plan_cancel", Payload: strconv.Itoa(id)},
+		})
 	}
 
 	if len(rows) > 0 {
-		menu.Inline(rows...)
-		return menu
+		return &ports.Keyboard{Rows: rows}
 	}
 	return nil
 }
 
 // BuildTaskPlanMarkup создает инлайн-кнопку скачивания полного файла плана задачи.
-func BuildTaskPlanMarkup(taskID int) *tele.ReplyMarkup {
-	menu := &tele.ReplyMarkup{}
-	btnDoc := menu.Data("📄 Скачать план (.md)", "plan_doc", strconv.Itoa(taskID))
-	menu.Inline(menu.Row(btnDoc))
-	return menu
+func BuildTaskPlanMarkup(taskID int) *ports.Keyboard {
+	return &ports.Keyboard{Rows: [][]ports.Button{
+		{{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: strconv.Itoa(taskID)}},
+	}}
 }
