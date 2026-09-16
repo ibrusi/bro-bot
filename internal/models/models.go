@@ -1,6 +1,8 @@
 package models
 
 import (
+	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 	"bufio"
 	"context"
 	"fmt"
@@ -9,8 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"bro-bot/internal/ports"
-	"bro-bot/internal/utils"
 	"time"
 )
 
@@ -32,7 +32,7 @@ type ModelRegistry struct {
 }
 
 var (
-	BaseAliases   = baseAliases
+	BaseAliases         = baseAliases
 	GlobalModelRegistry *ModelRegistry
 
 	fallbackModels = []ModelInfo{

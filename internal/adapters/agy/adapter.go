@@ -1,13 +1,13 @@
 package agy
 
 import (
+	"bro-bot/internal/models"
+	"bro-bot/internal/ports"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"bro-bot/internal/models"
-	"bro-bot/internal/ports"
 
 	"github.com/creack/pty"
 )

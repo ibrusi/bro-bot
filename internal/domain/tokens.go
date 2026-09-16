@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"bro-bot/internal/models"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/utils"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,12 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"bro-bot/internal/models"
-	"bro-bot/internal/storage"
-	"bro-bot/internal/utils"
 	"time"
 )
-
 
 // UsageStats содержит статистику токенов от модели.
 type UsageStats struct {
@@ -599,7 +598,6 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 		bldr.WriteString("💤 Задачи ещё не запускались в этой сессии.\n")
 		bldr.WriteString("Отправьте задачу боту сообщением в чат, чтобы начать работу!")
 	}
-
 
 	bldr.WriteString("\n\n💡 <i>Детализация контекстного окна модели: /context</i>")
 	return bldr.String()

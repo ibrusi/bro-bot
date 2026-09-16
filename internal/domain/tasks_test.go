@@ -1,12 +1,12 @@
 package domain
 
 import (
+	"bro-bot/internal/ports"
+	"bro-bot/internal/storage"
 	"context"
 	"fmt"
 	"strings"
 	"testing"
-	"bro-bot/internal/ports"
-	"bro-bot/internal/storage"
 	"time"
 )
 

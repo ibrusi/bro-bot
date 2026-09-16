@@ -1,6 +1,12 @@
 package handlers
 
 import (
+	"bro-bot/internal/config"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/models"
+	"bro-bot/internal/ports"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/utils"
 	"context"
 	"errors"
 	"fmt"
@@ -13,12 +19,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"bro-bot/internal/config"
-	"bro-bot/internal/domain"
-	"bro-bot/internal/models"
-	"bro-bot/internal/ports"
-	"bro-bot/internal/storage"
-	"bro-bot/internal/utils"
 	"time"
 
 	"github.com/creack/pty"
