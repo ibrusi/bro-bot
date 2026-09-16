@@ -1531,3 +1531,321 @@ func TestTaskAgentSwitchCallback(t *testing.T) {
 		t.Errorf("expected callback message to be edited with choice, got: %v", sess.Edits)
 	}
 }
+
+func TestParseNewTaskInput(t *testing.T) {
+	tmpDir := t.TempDir()
+	projDir := filepath.Join(tmpDir, "my-service")
+	_ = os.MkdirAll(projDir, 0755)
+	config.ProjectsRoot = tmpDir
+
+	tests := []struct {
+		name         string
+		text         string
+		defaultProj  string
+		defaultAgent string
+		wantProj     string
+		wantAgent    string
+		wantPrompt   string
+	}{
+		{
+			name:         "empty input",
+			text:         "",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "defproj",
+			wantAgent:    "agy",
+			wantPrompt:   "",
+		},
+		{
+			name:         "only prompt",
+			text:         "fix the bug in db",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "defproj",
+			wantAgent:    "agy",
+			wantPrompt:   "fix the bug in db",
+		},
+		{
+			name:         "agent and prompt",
+			text:         "claude rewrite api handler",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "defproj",
+			wantAgent:    "claude",
+			wantPrompt:   "rewrite api handler",
+		},
+		{
+			name:         "project and prompt",
+			text:         "my-service add health check",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "my-service",
+			wantAgent:    "agy",
+			wantPrompt:   "add health check",
+		},
+		{
+			name:         "project, agent and prompt",
+			text:         "my-service claude optimize sql queries",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "my-service",
+			wantAgent:    "claude",
+			wantPrompt:   "optimize sql queries",
+		},
+		{
+			name:         "agent, project and prompt",
+			text:         "claude my-service refactor models",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "my-service",
+			wantAgent:    "claude",
+			wantPrompt:   "refactor models",
+		},
+		{
+			name:         "case-insensitive agent uppercase",
+			text:         "CLAUDE my-service add tests",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "my-service",
+			wantAgent:    "claude",
+			wantPrompt:   "add tests",
+		},
+		{
+			name:         "case-insensitive agent mixed case",
+			text:         "my-service Agy fix linter error",
+			defaultProj:  "defproj",
+			defaultAgent: "claude",
+			wantProj:     "my-service",
+			wantAgent:    "agy",
+			wantPrompt:   "fix linter error",
+		},
+		{
+			name:         "unknown agent treated as prompt",
+			text:         "gpt write documentation",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "defproj",
+			wantAgent:    "agy",
+			wantPrompt:   "gpt write documentation",
+		},
+		{
+			name:         "only agent word without prompt",
+			text:         "claude",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "defproj",
+			wantAgent:    "claude",
+			wantPrompt:   "",
+		},
+		{
+			name:         "only project word without prompt",
+			text:         "my-service",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "my-service",
+			wantAgent:    "agy",
+			wantPrompt:   "",
+		},
+		{
+			name:         "project and agent without prompt",
+			text:         "my-service claude",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "my-service",
+			wantAgent:    "claude",
+			wantPrompt:   "",
+		},
+		{
+			name:         "agent and project without prompt",
+			text:         "claude my-service",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "my-service",
+			wantAgent:    "claude",
+			wantPrompt:   "",
+		},
+		{
+			name:         "preserves multiline formatting and indentation",
+			text:         "my-service claude Plan:\n  - step 1\n  - step 2",
+			defaultProj:  "defproj",
+			defaultAgent: "agy",
+			wantProj:     "my-service",
+			wantAgent:    "claude",
+			wantPrompt:   "Plan:\n  - step 1\n  - step 2",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			proj, agent, prompt := parseNewTaskInput(tc.text, tc.defaultProj, tc.defaultAgent)
+			if proj != tc.wantProj {
+				t.Errorf("proj = %q, want %q", proj, tc.wantProj)
+			}
+			if agent != tc.wantAgent {
+				t.Errorf("agent = %q, want %q", agent, tc.wantAgent)
+			}
+			if prompt != tc.wantPrompt {
+				t.Errorf("prompt = %q, want %q", prompt, tc.wantPrompt)
+			}
+		})
+	}
+}
+
+func TestNewCommandWithAgent(t *testing.T) {
+	mt := setupTestApp(t)
+
+	newHandler, ok := mt.commands["new"]
+	if !ok {
+		t.Fatalf("new command handler not registered")
+	}
+
+	// 1. Empty args -> returns usage message with [проект] [агент]
+	sessUsage := &mock.Session{
+		M:       mt.Messenger,
+		ChatID:  testChatID,
+		ArgsVal: []string{},
+	}
+	if err := newHandler(sessUsage); err != nil {
+		t.Fatalf("newHandler failed on empty args: %v", err)
+	}
+	last := mt.LastSent()
+	if last == nil || !strings.Contains(last.Text, "[проект] [агент]") {
+		t.Fatalf("expected usage message mentioning [проект] [агент], got: %v", last)
+	}
+
+	// 2. Only agent given with no prompt -> returns usage message
+	sessOnlyAgent := &mock.Session{
+		M:       mt.Messenger,
+		ChatID:  testChatID,
+		ArgsVal: []string{"claude"},
+	}
+	if err := newHandler(sessOnlyAgent); err != nil {
+		t.Fatalf("newHandler failed on only agent: %v", err)
+	}
+	last = mt.LastSent()
+	if last == nil || !strings.Contains(last.Text, "[проект] [агент]") {
+		t.Fatalf("expected usage message when only agent is given, got: %v", last)
+	}
+
+	// 3. /new testproj claude implement feature
+	sessWithProjAndAgent := &mock.Session{
+		M:       mt.Messenger,
+		ChatID:  testChatID,
+		ArgsVal: []string{"testproj", "claude", "implement", "feature"},
+	}
+	if err := newHandler(sessWithProjAndAgent); err != nil {
+		t.Fatalf("newHandler failed on proj and agent: %v", err)
+	}
+	if ActiveAgentName != "claude" {
+		t.Errorf("expected ActiveAgentName to be claude, got %s", ActiveAgentName)
+	}
+	task1 := domain.GlobalTaskManager.GetTask(1)
+	if task1 == nil {
+		t.Fatalf("expected task 1 to be created")
+	}
+	if task1.Project != "testproj" {
+		t.Errorf("expected task project to be testproj, got %s", task1.Project)
+	}
+	if task1.Agent != "claude" {
+		t.Errorf("expected task agent to be claude, got %s", task1.Agent)
+	}
+	if task1.InitialPrompt != "implement feature" {
+		t.Errorf("expected prompt to be 'implement feature', got %s", task1.InitialPrompt)
+	}
+
+	// 4. Create second project dir testproj2 and run /new claude testproj2 fix critical bug
+	projDir2 := filepath.Join(config.ProjectsRoot, "testproj2")
+	_ = os.MkdirAll(projDir2, 0755)
+
+	sessWithAgentAndProj := &mock.Session{
+		M:       mt.Messenger,
+		ChatID:  testChatID,
+		ArgsVal: []string{"claude", "testproj2", "fix", "critical", "bug"},
+	}
+	if err := newHandler(sessWithAgentAndProj); err != nil {
+		t.Fatalf("newHandler failed on agent and proj: %v", err)
+	}
+	task2 := domain.GlobalTaskManager.GetTask(2)
+	if task2 == nil {
+		t.Fatalf("expected task 2 to be created")
+	}
+	if task2.Project != "testproj2" {
+		t.Errorf("expected task project to be testproj2, got %s", task2.Project)
+	}
+	if task2.Agent != "claude" {
+		t.Errorf("expected task agent to be claude, got %s", task2.Agent)
+	}
+	if task2.InitialPrompt != "fix critical bug" {
+		t.Errorf("expected prompt to be 'fix critical bug', got %s", task2.InitialPrompt)
+	}
+
+	// 5. /new agy testproj3 write integration tests
+	projDir3 := filepath.Join(config.ProjectsRoot, "testproj3")
+	_ = os.MkdirAll(projDir3, 0755)
+
+	sessWithAgy := &mock.Session{
+		M:       mt.Messenger,
+		ChatID:  testChatID,
+		ArgsVal: []string{"agy", "testproj3", "write", "integration", "tests"},
+	}
+	if err := newHandler(sessWithAgy); err != nil {
+		t.Fatalf("newHandler failed on agy: %v", err)
+	}
+	if ActiveAgentName != "agy" {
+		t.Errorf("expected ActiveAgentName to be agy, got %s", ActiveAgentName)
+	}
+	task3 := domain.GlobalTaskManager.GetTask(3)
+	if task3 == nil {
+		t.Fatalf("expected task 3 to be created")
+	}
+	if task3.Agent != "agy" {
+		t.Errorf("expected task agent to be agy, got %s", task3.Agent)
+	}
+	if task3.Project != "testproj3" {
+		t.Errorf("expected task project to be testproj3, got %s", task3.Project)
+	}
+	if task3.InitialPrompt != "write integration tests" {
+		t.Errorf("expected prompt to be 'write integration tests', got %s", task3.InitialPrompt)
+	}
+}
+
+func TestStartCommandAndMenuNewDescription(t *testing.T) {
+	mt := setupTestApp(t)
+
+	// 1. Check /start description
+	startHandler, ok := mt.commands["start"]
+	if !ok {
+		t.Fatalf("start command handler not registered")
+	}
+	sess := &mock.Session{
+		M:      mt.Messenger,
+		ChatID: testChatID,
+	}
+	if err := startHandler(sess); err != nil {
+		t.Fatalf("startHandler failed: %v", err)
+	}
+	last := mt.LastSent()
+	if last == nil {
+		t.Fatalf("expected message from /start")
+	}
+	expectedStartSnippet := "• /new [проект] [агент]"
+	if !strings.Contains(last.Text, expectedStartSnippet) {
+		t.Errorf("expected /start text to contain %q, got:\n%s", expectedStartSnippet, last.Text)
+	}
+
+	// 2. Check getDefaultCommands menu description
+	cmds := getDefaultCommands()
+	var foundNewCmd *ports.BotCommand
+	for i := range cmds {
+		if cmds[i].Name == "new" {
+			foundNewCmd = &cmds[i]
+			break
+		}
+	}
+	if foundNewCmd == nil {
+		t.Fatalf("expected 'new' command in getDefaultCommands()")
+	}
+	if !strings.Contains(foundNewCmd.Description, "[проект] [агент]") {
+		t.Errorf("expected 'new' command description to mention '[проект] [агент]', got %q", foundNewCmd.Description)
+	}
+}

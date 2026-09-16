@@ -225,7 +225,7 @@ func Start(t ports.Transport) {
 				"• /planmode [on|off] — включить обязательный план для всех задач\n"+
 				"• /approve [id] — утвердить план задачи и начать реализацию\n"+
 				"• /add [id] &lt;текст&gt; — отправить дополнение конкретной задаче\n"+
-				"• /new [проект] &lt;текст&gt; — создать новую задачу в текущем проекте\n"+
+				"• /new [проект] [агент] &lt;текст&gt; — создать новую задачу (с выбором проекта и агента)\n" +
 				"• /resume [id] [ответ] — возобновить задачу или передать ответ\n"+
 				"• /retry [id] — перезапустить задачу с чистой сессией agy\n"+
 				"• /pause [id] — приостановить задачу\n"+
@@ -736,7 +736,7 @@ func Start(t ports.Transport) {
 	t.OnCommand("new", func(s ports.Session) error {
 		args := s.Args()
 		if len(args) == 0 {
-			return s.Send("Использование: <code>/new &lt;описание задачи&gt;</code>\n(или <code>/new &lt;проект&gt; &lt;описание&gt;</code>)", ports.Rich())
+			return s.Send("Использование: <code>/new &lt;описание задачи&gt;</code>\n(или <code>/new [проект] [агент] &lt;описание&gt;</code>)", ports.Rich())
 		}
 		text := strings.TrimSpace(strings.Join(args, " "))
 		return handleCreateNewTask(s, text)
@@ -2181,7 +2181,15 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	stepCtx, stepCancel := context.WithTimeout(context.Background(), stepTimeout+2*time.Minute)
 	defer stepCancel()
 
-	agentProcess, err := Agent.ExecuteTask(stepCtx, args)
+	framework := Agent
+	if framework == nil || !strings.EqualFold(taskAgent, ActiveAgentName) {
+		if strings.EqualFold(taskAgent, "claude") {
+			framework = claude.NewClaudeAdapter()
+		} else {
+			framework = agy.NewAgyAdapter()
+		}
+	}
+	agentProcess, err := framework.ExecuteTask(stepCtx, args)
 	if err != nil {
 		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, err), nil)
 		task.Lock()
@@ -2292,7 +2300,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 				}
 				if convID != "" {
 					domain.GlobalTaskManager.SetTaskConversationID(taskID, convID)
-					domain.GlobalTaskManager.SetTaskAgent(taskID, ActiveAgentName)
+					domain.GlobalTaskManager.SetTaskAgent(taskID, taskAgent)
 					domain.GlobalTokenTracker.SetConversationID(convID)
 				}
 
@@ -2564,30 +2572,120 @@ func handleCreatePlanTask(s ports.Session, text string) error {
 	return handleCreateNewTaskWithOptions(s, text, true)
 }
 
+// isKnownAgent проверяет, является ли переданная строка именем поддерживаемого CLI агента.
+func isKnownAgent(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "agy", "claude":
+		return true
+	default:
+		return false
+	}
+}
+
+// isProjectDir проверяет, существует ли директория проекта с таким именем в ProjectsRoot.
+func isProjectDir(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.HasPrefix(name, ".") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return false
+	}
+	path := filepath.Join(config.ProjectsRoot, name)
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}
+
+// stripLeadingWords удаляет count первых слов из строки text, сохраняя форматирование остатка.
+func stripLeadingWords(text string, count int) string {
+	idx := 0
+	for i := 0; i < count; i++ {
+		for idx < len(text) && (text[idx] == ' ' || text[idx] == '\t' || text[idx] == '\n' || text[idx] == '\r') {
+			idx++
+		}
+		for idx < len(text) && !(text[idx] == ' ' || text[idx] == '\t' || text[idx] == '\n' || text[idx] == '\r') {
+			idx++
+		}
+	}
+	return strings.TrimSpace(text[idx:])
+}
+
+// parseNewTaskInput разбирает аргументы команды /new или /plan,
+// извлекая опциональные [проект] и [агент] (в любом порядке) и текст описания задачи.
+func parseNewTaskInput(text string, defaultProj, defaultAgent string) (targetProj, targetAgent, prompt string) {
+	targetProj = defaultProj
+	targetAgent = defaultAgent
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return targetProj, targetAgent, ""
+	}
+
+	w0 := words[0]
+	w0Agent := isKnownAgent(w0)
+	w0Proj := isProjectDir(w0)
+
+	if len(words) >= 2 {
+		w1 := words[1]
+		w1Agent := isKnownAgent(w1)
+		w1Proj := isProjectDir(w1)
+
+		if w0Agent && w1Proj {
+			targetAgent = strings.ToLower(w0)
+			targetProj = w1
+			prompt = stripLeadingWords(text, 2)
+			return targetProj, targetAgent, prompt
+		}
+		if w0Proj && w1Agent {
+			targetProj = w0
+			targetAgent = strings.ToLower(w1)
+			prompt = stripLeadingWords(text, 2)
+			return targetProj, targetAgent, prompt
+		}
+	}
+
+	if w0Agent {
+		targetAgent = strings.ToLower(w0)
+		prompt = stripLeadingWords(text, 1)
+		return targetProj, targetAgent, prompt
+	}
+
+	if w0Proj {
+		targetProj = w0
+		prompt = stripLeadingWords(text, 1)
+		return targetProj, targetAgent, prompt
+	}
+
+	prompt = strings.TrimSpace(text)
+	return targetProj, targetAgent, prompt
+}
+
 func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan bool) error {
 	config.ProjectState.RLock()
 	curProj := config.ProjectState.CurrentProject
 	curMod := config.ProjectState.CurrentModel
+	curAgent := ActiveAgentName
 	config.ProjectState.RUnlock()
 
-	words := strings.Fields(text)
-	if len(words) > 1 {
-		possibleProj := words[0]
-		possiblePath := filepath.Join(config.ProjectsRoot, possibleProj)
-		if fi, err := os.Stat(possiblePath); err == nil && fi.IsDir() {
-			curProj = possibleProj
-			text = strings.TrimSpace(strings.TrimPrefix(text, possibleProj))
-		}
+	targetProj, targetAgent, prompt := parseNewTaskInput(text, curProj, curAgent)
+	if prompt == "" {
+		return s.Send("Использование: <code>/new &lt;описание задачи&gt;</code>\n(или <code>/new [проект] [агент] &lt;описание&gt;</code>)", ports.Rich())
 	}
 
-	if curProj == "" {
+	if targetProj == "" {
 		return s.Send("❌ Сначала выберите проект: /projects", nil)
 	}
 
-	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent(curProj, curMod, ActiveAgentName, text, s.Chat(), requiresPlan)
+	if targetAgent != "" && !strings.EqualFold(targetAgent, ActiveAgentName) {
+		if _, err := SwitchActiveAgent(targetAgent); err != nil {
+			return s.Send(fmt.Sprintf("❌ Ошибка переключения на агента <b>%s</b>: %v", html.EscapeString(targetAgent), err), ports.Rich())
+		}
+	}
+
+	config.ProjectState.RLock()
+	curMod = config.ProjectState.CurrentModel
+	config.ProjectState.RUnlock()
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent(targetProj, curMod, targetAgent, prompt, s.Chat(), requiresPlan)
 	syncLegacySession(task)
 
-	if domain.GlobalTaskManager.HasRunningTaskInProject(curProj) {
+	if domain.GlobalTaskManager.HasRunningTaskInProject(targetProj) {
 		planNote := ""
 		if requiresPlan {
 			planNote = " Сначала будет составлен подробный план."
@@ -2596,7 +2694,7 @@ func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan b
 			"⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>:\n\n"+
 				"<i>«%s»</i>\n\n"+
 				"💡 В этом проекте уже выполняется задача. Задача #%d начнется автоматически после ее завершения.%s",
-			task.ID, html.EscapeString(curProj), html.EscapeString(utils.TruncateString(text, 250)), task.ID, planNote,
+			task.ID, html.EscapeString(targetProj), html.EscapeString(utils.TruncateString(prompt, 250)), task.ID, planNote,
 		)
 		return s.Send(msg, ports.Rich())
 	}
@@ -2612,8 +2710,8 @@ func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan b
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(task.ID)
 
-	domain.GlobalTokenTracker.StartTaskWithAgent(curProj, curMod, text, ActiveAgentName)
-	workDir := filepath.Join(config.ProjectsRoot, curProj)
+	domain.GlobalTokenTracker.StartTaskWithAgent(targetProj, curMod, prompt, targetAgent)
+	workDir := filepath.Join(config.ProjectsRoot, targetProj)
 
 	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
 
@@ -3219,7 +3317,7 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "approve", Description: "[id] Утвердить план и начать реализацию"},
 		{Name: "planfile", Description: "[id] Скачать полный план задачи в виде .md файла"},
 		{Name: "add", Description: "[id] <текст> Дополнить задачу текстом"},
-		{Name: "new", Description: "[проект] <текст> Создать новую задачу в проекте"},
+		{Name: "new", Description: "[проект] [агент] <текст> Создать новую задачу в проекте/агенте"},
 		{Name: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
 		{Name: "retry", Description: "[id] Перезапустить задачу с чистого листа"},
 		{Name: "pause", Description: "[id] Приостановить выполнение задачи"},
@@ -3250,10 +3348,25 @@ func SwitchActiveAgent(name string) (string, error) {
 		models.Agent = adapter
 		ActiveAgentName = "agy"
 		config.ProjectState.SetCurrentAgent("agy")
+		config.ProjectState.Lock()
+		curModel := config.ProjectState.CurrentModel
+		suggested := ""
+		if strings.Contains(strings.ToLower(curModel), "claude") || strings.Contains(strings.ToLower(curModel), "sonnet") || strings.Contains(strings.ToLower(curModel), "opus") {
+			defaultModel := os.Getenv("DEFAULT_MODEL")
+			if defaultModel == "" {
+				defaultModel = "gemini-3.1-pro-high"
+			}
+			config.ProjectState.CurrentModel = defaultModel
+			suggested = fmt.Sprintf("\nМодель автоматически переключена на <b>%s</b>.", html.EscapeString(defaultModel))
+			if st := domain.GlobalTaskManager.Storage(); st != nil {
+				_ = st.SetSetting(context.Background(), "current_model", defaultModel)
+			}
+		}
+		config.ProjectState.Unlock()
 		if st := domain.GlobalTaskManager.Storage(); st != nil {
 			_ = st.SetSetting(context.Background(), "current_agent", "agy")
 		}
-		return "✅ CLI агент переключен на: <b>agy</b>", nil
+		return "✅ CLI агент переключен на: <b>agy</b>" + suggested, nil
 	case "claude":
 		adapter := claude.NewClaudeAdapter()
 		Agent = adapter
