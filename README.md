@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)](https://kernel.org)
 
-**bro-bot** — это автономный сервис-мост на Go, соединяющий **Telegram** с агентной средой **Google Antigravity CLI (`agy`)**. 
+**bro-bot** — это автономный сервис-мост на Go, соединяющий **Telegram** с агентной средой **Google Antigravity CLI (`agy`)** и **Claude Code CLI (`claude`)**. 
 
 Бот позволяет разработчику или команде управлять пулом проектов, ставить задачи на кодинг и рефакторинг, утверждать интерактивные планы реализации, отвечать на уточняющие вопросы агента, контролировать лимиты токенов и потребление ресурсов сервера — не покидая Telegram.
 
