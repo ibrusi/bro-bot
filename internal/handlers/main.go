@@ -428,7 +428,15 @@ func Start(t ports.Transport) {
 			Agent = adapter
 			models.Agent = adapter
 			ActiveAgentName = "claude"
-			return s.Send("✅ CLI агент переключен на: <b>claude</b>", ports.Rich())
+			config.ProjectState.Lock()
+			curModel := config.ProjectState.CurrentModel
+			suggested := ""
+			if strings.Contains(strings.ToLower(curModel), "gemini") || strings.Contains(strings.ToLower(curModel), "gpt") {
+				config.ProjectState.CurrentModel = "sonnet"
+				suggested = "\nМодель автоматически переключена на <b>sonnet</b> (Claude Sonnet 4.6)."
+			}
+			config.ProjectState.Unlock()
+			return s.Send("✅ CLI агент переключен на: <b>claude</b>"+suggested, ports.Rich())
 		default:
 			return s.Send(fmt.Sprintf("❌ Неизвестный агент: <code>%s</code>. Доступны: <b>agy</b>, <b>claude</b>", html.EscapeString(name)), ports.Rich())
 		}
@@ -437,7 +445,11 @@ func Start(t ports.Transport) {
 	handleUsage := func(s ports.Session) error {
 		m := s.Messenger()
 		chat := s.Chat()
-		statusRef, _ := m.Send(context.Background(), chat, "⏳ <i>Запрашиваю актуальные лимиты и квоты из agy...</i>", ports.Rich())
+		loadingAgent := ActiveAgentName
+		if loadingAgent == "" {
+			loadingAgent = "агента"
+		}
+		statusRef, _ := m.Send(context.Background(), chat, fmt.Sprintf("⏳ <i>Запрашиваю актуальные лимиты и квоты из %s...</i>", html.EscapeString(loadingAgent)), ports.Rich())
 
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -506,7 +518,11 @@ func Start(t ports.Transport) {
 		}
 
 		var bldr strings.Builder
-		bldr.WriteString("📊 <b>Лимиты и квоты аккаунта (Google Antigravity)</b>\n\n")
+		headerTitle := "📊 <b>Лимиты и квоты аккаунта (Google Antigravity)</b>\n\n"
+		if ActiveAgentName == "claude" {
+			headerTitle = "📊 <b>Лимиты и квоты аккаунта (Claude Code)</b>\n\n"
+		}
+		bldr.WriteString(headerTitle)
 
 		if quotaErr == nil && len(quotaResp.Command.Data.Groups) > 0 {
 			for _, g := range quotaResp.Command.Data.Groups {
@@ -534,11 +550,19 @@ func Start(t ports.Transport) {
 				bldr.WriteString("\n")
 			}
 		} else if quotaRaw != "" {
-			bldr.WriteString("<b>Ответ agy:</b>\n<pre>")
-			bldr.WriteString(html.EscapeString(quotaRaw))
-			bldr.WriteString("</pre>\n\n")
+			agentTitle := "Ответ агента"
+			if ActiveAgentName == "claude" {
+				agentTitle = "Ответ Claude"
+			} else if ActiveAgentName == "agy" {
+				agentTitle = "Ответ agy"
+			}
+			bldr.WriteString(fmt.Sprintf("<b>%s:</b>\n<pre>%s</pre>\n\n", agentTitle, html.EscapeString(quotaRaw)))
 		} else if quotaErr != nil {
-			bldr.WriteString(fmt.Sprintf("⚠️ <i>Не удалось получить актуальные лимиты из agy: %s</i>\n\n", html.EscapeString(quotaErr.Error())))
+			agentTitle := ActiveAgentName
+			if agentTitle == "" {
+				agentTitle = "агента"
+			}
+			bldr.WriteString(fmt.Sprintf("⚠️ <i>Не удалось получить актуальные лимиты из %s: %s</i>\n\n", html.EscapeString(agentTitle), html.EscapeString(quotaErr.Error())))
 		}
 
 		if creditsErr == nil && creditsResp.Command.Name == "credits" {

@@ -493,3 +493,147 @@ func TestParseStreamEvent_ErrorResult(t *testing.T) {
 		t.Errorf("expected status 'ERROR', got %q", evt.Result.Status)
 	}
 }
+
+func TestParseStreamEvent_ClaudeInit(t *testing.T) {
+	claudeInit := `{"type":"system","subtype":"init","session_id":"test-session-uuid-123","tools":["Bash","Edit"],"model":"claude-sonnet-5"}`
+	evt, err := ParseStreamEvent(claudeInit)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if evt.ConversationID != "test-session-uuid-123" {
+		t.Errorf("expected ConversationID 'test-session-uuid-123', got %q", evt.ConversationID)
+	}
+	if evt.Event != "init" {
+		t.Errorf("expected Event 'init', got %q", evt.Event)
+	}
+}
+
+func TestParseStreamEvent_ClaudeAssistantToolUse(t *testing.T) {
+	claudeTool := `{"type":"assistant","session_id":"test-session-uuid-123","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hello"}}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":100}}}`
+	evt, err := ParseStreamEvent(claudeTool)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if evt.StepUpdate == nil {
+		t.Fatalf("expected StepUpdate to be non-nil")
+	}
+	if evt.StepUpdate.StepType != "tool" {
+		t.Errorf("expected StepType 'tool', got %q", evt.StepUpdate.StepType)
+	}
+	if evt.StepUpdate.ToolName != "Bash" {
+		t.Errorf("expected ToolName 'Bash', got %q", evt.StepUpdate.ToolName)
+	}
+	if evt.StepUpdate.ToolInfo == nil || evt.StepUpdate.ToolInfo.Parameters["command"] != "echo hello" {
+		t.Errorf("expected parameter 'command' = 'echo hello'")
+	}
+	if evt.StepUpdate.Usage == nil || evt.StepUpdate.Usage.CacheReadTokens != 100 {
+		t.Errorf("expected cache_read_tokens 100, got %v", evt.StepUpdate.Usage)
+	}
+}
+
+func TestParseStreamEvent_ClaudeAssistantText(t *testing.T) {
+	claudeText := `{"type":"assistant","session_id":"test-session-uuid-123","message":{"role":"assistant","content":[{"type":"text","text":"Done! PR_URL: https://github.com/foo/bar/pull/10"}],"usage":{"input_tokens":20,"output_tokens":15}}}`
+	evt, err := ParseStreamEvent(claudeText)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if evt.StepUpdate == nil {
+		t.Fatalf("expected StepUpdate to be non-nil")
+	}
+	if evt.StepUpdate.StepType != "agent_response" {
+		t.Errorf("expected StepType 'agent_response', got %q", evt.StepUpdate.StepType)
+	}
+	if evt.StepUpdate.TextDelta != "Done! PR_URL: https://github.com/foo/bar/pull/10" {
+		t.Errorf("expected text delta to match, got %q", evt.StepUpdate.TextDelta)
+	}
+}
+
+func TestParseStreamEvent_ClaudeResult(t *testing.T) {
+	claudeRes := `{"type":"result","subtype":"success","session_id":"test-session-uuid-123","result":"Everything done!","num_turns":2,"duration_ms":3500,"usage":{"input_tokens":50,"output_tokens":25,"cache_read_input_tokens":200,"output_tokens_details":{"thinking_tokens":10}}}`
+	evt, err := ParseStreamEvent(claudeRes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if evt.Result == nil {
+		t.Fatalf("expected Result to be non-nil")
+	}
+	if evt.Result.Status != "COMPLETED" {
+		t.Errorf("expected status COMPLETED, got %q", evt.Result.Status)
+	}
+	if evt.Result.Response != "Everything done!" {
+		t.Errorf("expected response 'Everything done!', got %q", evt.Result.Response)
+	}
+	if evt.Result.DurationSeconds != 3.5 {
+		t.Errorf("expected duration 3.5, got %v", evt.Result.DurationSeconds)
+	}
+	if evt.Result.NumTurns != 2 {
+		t.Errorf("expected num_turns 2, got %d", evt.Result.NumTurns)
+	}
+	if evt.Result.Usage == nil || evt.Result.Usage.ThinkingTokens != 10 {
+		t.Errorf("expected thinking tokens 10, got %v", evt.Result.Usage)
+	}
+}
+
+func TestParseStreamEvent_ClaudeErrorResult(t *testing.T) {
+	claudeErr := `{"type":"result","subtype":"error_during_execution","session_id":"test-session-uuid-123","is_error":true,"errors":["rate limit exceeded"]}`
+	evt, err := ParseStreamEvent(claudeErr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if evt.Result == nil {
+		t.Fatalf("expected Result to be non-nil")
+	}
+	if evt.Result.Status != "ERROR" {
+		t.Errorf("expected status ERROR, got %q", evt.Result.Status)
+	}
+	if !evt.Result.IsError() {
+		t.Errorf("expected IsError to be true")
+	}
+	if evt.Result.Error != "rate limit exceeded" {
+		t.Errorf("expected error 'rate limit exceeded', got %q", evt.Result.Error)
+	}
+}
+
+func TestFormatToolAction_ClaudeTools(t *testing.T) {
+	tests := []struct {
+		name     string
+		info     *StreamToolInfo
+		expected string
+	}{
+		{
+			name: "Bash",
+			info: &StreamToolInfo{Name: "Bash", Parameters: map[string]interface{}{"command": "git status"}},
+			expected: "⚡ git status",
+		},
+		{
+			name: "Edit",
+			info: &StreamToolInfo{Name: "Edit", Parameters: map[string]interface{}{"file_path": "/home/deploy/bro-bot/main.go"}},
+			expected: "✏️ edit: main.go",
+		},
+		{
+			name: "Write",
+			info: &StreamToolInfo{Name: "Write", Parameters: map[string]interface{}{"file_path": "/home/deploy/bro-bot/test.txt"}},
+			expected: "📝 write: test.txt",
+		},
+		{
+			name: "Read",
+			info: &StreamToolInfo{Name: "Read", Parameters: map[string]interface{}{"file_path": "/home/deploy/bro-bot/config.json"}},
+			expected: "👁 view: config.json",
+		},
+		{
+			name: "WebSearch",
+			info: &StreamToolInfo{Name: "WebSearch", Parameters: map[string]interface{}{"query": "golang pty"}},
+			expected: "🔍 search: golang pty",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FormatToolAction(tc.name, tc.info)
+			if got != tc.expected {
+				t.Errorf("FormatToolAction(%s) = %q, expected %q", tc.name, got, tc.expected)
+			}
+		})
+	}
+}
+

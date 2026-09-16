@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"bro-bot/internal/ports"
 
@@ -18,17 +19,32 @@ func NewClaudeAdapter() *ClaudeAdapter {
 	return &ClaudeAdapter{}
 }
 
+func resolveClaudeModel(modelName string) string {
+	m := strings.ToLower(strings.TrimSpace(modelName))
+	if m == "" {
+		return "sonnet"
+	}
+	// Если передана модель другого семейства (например, gemini или gpt),
+	// переключаемся на безопасный дефолт sonnet во избежание ошибки 404 unrecognized_model
+	if strings.Contains(m, "gemini") || strings.Contains(m, "gpt") || strings.Contains(m, "120b") {
+		return "sonnet"
+	}
+	return modelName
+}
+
 func buildClaudeArgs(convID, modelName, prompt string) []string {
 	args := []string{
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
+		"--verbose",
 	}
 	if convID != "" {
-		// В Claude используется --session-id (в зависимости от версии это может быть -r)
-		args = append(args, "--session-id", convID)
+		// В Claude для возобновления существующей сессии используется --resume (-r)
+		args = append(args, "--resume", convID)
 	}
-	if modelName != "" {
-		args = append(args, "--model", modelName)
+	claudeModel := resolveClaudeModel(modelName)
+	if claudeModel != "" {
+		args = append(args, "--model", claudeModel)
 	}
 	args = append(args, "-p", prompt)
 	return args
@@ -56,19 +72,20 @@ func (a *ClaudeAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 }
 
 func (a *ClaudeAdapter) GetModels(ctx context.Context) ([]byte, error) {
-	// Claude CLI может не поддерживать команду models в формате json.
-	// Возвращаем пустой массив, чтобы не сломать парсинг.
-	return []byte(`[]`), nil
+	// Возвращаем список поддерживаемых моделей Claude в формате, совместимом с parseAgyModelsOutput
+	modelsText := "claude-sonnet-5 Claude Sonnet 5 (Hybrid Reasoning)\n" +
+		"claude-sonnet-4-6 Claude Sonnet 4.6 (Thinking)\n" +
+		"claude-opus-4-6-thinking Claude Opus 4.6 (Thinking)\n" +
+		"claude-haiku-4-5 Claude Haiku 4.5 (Fast & Lightweight)\n"
+	return []byte(modelsText), nil
 }
 
 func (a *ClaudeAdapter) GetQuota(ctx context.Context) ([]byte, error) {
-	// Заглушка
-	return []byte(`{}`), nil
+	return exec.CommandContext(ctx, "claude", "--dangerously-skip-permissions", "--output-format", "json", "-p", "/usage").CombinedOutput()
 }
 
 func (a *ClaudeAdapter) GetQuotaText(ctx context.Context) ([]byte, error) {
-	// Заглушка
-	return []byte("Claude CLI не поддерживает проверку квот напрямую."), nil
+	return exec.CommandContext(ctx, "claude", "--dangerously-skip-permissions", "-p", "/usage").CombinedOutput()
 }
 
 func (a *ClaudeAdapter) GetCredits(ctx context.Context) ([]byte, error) {
