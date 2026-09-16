@@ -260,7 +260,9 @@ func (s *SQLiteStorage) UpdateTaskConversationID(ctx context.Context, id int, co
 	return err
 }
 
-func scanTaskRow(scanner interface{ Scan(dest ...interface{}) error }) (*TaskRecord, error) {
+func scanTaskRow(scanner interface {
+	Scan(dest ...interface{}) error
+}) (*TaskRecord, error) {
 	var (
 		task            TaskRecord
 		startedAt       sql.NullTime
@@ -687,21 +689,21 @@ func (s *SQLiteStorage) GetAggregateMetrics(ctx context.Context) (*AggregateMetr
 	return &agg, nil
 }
 
-// RegisterMessageTask сохраняет соответствие Telegram message ID и ID задачи.
-func (s *SQLiteStorage) RegisterMessageTask(ctx context.Context, messageID int, chatID int64, taskID int) error {
+// RegisterMessageTask сохраняет соответствие сообщения мессенджера и ID задачи.
+func (s *SQLiteStorage) RegisterMessageTask(ctx context.Context, chatID, messageID string, taskID int) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO telegram_messages (message_id, chat_id, task_id) VALUES (?, ?, ?)`,
-		messageID, chatID, taskID)
+		`INSERT OR REPLACE INTO messenger_messages (chat_id, message_id, task_id) VALUES (?, ?, ?)`,
+		chatID, messageID, taskID)
 	return err
 }
 
-// GetTaskIDByMessage возвращает ID задачи по ID сообщения в Telegram.
-func (s *SQLiteStorage) GetTaskIDByMessage(ctx context.Context, messageID int) (int, error) {
+// GetTaskIDByMessage возвращает ID задачи по ID сообщения.
+func (s *SQLiteStorage) GetTaskIDByMessage(ctx context.Context, messageID string) (int, error) {
 	var taskID int
-	err := s.db.QueryRowContext(ctx, `SELECT task_id FROM telegram_messages WHERE message_id = ?`, messageID).Scan(&taskID)
+	err := s.db.QueryRowContext(ctx, `SELECT task_id FROM messenger_messages WHERE message_id = ?`, messageID).Scan(&taskID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return 0, nil
@@ -712,16 +714,17 @@ func (s *SQLiteStorage) GetTaskIDByMessage(ctx context.Context, messageID int) (
 }
 
 // ListAllMessageTasks возвращает всю карту соответствий message_id -> task_id.
-func (s *SQLiteStorage) ListAllMessageTasks(ctx context.Context) (map[int]int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT message_id, task_id FROM telegram_messages`)
+func (s *SQLiteStorage) ListAllMessageTasks(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT message_id, task_id FROM messenger_messages`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	res := make(map[int]int)
+	res := make(map[string]int)
 	for rows.Next() {
-		var msgID, taskID int
+		var msgID string
+		var taskID int
 		if err := rows.Scan(&msgID, &taskID); err != nil {
 			return nil, err
 		}

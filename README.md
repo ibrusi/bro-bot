@@ -60,19 +60,28 @@
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                     Telegram Client                      │
+│              Telegram Client (или другой мессенджер)     │
 └────────────────────────────┬─────────────────────────────┘
                              │  HTTPS / Long Polling
                              ▼
 ┌──────────────────────────────────────────────────────────┐
+│  internal/adapters/telegram/  ──► ports.Transport impl.   │
+│  (единственный пакет, знающий про gopkg.in/telebot.v3;    │
+│   новый мессенджер = новый пакет здесь же, по образцу)    │
+└────────────────────────────┬─────────────────────────────┘
+                             │ internal/ports (Messenger, Transport, Session)
+                             ▼
+┌──────────────────────────────────────────────────────────┐
 │                 bro-bot (Go Executable)                  │
 │                                                          │
-│  internal/handlers/  ──► Telegram Commands & Callbacks   │
+│  internal/handlers/  ──► Команды и колбэки (мессенджеро-  │
+│                           независимо, через ports.Session)│
 │  internal/domain/    ──► Task Queue, Sessions & Tokens   │
 │  internal/storage/   ──► SQLite Persistence & Migrations │
 │  internal/models/    ──► Model Registry & Aliases        │
 │  internal/system/    ──► Hot-Rebuild, Systemd & Top/PS   │
-│  internal/utils/     ──► Telegram HTML/Markdown Parser   │
+│  internal/utils/     ──► Rich-текст (HTML-подмножество)/  │
+│                           Markdown парсер                │
 └──────────────┬─────────────────────────────┬─────────────┘
                │ PTY (Pseudo-Terminal)       │ Git / FS
                ▼                             ▼
@@ -93,7 +102,11 @@
 Каждая задача изолируется в псевдотерминале (PTY) с передачей параметров:
 `agy --dangerously-skip-permissions --print-timeout 30m --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
 
-Бот парсит потоковый NDJSON-вывод `stream-json`, перехватывает шаги рассуждений, вызовы инструментов и события завершения, транслируя их в удобные Telegram-сообщения.
+Бот парсит потоковый NDJSON-вывод `stream-json`, перехватывает шаги рассуждений, вызовы инструментов и события завершения, транслируя их в удобные сообщения.
+
+### Абстракция мессенджера
+
+Весь код бота (`internal/handlers`, `internal/domain`, `internal/system`) общается с мессенджером только через интерфейсы `ports.Messenger` (отправка/редактирование сообщений, документы, инлайн-кнопки) и `ports.Transport` (приём команд, текста и колбэков). Единственная реализация на сегодня — `internal/adapters/telegram`, и только этот пакет импортирует `gopkg.in/telebot.v3`. Переменная окружения `MESSENGER` (по умолчанию `telegram`) выбирает адаптер в `cmd/bot/main.go`. Чтобы добавить новый мессенджер, нужно реализовать `ports.Transport` в новом пакете `internal/adapters/<name>/` и зарегистрировать его в `cmd/bot/main.go` — код хендлеров при этом не меняется.
 
 ---
 
@@ -155,6 +168,7 @@ nano .env
 
 | Переменная | Обязательная | Значение по умолчанию | Описание |
 |---|:---:|:---:|---|
+| `MESSENGER` | Нет | `telegram` | Мессенджер-адаптер из `internal/adapters/`, который использует бот (см. [Абстракция мессенджера](#абстракция-мессенджера)). Сейчас поддерживается только `telegram`. |
 | `TELEGRAM_BOT_TOKEN` | **Да** | — | Токен Telegram-бота, полученный от [@BotFather](https://t.me/BotFather). |
 | `TELEGRAM_ADMIN_ID` | **Да** | — | Числовой Telegram ID администратора. Бот принимает команды **только** от этого пользователя, все остальные игнорируются. |
 | `PROJECTS_ROOT` | **Да** | — | Абсолютный путь к каталогу, где хранятся репозитории рабочих проектов. |

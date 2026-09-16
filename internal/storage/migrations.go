@@ -113,6 +113,25 @@ ALTER TABLE task_metrics ADD COLUMN last_step_cache_read_tokens INTEGER NOT NULL
 ALTER TABLE task_metrics ADD COLUMN last_step_total_tokens INTEGER NOT NULL DEFAULT 0;
 `,
 	},
+	{
+		version: 3,
+		name:    "add_messenger_messages",
+		sql: `
+CREATE TABLE IF NOT EXISTS messenger_messages (
+    chat_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (chat_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_messenger_messages_task_id ON messenger_messages(task_id);
+
+INSERT OR IGNORE INTO messenger_messages (chat_id, message_id, task_id, created_at)
+SELECT CAST(chat_id AS TEXT), CAST(message_id AS TEXT), task_id, created_at
+FROM telegram_messages;
+`,
+	},
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {
