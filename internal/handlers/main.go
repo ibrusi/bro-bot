@@ -3,6 +3,7 @@ package handlers
 import (
 	"bro-bot/internal/adapters/agy"
 	"bro-bot/internal/adapters/claude"
+	"bro-bot/internal/adapters/transcript"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
 	"bro-bot/internal/models"
@@ -832,6 +833,30 @@ func Start(t ports.Transport) {
 		}
 
 		return sendTaskPlanDocument(s, target)
+	})
+
+	t.OnCommand("history", func(s ports.Session) error {
+		args := s.Args()
+		var target *domain.TaskSession
+		if len(args) > 0 {
+			first := strings.TrimPrefix(args[0], "#")
+			if id, err := strconv.Atoi(first); err == nil {
+				target = domain.GlobalTaskManager.GetTask(id)
+				if target == nil {
+					return s.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), ports.Rich())
+				}
+			}
+		}
+
+		if target == nil {
+			target = domain.GlobalTaskManager.GetActiveTask()
+		}
+
+		if target == nil {
+			return s.Send("❌ Нет активных задач. Список задач: /tasks", ports.Rich())
+		}
+
+		return sendTaskHistory(s, target)
 	})
 
 	t.OnCommand("approve", func(s ports.Session) error {
@@ -2935,6 +2960,110 @@ func sendTaskPlanDocument(s ports.Session, task *domain.TaskSession) error {
 	return s.SendDocument(doc)
 }
 
+// sendTaskHistory читает и отправляет переписку (реплики пользователя и
+// агента) для любой сессии задачи, включая уже завершённые. История читается
+// заново из файла сессии CLI-агента при каждом вызове и нигде ботом не
+// сохраняется — только последний общий предпросмотр показывается в чате, а
+// полная версия при необходимости отправляется отдельным файлом.
+func sendTaskHistory(s ports.Session, task *domain.TaskSession) error {
+	if task == nil {
+		return s.Send("❌ Задача не найдена. Список задач: /tasks", ports.Rich())
+	}
+
+	task.Lock()
+	id := task.ID
+	proj := task.Project
+	convID := task.ConversationID
+	agentName := task.Agent
+	task.Unlock()
+	if agentName == "" {
+		agentName = "agy"
+	}
+
+	if convID == "" {
+		return s.Send(fmt.Sprintf("ℹ️ У задачи #%d ещё нет сохранённой сессии агента (<code>%s</code> ещё не запускался).", id, html.EscapeString(agentName)), ports.Rich())
+	}
+
+	workDir := filepath.Join(config.ProjectsRoot, proj)
+	turns, err := transcript.ReadSession(workDir, convID)
+	if err != nil {
+		if errors.Is(err, transcript.ErrSessionNotFound) {
+			return s.Send(fmt.Sprintf("ℹ️ Файл сессии задачи #%d не найден на диске (возможно, был удалён или сжат).", id), ports.Rich())
+		}
+		log.Printf("history: ошибка чтения сессии задачи #%d: %v", id, err)
+		return s.Send(fmt.Sprintf("❌ Не удалось прочитать историю сессии задачи #%d.", id), ports.Rich())
+	}
+	if len(turns) == 0 {
+		return s.Send(fmt.Sprintf("ℹ️ В сессии задачи #%d пока нет сообщений.", id), ports.Rich())
+	}
+
+	const previewLimit = 6
+	const previewTurnRunes = 500
+
+	previewStart := 0
+	if len(turns) > previewLimit {
+		previewStart = len(turns) - previewLimit
+	}
+
+	var bldr strings.Builder
+	bldr.WriteString(fmt.Sprintf("💬 <b>Переписка задачи #%d</b> (<code>%s</code>, %d реплик):\n\n", id, html.EscapeString(proj), len(turns)))
+
+	truncatedAny := previewStart > 0
+	for _, t := range turns[previewStart:] {
+		label := "🤖 <b>Агент</b>"
+		if t.Role == "user" {
+			label = "👤 <b>Пользователь</b>"
+		}
+		if len([]rune(t.Text)) > previewTurnRunes {
+			truncatedAny = true
+		}
+		bldr.WriteString(fmt.Sprintf("%s:\n<i>%s</i>\n\n", label, html.EscapeString(utils.TruncateString(t.Text, previewTurnRunes))))
+	}
+	if previewStart > 0 {
+		bldr.WriteString(fmt.Sprintf("<i>… показаны последние %d из %d реплик.</i>\n\n", previewLimit, len(turns)))
+	}
+	if truncatedAny {
+		bldr.WriteString("📄 <i>Полная история без сокращений — во вложенном файле.</i>")
+	}
+
+	if err := s.Send(bldr.String(), ports.Rich()); err != nil {
+		return err
+	}
+	if !truncatedAny {
+		return nil
+	}
+
+	return s.SendDocument(ports.Document{
+		FileName: fmt.Sprintf("history_task_%d.md", id),
+		MIME:     "text/markdown",
+		Caption:  fmt.Sprintf("💬 Полная переписка задачи #%d (%s)", id, proj),
+		Content:  []byte(formatHistoryDocument(turns, proj, id)),
+	})
+}
+
+// formatHistoryDocument форматирует полную переписку задачи в Markdown для
+// отправки файлом, без каких-либо сокращений.
+func formatHistoryDocument(turns []transcript.Turn, proj string, id int) string {
+	var bldr strings.Builder
+	bldr.WriteString(fmt.Sprintf("# Переписка задачи #%d (%s)\n\n", id, proj))
+	for _, t := range turns {
+		label := "Агент"
+		if t.Role == "user" {
+			label = "Пользователь"
+		}
+		bldr.WriteString("## ")
+		bldr.WriteString(label)
+		if t.Timestamp != "" {
+			bldr.WriteString(" · ")
+			bldr.WriteString(t.Timestamp)
+		}
+		bldr.WriteString("\n\n")
+		bldr.WriteString(t.Text)
+		bldr.WriteString("\n\n")
+	}
+	return bldr.String()
+}
+
 const maxInlinePlanRunes = 1200
 
 func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession) {
@@ -3316,6 +3445,7 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "planmode", Description: "[on|off] Включить/выключить обязательный план"},
 		{Name: "approve", Description: "[id] Утвердить план и начать реализацию"},
 		{Name: "planfile", Description: "[id] Скачать полный план задачи в виде .md файла"},
+		{Name: "history", Description: "[id] Показать переписку пользователя и агента в сессии задачи"},
 		{Name: "add", Description: "[id] <текст> Дополнить задачу текстом"},
 		{Name: "new", Description: "[проект] [агент] <текст> Создать новую задачу в проекте/агенте"},
 		{Name: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
