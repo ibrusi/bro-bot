@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"bro-bot/internal/config"
+	"bro-bot/internal/ports"
 	"context"
 	"fmt"
 	"html"
@@ -10,8 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"bro-bot/internal/config"
-	"bro-bot/internal/ports"
 	"time"
 )
 

@@ -310,6 +310,7 @@ journalctl -u bro-bot.service -f
 |---|---|---|
 | `/models` | Список всех доступных моделей из Antigravity CLI с их описанием и алиасами. | `/models` |
 | `/model [имя]` | Переключить активную модель для будущих задач. | `/model flash` или `/model claude-sonnet-4-6` |
+| `/agent [имя]` | Переключить активного агента между agy и claude. | `/agent claude` |
 | `/usage` (или `/limits`) | Проверить остаток бесплатных квот и платных кредитов Antigravity. | `/usage` |
 | `/tokens` (или `/stats`) | Статистика токенов текущей задачи: Input, Output, Thinking, Cache Read и Hit Rate. | `/tokens` |
 | `/context [id]` | Диаграмма заполнения окна контекста модели текущей или указанной задачи. | `/context` |

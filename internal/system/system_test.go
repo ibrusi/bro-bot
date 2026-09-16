@@ -1,14 +1,14 @@
 package system
 
 import (
+	"bro-bot/internal/domain"
+	"bro-bot/internal/ports"
 	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"bro-bot/internal/domain"
-	"bro-bot/internal/ports"
 	"time"
 )
 

@@ -1,6 +1,15 @@
 package handlers
 
 import (
+	"bro-bot/internal/adapters/agy"
+	"bro-bot/internal/adapters/claude"
+	"bro-bot/internal/config"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/models"
+	"bro-bot/internal/ports"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/system"
+	"bro-bot/internal/utils"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -16,18 +25,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"bro-bot/internal/config"
-	"bro-bot/internal/domain"
-	"bro-bot/internal/models"
-	"bro-bot/internal/ports"
-	"bro-bot/internal/storage"
-	"bro-bot/internal/system"
-	"bro-bot/internal/utils"
 	"time"
 )
 
 var (
-	Agent ports.AgentFramework
+	Agent           ports.AgentFramework
+	ActiveAgentName = "agy"
 )
 
 type AgyQuotaResponse struct {
@@ -406,10 +409,47 @@ func Start(t ports.Transport) {
 		return s.Send(fmt.Sprintf("✅ Модель переключена на: <code>%s</code>", html.EscapeString(resolved)), ports.Rich())
 	})
 
+	t.OnCommand("agent", func(s ports.Session) error {
+		args := s.Args()
+		if len(args) == 0 {
+			return s.Send(fmt.Sprintf("🤖 Текущий CLI агент: <code>%s</code>\nДоступны: <b>agy</b>, <b>claude</b>", html.EscapeString(ActiveAgentName)), ports.Rich())
+		}
+
+		name := strings.ToLower(strings.TrimSpace(args[0]))
+		switch name {
+		case "agy":
+			adapter := agy.NewAgyAdapter()
+			Agent = adapter
+			models.Agent = adapter
+			ActiveAgentName = "agy"
+			return s.Send("✅ CLI агент переключен на: <b>agy</b>", ports.Rich())
+		case "claude":
+			adapter := claude.NewClaudeAdapter()
+			Agent = adapter
+			models.Agent = adapter
+			ActiveAgentName = "claude"
+			config.ProjectState.Lock()
+			curModel := config.ProjectState.CurrentModel
+			suggested := ""
+			if strings.Contains(strings.ToLower(curModel), "gemini") || strings.Contains(strings.ToLower(curModel), "gpt") {
+				config.ProjectState.CurrentModel = "sonnet"
+				suggested = "\nМодель автоматически переключена на <b>sonnet</b> (Claude Sonnet 4.6)."
+			}
+			config.ProjectState.Unlock()
+			return s.Send("✅ CLI агент переключен на: <b>claude</b>"+suggested, ports.Rich())
+		default:
+			return s.Send(fmt.Sprintf("❌ Неизвестный агент: <code>%s</code>. Доступны: <b>agy</b>, <b>claude</b>", html.EscapeString(name)), ports.Rich())
+		}
+	})
+
 	handleUsage := func(s ports.Session) error {
 		m := s.Messenger()
 		chat := s.Chat()
-		statusRef, _ := m.Send(context.Background(), chat, "⏳ <i>Запрашиваю актуальные лимиты и квоты из agy...</i>", ports.Rich())
+		loadingAgent := ActiveAgentName
+		if loadingAgent == "" {
+			loadingAgent = "агента"
+		}
+		statusRef, _ := m.Send(context.Background(), chat, fmt.Sprintf("⏳ <i>Запрашиваю актуальные лимиты и квоты из %s...</i>", html.EscapeString(loadingAgent)), ports.Rich())
 
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -478,7 +518,11 @@ func Start(t ports.Transport) {
 		}
 
 		var bldr strings.Builder
-		bldr.WriteString("📊 <b>Лимиты и квоты аккаунта (Google Antigravity)</b>\n\n")
+		headerTitle := "📊 <b>Лимиты и квоты аккаунта (Google Antigravity)</b>\n\n"
+		if ActiveAgentName == "claude" {
+			headerTitle = "📊 <b>Лимиты и квоты аккаунта (Claude Code)</b>\n\n"
+		}
+		bldr.WriteString(headerTitle)
 
 		if quotaErr == nil && len(quotaResp.Command.Data.Groups) > 0 {
 			for _, g := range quotaResp.Command.Data.Groups {
@@ -506,11 +550,19 @@ func Start(t ports.Transport) {
 				bldr.WriteString("\n")
 			}
 		} else if quotaRaw != "" {
-			bldr.WriteString("<b>Ответ agy:</b>\n<pre>")
-			bldr.WriteString(html.EscapeString(quotaRaw))
-			bldr.WriteString("</pre>\n\n")
+			agentTitle := "Ответ агента"
+			if ActiveAgentName == "claude" {
+				agentTitle = "Ответ Claude"
+			} else if ActiveAgentName == "agy" {
+				agentTitle = "Ответ agy"
+			}
+			bldr.WriteString(fmt.Sprintf("<b>%s:</b>\n<pre>%s</pre>\n\n", agentTitle, html.EscapeString(quotaRaw)))
 		} else if quotaErr != nil {
-			bldr.WriteString(fmt.Sprintf("⚠️ <i>Не удалось получить актуальные лимиты из agy: %s</i>\n\n", html.EscapeString(quotaErr.Error())))
+			agentTitle := ActiveAgentName
+			if agentTitle == "" {
+				agentTitle = "агента"
+			}
+			bldr.WriteString(fmt.Sprintf("⚠️ <i>Не удалось получить актуальные лимиты из %s: %s</i>\n\n", html.EscapeString(agentTitle), html.EscapeString(quotaErr.Error())))
 		}
 
 		if creditsErr == nil && creditsResp.Command.Name == "credits" {
@@ -2959,6 +3011,7 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "usage", Description: "Остаток квот и лимиты аккаунта"},
 		{Name: "models", Description: "Список доступных моделей"},
 		{Name: "model", Description: "[имя] Переключить активную модель"},
+		{Name: "agent", Description: "[agy|claude] Переключить активного CLI агента"},
 		{Name: "projects", Description: "Список доступных проектов"},
 		{Name: "use", Description: "<имя> Переключить активный проект"},
 		{Name: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},

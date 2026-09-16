@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"bro-bot/internal/models"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/utils"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,12 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"bro-bot/internal/models"
-	"bro-bot/internal/storage"
-	"bro-bot/internal/utils"
 	"time"
 )
-
 
 // UsageStats содержит статистику токенов от модели.
 type UsageStats struct {
@@ -52,16 +51,192 @@ type StreamEvent struct {
 	Result         *StreamResult     `json:"result"`
 }
 
-// ParseStreamEvent разбирает строку NDJSON от agy.
+// ParseStreamEvent разбирает строку NDJSON от agy или claude.
 func ParseStreamEvent(line string) (*StreamEvent, error) {
 	var evt StreamEvent
-	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+	if err := json.Unmarshal([]byte(line), &evt); err == nil && evt.Event != "" {
+		return &evt, nil
+	}
+
+	// Попытка разобрать как событие Claude Code CLI
+	if claudeEvt, err := parseClaudeStreamEvent(line); err == nil && claudeEvt != nil {
+		return claudeEvt, nil
+	}
+
+	return nil, fmt.Errorf("empty event")
+}
+
+// claudeRawEvent описывает NDJSON-событие Claude Code CLI при --output-format stream-json.
+type claudeRawEvent struct {
+	Type          string          `json:"type"`
+	Subtype       string          `json:"subtype"`
+	SessionID     string          `json:"session_id"`
+	Message       *claudeMessage  `json:"message"`
+	Result        string          `json:"result"`
+	IsError       bool            `json:"is_error"`
+	Errors        []string        `json:"errors"`
+	NumTurns      int             `json:"num_turns"`
+	DurationMs    float64         `json:"duration_ms"`
+	DurationAPIMs float64         `json:"duration_api_ms"`
+	Usage         *claudeUsage    `json:"usage"`
+}
+
+type claudeMessage struct {
+	Role    string               `json:"role"`
+	Content []claudeContentBlock `json:"content"`
+	Usage   *claudeUsage         `json:"usage"`
+}
+
+type claudeContentBlock struct {
+	Type  string                 `json:"type"` // "text", "tool_use", "thinking"
+	Text  string                 `json:"text,omitempty"`
+	ID    string                 `json:"id,omitempty"`
+	Name  string                 `json:"name,omitempty"`
+	Input map[string]interface{} `json:"input,omitempty"`
+}
+
+type claudeUsage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	OutputTokensDetails      *struct {
+		ThinkingTokens int64 `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
+}
+
+func (u *claudeUsage) toUsageStats() *UsageStats {
+	if u == nil {
+		return nil
+	}
+	stats := &UsageStats{
+		InputTokens:     u.InputTokens,
+		OutputTokens:    u.OutputTokens,
+		CacheReadTokens: u.CacheReadInputTokens,
+		TotalTokens:     u.InputTokens + u.OutputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
+	}
+	if u.OutputTokensDetails != nil {
+		stats.ThinkingTokens = u.OutputTokensDetails.ThinkingTokens
+	}
+	return stats
+}
+
+func parseClaudeStreamEvent(line string) (*StreamEvent, error) {
+	var raw claudeRawEvent
+	if err := json.Unmarshal([]byte(line), &raw); err != nil {
 		return nil, err
 	}
-	if evt.Event == "" {
-		return nil, fmt.Errorf("empty event")
+	if raw.Type == "" {
+		return nil, fmt.Errorf("empty type")
 	}
-	return &evt, nil
+
+	switch raw.Type {
+	case "system":
+		return &StreamEvent{
+			Event:          "init",
+			ConversationID: raw.SessionID,
+		}, nil
+
+	case "assistant":
+		if raw.Message == nil {
+			return &StreamEvent{
+				Event:          "assistant",
+				ConversationID: raw.SessionID,
+			}, nil
+		}
+
+		usage := raw.Message.Usage.toUsageStats()
+
+		// 1. Проверяем наличие вызова инструмента (tool_use)
+		for _, block := range raw.Message.Content {
+			if block.Type == "tool_use" {
+				return &StreamEvent{
+					Event:          "step_update",
+					ConversationID: raw.SessionID,
+					StepUpdate: &StreamStepUpdate{
+						ConversationID: raw.SessionID,
+						State:          "ACTIVE",
+						StepType:       "tool",
+						ToolName:       block.Name,
+						ToolInfo: &StreamToolInfo{
+							Name:       block.Name,
+							Parameters: block.Input,
+						},
+						Usage: usage,
+					},
+				}, nil
+			}
+		}
+
+		// 2. Проверяем текстовые блоки ответа (text)
+		var bldr strings.Builder
+		for _, block := range raw.Message.Content {
+			if block.Type == "text" && block.Text != "" {
+				bldr.WriteString(block.Text)
+			}
+		}
+		txt := bldr.String()
+		if txt != "" {
+			return &StreamEvent{
+				Event:          "step_update",
+				ConversationID: raw.SessionID,
+				StepUpdate: &StreamStepUpdate{
+					ConversationID: raw.SessionID,
+					State:          "ACTIVE",
+					StepType:       "agent_response",
+					TextDelta:      txt,
+					Usage:          usage,
+				},
+			}, nil
+		}
+
+		// Если нет текста и tool_use (например, только thinking), возвращаем шаг с usage
+		return &StreamEvent{
+			Event:          "step_update",
+			ConversationID: raw.SessionID,
+			StepUpdate: &StreamStepUpdate{
+				ConversationID: raw.SessionID,
+				State:          "ACTIVE",
+				StepType:       "agent_response",
+				Usage:          usage,
+			},
+		}, nil
+
+	case "result":
+		status := "COMPLETED"
+		if raw.IsError || raw.Subtype == "error_during_execution" || len(raw.Errors) > 0 {
+			status = "ERROR"
+		}
+		var errText string
+		if len(raw.Errors) > 0 {
+			errText = strings.Join(raw.Errors, "; ")
+		}
+
+		dur := raw.DurationMs / 1000.0
+		if dur <= 0 && raw.DurationAPIMs > 0 {
+			dur = raw.DurationAPIMs / 1000.0
+		}
+
+		return &StreamEvent{
+			Event:          "result",
+			ConversationID: raw.SessionID,
+			Result: &StreamResult{
+				ConversationID:  raw.SessionID,
+				Status:          status,
+				Error:           errText,
+				Response:        raw.Result,
+				DurationSeconds: dur,
+				NumTurns:        raw.NumTurns,
+				Usage:           raw.Usage.toUsageStats(),
+			},
+		}, nil
+
+	default:
+		return &StreamEvent{
+			Event:          raw.Type,
+			ConversationID: raw.SessionID,
+		}, nil
+	}
 }
 
 // StreamStepUpdate описывает обновление шага выполнения agy.
@@ -600,7 +775,6 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 		bldr.WriteString("Отправьте задачу боту сообщением в чат, чтобы начать работу!")
 	}
 
-
 	bldr.WriteString("\n\n💡 <i>Детализация контекстного окна модели: /context</i>")
 	return bldr.String()
 }
@@ -1004,21 +1178,37 @@ func FormatToolAction(name string, info *StreamToolInfo) string {
 	if info == nil || info.Parameters == nil {
 		return fmt.Sprintf("🔧 %s", name)
 	}
-	switch name {
+	switch strings.ToLower(name) {
 	case "run_command":
 		if cmd, ok := info.Parameters["CommandLine"].(string); ok && cmd != "" {
+			return fmt.Sprintf("⚡ %s", utils.TruncateString(cmd, 70))
+		}
+	case "bash":
+		if cmd, ok := info.Parameters["command"].(string); ok && cmd != "" {
+			return fmt.Sprintf("⚡ %s", utils.TruncateString(cmd, 70))
+		} else if cmd, ok := info.Parameters["CommandLine"].(string); ok && cmd != "" {
 			return fmt.Sprintf("⚡ %s", utils.TruncateString(cmd, 70))
 		}
 	case "replace_file_content":
 		if target, ok := info.Parameters["TargetFile"].(string); ok && target != "" {
 			return fmt.Sprintf("✏️ edit: %s", filepath.Base(target))
 		}
-	case "write_to_file":
+	case "edit":
+		if target, ok := info.Parameters["file_path"].(string); ok && target != "" {
+			return fmt.Sprintf("✏️ edit: %s", filepath.Base(target))
+		} else if target, ok := info.Parameters["TargetFile"].(string); ok && target != "" {
+			return fmt.Sprintf("✏️ edit: %s", filepath.Base(target))
+		}
+	case "write_to_file", "write":
 		if target, ok := info.Parameters["TargetFile"].(string); ok && target != "" {
 			return fmt.Sprintf("📝 write: %s", filepath.Base(target))
+		} else if target, ok := info.Parameters["file_path"].(string); ok && target != "" {
+			return fmt.Sprintf("📝 write: %s", filepath.Base(target))
 		}
-	case "view_file":
+	case "view_file", "read":
 		if path, ok := info.Parameters["AbsolutePath"].(string); ok && path != "" {
+			return fmt.Sprintf("👁 view: %s", filepath.Base(path))
+		} else if path, ok := info.Parameters["file_path"].(string); ok && path != "" {
 			return fmt.Sprintf("👁 view: %s", filepath.Base(path))
 		}
 	case "grep_search":
@@ -1028,6 +1218,14 @@ func FormatToolAction(name string, info *StreamToolInfo) string {
 	case "find_by_name":
 		if pat, ok := info.Parameters["Pattern"].(string); ok && pat != "" {
 			return fmt.Sprintf("📁 find: %s", utils.TruncateString(pat, 50))
+		}
+	case "websearch":
+		if q, ok := info.Parameters["query"].(string); ok && q != "" {
+			return fmt.Sprintf("🔍 search: %s", utils.TruncateString(q, 50))
+		}
+	case "webfetch":
+		if u, ok := info.Parameters["url"].(string); ok && u != "" {
+			return fmt.Sprintf("🌐 fetch: %s", utils.TruncateString(u, 50))
 		}
 	}
 	return fmt.Sprintf("🔧 %s", name)

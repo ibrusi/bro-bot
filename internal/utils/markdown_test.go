@@ -352,4 +352,3 @@ func TestExtractQuestionFromResponse(t *testing.T) {
 		t.Errorf("expected early paragraphs to be excluded for long text, got %q", got)
 	}
 }
-

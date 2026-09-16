@@ -1,10 +1,10 @@
 package handlers
 
 import (
+	"bro-bot/internal/config"
 	"os"
 	"path/filepath"
 	"testing"
-	"bro-bot/internal/config"
 )
 
 func TestParseRepoURL(t *testing.T) {

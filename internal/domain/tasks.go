@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"bro-bot/internal/ports"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/utils"
 	"context"
 	"fmt"
 	"html"
@@ -10,9 +13,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"bro-bot/internal/ports"
-	"bro-bot/internal/storage"
-	"bro-bot/internal/utils"
 	"time"
 )
 
