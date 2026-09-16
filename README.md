@@ -4,92 +4,106 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)](https://kernel.org)
 
-**bro-bot** — это автономный сервис-мост на Go, соединяющий **Telegram** с агентной средой **Google Antigravity CLI (`agy`)** и **Claude Code CLI (`claude`)**. 
+**English** | [Русский](README.ru.md)
 
-Бот позволяет разработчику или команде управлять пулом проектов, ставить задачи на кодинг и рефакторинг, утверждать интерактивные планы реализации, отвечать на уточняющие вопросы агента, контролировать лимиты токенов и потребление ресурсов сервера — не покидая Telegram.
+**bro-bot** is an autonomous Go-based service bridge connecting **Telegram** with agentic developer environments: **Google Antigravity CLI (`agy`)** and **Claude Code CLI (`claude`)**.
 
----
+The bot empowers a developer or engineering team to manage a pool of projects, assign coding and refactoring tasks, approve interactive architectural plans, answer clarifying agent questions, inspect session transcripts, track token spending, and monitor server resource usage — all without leaving Telegram.
 
-## 📑 Содержание
-
-- [✨ Ключевые возможности](#-ключевые-возможности)
-- [🏗 Архитектура решения](#-архитектура-решения)
-- [📦 Системные требования](#-системные-требования)
-- [🚀 Установка и сборка](#-установка-и-сборка)
-- [⚙️ Конфигурация (.env)](#️-конфигурация-env)
-- [🛠 Настройка Systemd и автозапуска](#-настройка-systemd-и-автозапуска)
-- [💬 Справочник команд бота](#-справочник-команд-бота)
-- [📋 Регламент работы агента (AGENT.md)](#-регламент-работы-агента-agentmd)
-- [🤖 Системные настройки бота (GEMINI.md)](#-системные-настройки-бота-geminimd)
-- [🧪 Разработка и тестирование](#-разработка-и-тестирование)
-- [🔒 Безопасность](#-безопасность)
+> [!WARNING]
+> **Safety and Usage Disclaimer**:
+> - **Autonomous Command Execution**: `bro-bot` executes AI agent CLIs (`agy`, `claude`) with elevated system permissions (`--dangerously-skip-permissions`). Autonomous agents can run shell commands, alter source files, install dependencies, and push Git changes without manual approval for every action.
+> - **Access Control**: Strictly limit bot access using `TELEGRAM_ADMIN_ID`. Never run the bot under the `root` user account. Always review agent commits and Pull Requests before merging them into production.
+> - **Token Quotas & API Costs**: Autonomous agents make numerous calls to LLM APIs (Google Gemini, Anthropic Claude), consuming context, input, output, and reasoning (thinking) tokens. Regularly inspect quotas and credit balances in your provider dashboards.
+> - **Disclaimer of Warranty (AS IS)**: This software is provided "as is", without warranty of any kind, express or implied. The authors and contributors are not liable for any data loss, system disruption, or financial expenses resulting from its use.
 
 ---
 
-## ✨ Ключевые возможности
+## 📑 Table of Contents
 
-- **Управление проектами и репозиториями**:
-  - Быстрое переключение активного рабочего проекта (`/projects`, `/use <имя>`).
-  - Клонирование Git-репозиториев по SSH или HTTPS на лету (`/clone <url> [имя]`) с автоматической подстановкой шаблона инструкций `AGENT.md`.
-- **Интеллектуальный пайплайн задач**:
-  - Поддержка независимых очередей задач по проектам.
-  - Режим предварительного планирования (`/plan <задача>`, `/planmode [on|off]`): агент сначала составляет и аргументирует архитектурный план, запрашивает подтверждение через интерактивные inline-кнопки (`/approve`, `/confirm`) и только потом приступает к коду.
-  - Пауза и возобновление (`/pause [id]`, `/resume [id] [ответ]`).
-  - Живой стриминг статуса выполнения, последних логов и текущего шага (`/status [id]`, `/tasks`).
-  - Возможность отмены зависших или неактуальных задач (`/cancel [id]`).
-- **Интерактивные диалоги и вопросы агента (`ask_question`)**:
-  - Если агенту требуются уточнения, бот формирует опрос с кнопками вариантов выбора прямо в Telegram.
-  - Возможность ответить обычным текстом, через Reply на сообщение задачи или командой `/add [id] <текст>`.
-  - Автоматический таймаут (`QUESTION_TIMEOUT`): если ответа нет в течение заданного времени, задача переводится на паузу и разблокирует очередь для других задач.
-- **Динамический реестр моделей**:
-  - Автоматическое получение списка доступных моделей из CLI (`agy models`) с кэшированием и механизмом фоллбека.
-  - Поддержка удобных алиасов: `default`, `flash`, `flash-high`, `flash-low`, `pro`, `pro-low`, `sonnet`, `opus`, `oss`.
-  - Мгновенная смена активной модели (`/models`, `/model <имя|алиас>`).
-- **Мониторинг квот, токенов и контекста**:
-  - `/usage` (или `/limits`) — актуальные остатки квот и баланс кредитов аккаунта Antigravity (`agy /quota`, `agy /credits`).
-  - `/tokens` (или `/stats`) — детальная статистика расхода токенов текущей/завершенной задачи: входные (Input), выходные (Output), токены рассуждения (Thinking), чтение из кэша (Cache Read) и процент кэш-хитов (Cache Hit Rate).
-  - `/context [id]` — наглядная диаграмма заполнения контекстного окна модели (исходные инструкции, история диалога, вывод инструментов).
-  - `/top` (или `/ps`, `/resources`) — мониторинг нагрузки хоста в реальном времени: CPU, RAM, свободное место на диске, Load Average, метрики cgroup службы systemd и процессы агентов `agy` и `claude`.
-- **Горячее обновление и пересборка (CI/CD прямо в боте)**:
-  - `/restart` — корректный неблокирующий перезапуск службы systemd.
-  - `/rebuild [ветка] [--pull] [--force]` — обновление кода бота из Git, компиляция нового бинарника, атомарная замена файла и перезапуск с отправкой уведомления об успешном старте и хэше коммита.
+- [⚠️ Disclaimer](#️-disclaimer)
+- [✨ Key Features](#-key-features)
+- [🏗 Architecture](#-architecture)
+- [📦 System Requirements](#-system-requirements)
+- [🚀 Installation & Build](#-installation--build)
+- [⚙️ Configuration (.env)](#️-configuration-env)
+- [🛠 Systemd Setup & Autostart](#-systemd-setup--autostart)
+- [💬 Bot Command Reference](#-bot-command-reference)
+- [📋 Agent Guidelines (AGENT.md)](#-agent-guidelines-agentmd)
+- [🤖 Bot System Instructions (GEMINI.md / AGENTS.md)](#-bot-system-instructions-geminimd--agentsmd)
+- [🧪 Development & Testing](#-development--testing)
+- [🔒 Security](#-security)
+- [📄 License](#-license)
 
 ---
 
-## 🏗 Архитектура решения
+## ✨ Key Features
+
+- **Project and Repository Management**:
+  - Instant switching between active project workspaces (`/projects`, `/use <name>`).
+  - On-the-fly Git cloning over SSH or HTTPS (`/clone <url> [name]`) with automatic provisioning of the `AGENT.md` rules template.
+- **Intelligent Task Pipeline**:
+  - Independent, per-project task queues.
+  - Pre-planning mode (`/plan <task>`, `/planmode [on|off]`): the agent inspects the repository, composes and justifies an architectural plan, awaits user confirmation via interactive inline buttons (`/approve`, `/confirm`), and only then starts writing code.
+  - Pause and resume (`/pause [id]`, `/resume [id] [answer]`).
+  - Live execution streaming, recent logs, and step tracking (`/status [id]`, `/tasks`).
+  - Dialogue transcript inspection (`/history [id]`): view the full conversation and agent actions directly from the session logs.
+  - Safe cancellation of stuck or outdated tasks (`/cancel [id]`).
+- **Interactive Dialogues & Clarifying Questions (`ask_question`)**:
+  - When the agent requires clarification, the bot presents a multi-choice poll with buttons directly in Telegram.
+  - Flexible reply options: plain text messages, Telegram Reply to task notifications, or the `/add [id] <text>` command.
+  - Configurable timeout (`QUESTION_TIMEOUT`): if no response is received in time, the task automatically pauses to unblock the project queue for other tasks.
+- **Dynamic Model Registry**:
+  - Automatic discovery of available models from the CLI (`agy models`) with disk caching and fallback mechanisms.
+  - Convenient aliases: `default`, `flash`, `flash-high`, `flash-low`, `pro`, `pro-low`, `sonnet`, `opus`, `oss`.
+  - Instant model switching (`/models`, `/model <name|alias>`).
+  - Multi-agent toggle (`/agent <agy|claude>`).
+- **Quota, Token & Resource Monitoring**:
+  - `/usage` (or `/limits`) — live quota limits and credit balances (`agy /quota`, `agy /credits`).
+  - `/tokens` (or `/stats`) — granular token statistics for the current/completed task: Input, Output, Thinking, Cache Read, and Cache Hit Rate.
+  - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
+  - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, and active `agy`/`claude` processes.
+- **Hot-Rebuild & In-Bot CI/CD**:
+  - `/restart` — clean, non-blocking systemd service restart.
+  - `/rebuild [branch] [--pull] [--force]` — pulls latest code from Git, compiles a fresh Go binary, atomically replaces the executable, restarts the service, and sends a Telegram notification with the new commit hash upon startup.
+
+---
+
+## 🏗 Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│              Telegram Client (или другой мессенджер)     │
+│              Telegram Client (or other messenger)        │
 └────────────────────────────┬─────────────────────────────┘
                              │  HTTPS / Long Polling
                              ▼
 ┌──────────────────────────────────────────────────────────┐
-│  internal/adapters/telegram/  ──► ports.Transport impl.   │
-│  (единственный пакет, знающий про gopkg.in/telebot.v3;    │
-│   новый мессенджер = новый пакет здесь же, по образцу)    │
+│  internal/adapters/telegram/  ──► ports.Transport impl.  │
+│  (the only package importing gopkg.in/telebot.v3;        │
+│   new messenger = new package here, following pattern)   │
 └────────────────────────────┬─────────────────────────────┘
                              │ internal/ports (Messenger, Transport, Session)
                              ▼
 ┌──────────────────────────────────────────────────────────┐
 │                 bro-bot (Go Executable)                  │
 │                                                          │
-│  internal/handlers/  ──► Команды и колбэки (мессенджеро-  │
-│                           независимо, через ports.Session)│
+│  internal/handlers/  ──► Commands & callbacks (agnostic   │
+│                           via ports.Session)             │
 │  internal/domain/    ──► Task Queue, Sessions & Tokens   │
 │  internal/storage/   ──► SQLite Persistence & Migrations │
 │  internal/models/    ──► Model Registry & Aliases        │
 │  internal/system/    ──► Hot-Rebuild, Systemd & Top/PS   │
-│  internal/utils/     ──► Rich-текст (HTML-подмножество)/  │
-│                           Markdown парсер                │
+│  internal/utils/     ──► Rich-text (HTML subset) &       │
+│                           Markdown parser                │
 └──────────────┬─────────────────────────────┬─────────────┘
                │ PTY (Pseudo-Terminal)       │ Git / FS
                ▼                             ▼
 ┌──────────────────────────────┐ ┌─────────────────────────┐
 │   Antigravity CLI (agy)      │ │   Projects Root Dir     │
-│  --stream-json / subagents   │ │   /home/deploy/projects │
-│  Autonomous Coding Agent     │ │   ├── project-1/        │
-└──────────────────────────────┘ │   └── project-2/        │
+│   Claude Code CLI (claude)   │ │   /home/deploy/projects │
+│  --stream-json / subagents   │ │   ├── project-1/        │
+│  Autonomous Coding Agent     │ │   └── project-2/        │
+└──────────────────────────────┘ │                         │
                                  └─────────────────────────┘
                                              ▲
                                              │ WAL Mode
@@ -99,89 +113,93 @@
                                  └─────────────────────────┘
 ```
 
-Каждая задача изолируется в псевдотерминале (PTY) с передачей параметров:
+Each task runs inside an isolated pseudo-terminal (PTY) with invocation flags:
 `agy --dangerously-skip-permissions --print-timeout 30m --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
 
-Бот парсит потоковый NDJSON-вывод `stream-json`, перехватывает шаги рассуждений, вызовы инструментов и события завершения, транслируя их в удобные сообщения.
+The bot parses the NDJSON `stream-json` stream, intercepts thinking phases, tool calls, and completion events, and formats them into intuitive Telegram updates.
 
-### Абстракция мессенджера
+### Messenger Abstraction
 
-Весь код бота (`internal/handlers`, `internal/domain`, `internal/system`) общается с мессенджером только через интерфейсы `ports.Messenger` (отправка/редактирование сообщений, документы, инлайн-кнопки) и `ports.Transport` (приём команд, текста и колбэков). Единственная реализация на сегодня — `internal/adapters/telegram`, и только этот пакет импортирует `gopkg.in/telebot.v3`. Переменная окружения `MESSENGER` (по умолчанию `telegram`) выбирает адаптер в `cmd/bot/main.go`. Чтобы добавить новый мессенджер, нужно реализовать `ports.Transport` в новом пакете `internal/adapters/<name>/` и зарегистрировать его в `cmd/bot/main.go` — код хендлеров при этом не меняется.
+All core logic (`internal/handlers`, `internal/domain`, `internal/system`) interacts with the messaging platform through abstract interfaces:
+- `ports.Messenger`: sending/editing messages, sending documents, and managing inline keyboards.
+- `ports.Transport`: routing commands, incoming text messages, and inline callback queries.
 
----
-
-## 📦 Системные требования
-
-- **Операционная система**: Linux (Ubuntu 22.04+, Debian 11+, RHEL/Rocky 9+).
-- **Go**: Версия `1.23` или выше.
-- **Git**: Установленный и настроенный Git.
-- **GitHub CLI (`gh`)**: Установлен и авторизован (`gh auth login`) для автоматического создания Pull Request.
-- **SSH-ключи**: Добавлены на GitHub / GitLab для клонирования и пуша веток проектов.
-- **Google Antigravity CLI (`agy`)**: Установлен, добавлен в `$PATH` пользователя (например, `/home/deploy/.local/bin/agy`) и авторизован.
-- **Telegram Bot Token**: Создан через [@BotFather](https://t.me/BotFather).
-- **Telegram User ID**: Числовой ID вашего аккаунта (узнать можно у [@userinfobot](https://t.me/userinfobot)).
+The current implementation is `internal/adapters/telegram`, which isolates `gopkg.in/telebot.v3`. The `MESSENGER` environment variable (defaults to `telegram`) selects the active transport in `cmd/bot/main.go`. Adding support for Discord, Slack, or Mattermost simply requires implementing `ports.Transport` in `internal/adapters/<name>/` without altering handler code.
 
 ---
 
-## 🚀 Установка и сборка
+## 📦 System Requirements
 
-### 1. Клонирование репозитория
+- **Operating System**: Linux (Ubuntu 22.04+, Debian 11+, RHEL/Rocky 9+).
+- **Go**: Version `1.23` or higher.
+- **Git**: Installed and configured.
+- **GitHub CLI (`gh`)**: Installed and authenticated (`gh auth login`) to enable automatic Pull Request creation.
+- **SSH Keys**: Configured on GitHub / GitLab for cloning and pushing project repositories.
+- **Agent CLI**: Google Antigravity CLI (`agy`) and/or Claude Code CLI (`claude`), installed, authenticated, and available in the user's `$PATH` (e.g., `/home/deploy/.local/bin/agy`).
+- **Telegram Bot Token**: Created via [@BotFather](https://t.me/BotFather).
+- **Telegram User ID**: Numeric account ID (obtainable via [@userinfobot](https://t.me/userinfobot)).
+
+---
+
+## 🚀 Installation & Build
+
+### 1. Clone the Repository
 
 ```bash
-# Рекомендуемый путь установки: /home/deploy/bro-bot
+# Recommended installation directory: /home/deploy/bro-bot
 cd /home/deploy
 git clone git@github.com:ibrusi/bro-bot.git
 cd bro-bot
 ```
 
-### 2. Создание каталога проектов
+### 2. Create Projects Workspace Directory
 
-Создайте каталог, где будут располагаться управляемые ботом проекты (по умолчанию `/home/deploy/projects`):
+Create the directory where your target projects will reside (default: `/home/deploy/projects`):
 
 ```bash
 mkdir -p /home/deploy/projects
 ```
 
-### 3. Сборка проекта
+### 3. Build the Application
 
-Загрузите зависимости Go и соберите исполняемый файл:
+Download dependencies and compile the Go executable:
 
 ```bash
 go mod download
 go build -o bot ./cmd/bot
 ```
 
-В каталоге появится исполняемый файл `bot`.
+The compiled `bot` binary will be created in the current directory.
 
 ---
 
-## ⚙️ Конфигурация (.env)
+## ⚙️ Configuration (.env)
 
-Создайте файл `.env` в корне каталога бота на основе примера `.env.example`:
+Create a `.env` file in the root of the project using `.env.example` as a template:
 
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-### Таблица переменных окружения
+### Environment Variables Table
 
-| Переменная | Обязательная | Значение по умолчанию | Описание |
+| Variable | Required | Default | Description |
 |---|:---:|:---:|---|
-| `MESSENGER` | Нет | `telegram` | Мессенджер-адаптер из `internal/adapters/`, который использует бот (см. [Абстракция мессенджера](#абстракция-мессенджера)). Сейчас поддерживается только `telegram`. |
-| `TELEGRAM_BOT_TOKEN` | **Да** | — | Токен Telegram-бота, полученный от [@BotFather](https://t.me/BotFather). |
-| `TELEGRAM_ADMIN_ID` | **Да** | — | Числовой Telegram ID администратора. Бот принимает команды **только** от этого пользователя, все остальные игнорируются. |
-| `PROJECTS_ROOT` | **Да** | — | Абсолютный путь к каталогу, где хранятся репозитории рабочих проектов. |
-| `SCRIPTS_DIR` | Нет | `scripts` | Абсолютный путь к каталогу, где хранятся пользовательские скрипты для команды `/script`. По умолчанию используется папка `scripts` в корне проекта. |
-| `DEFAULT_PROJECT` | Нет | Первая папка в `PROJECTS_ROOT` | Имя проекта (подпапки в `PROJECTS_ROOT`), выбираемого активным при старте. Если не задано, бот использует первую найденную папку. |
-| `DEFAULT_MODEL` | **Да** | — | Модель по умолчанию для `agy` (например `gemini-3.1-pro-high`, `flash`, `sonnet`, `opus`). |
-| `QUESTION_TIMEOUT` | **Да** | — | Таймаут ожидания ответа на вопрос агента (`ask_question`). Поддерживает форматы `15m`, `300s`, `1h` или число секунд. По истечении задача ставится на паузу. |
-| `STEP_TIMEOUT` | Нет | `30m` | Таймаут выполнения одного шага агента `agy` (`--print-timeout`). Поддерживает форматы `30m`, `1h`, `1800s` или секунды. При превышении задача ставится на паузу с сохранением сессии `agy`. |
-| `BOT_DIR` | Нет | Автоопределение | Путь к исходному коду бота для выполнения команд `/rebuild` и сохранения маркера перезапуска. |
-| `BOT_SERVICE_NAME` | **Да** | — | Имя службы systemd для перезапуска через команды `/restart` и `/rebuild`. |
-| `SQLITE_DB_PATH` | Нет | `data/bot.db` | Путь к файлу базы данных SQLite для персистентного хранения задач, архитектурных планов, логов, метрик и настроек бота. |
+| `MESSENGER` | No | `telegram` | Messenger adapter from `internal/adapters/` (see [Messenger Abstraction](#messenger-abstraction)). Currently `telegram` is supported. |
+| `TELEGRAM_BOT_TOKEN` | **Yes** | — | Telegram Bot API token from [@BotFather](https://t.me/BotFather). |
+| `TELEGRAM_ADMIN_ID` | **Yes** | — | Numeric Telegram ID of the administrator. The bot only accepts commands and replies from this user. |
+| `PROJECTS_ROOT` | **Yes** | — | Absolute path to the directory hosting managed Git project repositories. |
+| `SCRIPTS_DIR` | No | `scripts` | Absolute or relative path to directory containing custom scripts for `/script`. |
+| `DEFAULT_PROJECT` | No | First folder in `PROJECTS_ROOT` | Name of the project directory active by default upon startup. |
+| `DEFAULT_MODEL` | **Yes** | — | Default model for `agy` (e.g. `gemini-3.1-pro-high`, `flash`, `sonnet`, `opus`). |
+| `QUESTION_TIMEOUT` | **Yes** | — | Timeout waiting for user response to agent questions (`ask_question`). Formats: `15m`, `300s`, `1h`, or seconds. When elapsed, the task pauses. |
+| `STEP_TIMEOUT` | No | `30m` | Execution timeout for a single agent step (`--print-timeout`). Formats: `30m`, `1h`, `1800s`, or seconds. When exceeded, the task is paused while preserving the session. |
+| `BOT_DIR` | No | Auto-detected | Path to the bot's source code for `/rebuild` and storing restart markers. |
+| `BOT_SERVICE_NAME` | **Yes** | — | Name of the systemd service unit for `/restart` and `/rebuild`. |
+| `SQLITE_DB_PATH` | No | `data/bot.db` | Path to the SQLite database file for persistent tasks, plans, logs, and settings. |
 
-### Пример `.env`
+### Example `.env`
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
@@ -198,13 +216,13 @@ SQLITE_DB_PATH=data/bot.db
 
 ---
 
-## 🛠 Настройка Systemd и автозапуска
+## 🛠 Systemd Setup & Autostart
 
-Для круглосуточной стабильной работы и корректного функционирования команд `/restart` и `/rebuild` рекомендуется настроить systemd-сервис.
+For production reliability and to enable `/restart` and `/rebuild`, run the bot as a systemd service.
 
-### 1. Создание сервиса `/etc/systemd/system/bro-bot.service`
+### 1. Create `/etc/systemd/system/bro-bot.service`
 
-Создайте файл сервиса с помощью `sudo`:
+Create the service file using `sudo`:
 
 ```ini
 [Unit]
@@ -219,7 +237,7 @@ Group=deploy
 WorkingDirectory=/home/deploy/bro-bot
 
 EnvironmentFile=/home/deploy/bro-bot/.env
-# Убедитесь, что в PATH входят пути к go, agy и пользовательским бинарникам
+# Ensure PATH contains go, agy, claude, and user binaries
 Environment="PATH=/usr/local/go/bin:/home/deploy/go/bin:/home/deploy/.local/bin:/usr/bin:/bin"
 
 ExecStart=/home/deploy/bro-bot/bot
@@ -236,177 +254,185 @@ KillMode=mixed
 WantedBy=multi-user.target
 ```
 
-### 2. Настройка прав `sudoers` для перезапуска сервиса
+### 2. Configure `sudoers` for Service Restart
 
-Команды бота `/restart` и `/rebuild` выполняют `sudo systemctl restart bro-bot.service`. Чтобы бот мог перезапускать себя без запроса пароля, добавьте правило в sudoers:
+The bot's `/restart` and `/rebuild` commands execute `sudo systemctl restart bro-bot.service`. Grant passwordless restart permissions to the user:
 
 ```bash
 sudo visudo -f /etc/sudoers.d/bro-bot
 ```
 
-Добавьте строку (замените `deploy` на имя вашего пользователя):
+Add the following rule (replace `deploy` with your actual system username):
 
 ```sudoers
 deploy ALL=(ALL) NOPASSWD: /bin/systemctl restart bro-bot.service, /usr/bin/systemctl restart bro-bot.service
 ```
 
-### 3. Запуск и проверка службы
+### 3. Start and Verify the Service
 
 ```bash
-# Перечитать конфигурацию systemd
+# Reload systemd daemon
 sudo systemctl daemon-reload
 
-# Включить автозапуск и запустить службу
+# Enable and start the service
 sudo systemctl enable --now bro-bot.service
 
-# Проверить статус
+# Check service status
 sudo systemctl status bro-bot.service
 
-# Просмотр логов в реальном времени
+# Follow real-time logs
 journalctl -u bro-bot.service -f
 ```
 
 ---
 
-## 💬 Справочник команд бота
+## 💬 Bot Command Reference
 
-Бот управляется текстовыми сообщениями и slash-командами в чате Telegram.
+The bot is operated via text messages and slash commands in Telegram.
 
-### 📌 Управление задачами и планированием
+### 📌 Task Management & Planning
 
-| Команда | Описание | Пример |
+| Command | Description | Example |
 |---|---|---|
-| `сообщение` | Отправка текста напрямую создает и запускает задачу в текущем активном проекте. | `Добавь логгирование запросов в middleware` |
-| `/plan [проект] <текст>` | Запуск задачи в режиме предварительного планирования (агент исследует репозиторий, формирует план и ждет подтверждения). | `/plan Спроектируй архитектуру кэширования` |
-| `/planmode [on\|off]` | Включение/выключение обязательного режима планирования для всех входящих задач. | `/planmode on` |
-| `/approve [id]` (или `/confirm`) | Утвердить предложенный агентом план задачи и запустить реализацию. | `/approve 3` |
-| `/tasks` | Список всех задач текущей сессии с их статусами и кнопками быстрого фокуса. | `/tasks` |
-| `/task <id> [текст]` | Переключить контекст на конкретную задачу или отправить ей дополнение. | `/task 2 обнови только README` |
-| `/add [id] <текст>` | Отправить уточнение или дополнение к выполняющейся задаче. | `/add 1 также напиши тесты на хэндлер` |
-| `/new [проект] [агент] <текст>` | Создать новую задачу явно (с возможностью указать проект и/или агента отличных от текущих). | `/new my-service claude оптимизируй SQL запросы` |
-| `/pause [id]` | Приостановить выполнение задачи (разблокирует очередь проекта для других задач). | `/pause 1` |
-| `/resume [id] [ответ]` | Возобновить выполнение приостановленной задачи (по таймауту вопроса или таймауту шага `agy`) с сохранением сессии и контекста. | `/resume 1 используй второй вариант` |
-| `/retry [id]` | Перезапустить задачу с чистой сессией `agy` (сбросить `conversation_id`, если нужно начать выполнение с чистого листа). | `/retry 2` |
-| `/status [id]` | Подробный статус задачи: модель, сессия `agy`, затраченное время, последние логи, очередь правок. | `/status 2` |
-| `/cancel [id]` | Прервать и отменить выполнение задачи. | `/cancel 2` |
+| `<message>` | Direct text creates and starts a task in the active project. | `Add request logging middleware` |
+| `/plan [project] <task>` | Start a task in pre-planning mode (agent inspects repo, drafts a plan, and awaits approval). | `/plan Design distributed caching architecture` |
+| `/planmode [on\|off]` | Toggle mandatory planning mode for all incoming tasks. | `/planmode on` |
+| `/approve [id]` (or `/confirm`) | Approve the agent's proposed architectural plan and trigger implementation. | `/approve 3` |
+| `/tasks` | List all tasks in the current session with statuses and quick focus buttons. | `/tasks` |
+| `/task <id> [text]` | Switch focus to a specific task or append additional instructions. | `/task 2 update only the README` |
+| `/add [id] <text>` | Send clarification or follow-up instructions to an active task. | `/add 1 also write unit tests for the handler` |
+| `/new [project] [agent] <task>` | Explicitly create a new task (optionally specifying a different project or agent). | `/new my-service claude optimize SQL queries` |
+| `/pause [id]` | Pause a running task (unblocks the project queue for other tasks). | `/pause 1` |
+| `/resume [id] [answer]` | Resume a paused task (paused by question timeout or step timeout) preserving session context. | `/resume 1 use the second approach` |
+| `/retry [id]` | Restart a task with a fresh agent session (resets `conversation_id`). | `/retry 2` |
+| `/status [id]` | Comprehensive status of a task: model, session ID, duration, recent logs, queue info. | `/status 2` |
+| `/history [id]` | View the full transcript of user and agent messages for a task session. | `/history 2` |
+| `/cancel [id]` | Cancel and terminate task execution. | `/cancel 2` |
 
-> 💡 **Совет:** Вы можете отвечать на любые сообщения бота о задаче через стандартный **Reply** (ответить на сообщение) в Telegram — бот автоматически направит ваш ответ нужной задаче!
+> 💡 **Tip:** You can reply to any bot notification about a task using standard Telegram **Reply** — the bot will route your response directly to that task!
 
 ---
 
-### 📂 Управление проектами и репозиториями
+### 📂 Project & Repository Management
 
-| Команда | Описание | Пример |
+| Command | Description | Example |
 |---|---|---|
-| `/projects` | Показать список доступных проектов в `PROJECTS_ROOT` с отметкой текущего активного. | `/projects` |
-| `/use <имя>` | Переключить текущий активный проект. | `/use my-backend-api` |
-| `/clone <url> [имя]` | Склонировать репозиторий по SSH или HTTPS в каталог `PROJECTS_ROOT`. | `/clone git@github.com:org/repo.git my-repo` |
+| `/projects` | List all available projects in `PROJECTS_ROOT` with the active one highlighted. | `/projects` |
+| `/use <name>` | Switch active working project. | `/use my-backend-api` |
+| `/clone <url> [name]` | Clone a repository via SSH or HTTPS into `PROJECTS_ROOT`. | `/clone git@github.com:org/repo.git my-repo` |
 
 ---
 
-### 🧠 Модели, квоты и ресурсы
+### 🧠 Models, Quotas & Resources
 
-| Команда | Описание | Пример |
+| Command | Description | Example |
 |---|---|---|
-| `/models` | Список всех доступных моделей из Antigravity CLI с их описанием и алиасами. | `/models` |
-| `/model [имя]` | Переключить активную модель для будущих задач. | `/model flash` или `/model claude-sonnet-4-6` |
-| `/agent [имя]` | Переключить активного агента между agy и claude. | `/agent claude` |
-| `/usage` (или `/limits`) | Проверить остаток бесплатных квот и платных кредитов Antigravity. | `/usage` |
-| `/tokens` (или `/stats`) | Статистика токенов текущей задачи: Input, Output, Thinking, Cache Read и Hit Rate. | `/tokens` |
-| `/context [id]` | Диаграмма заполнения окна контекста модели текущей или указанной задачи. | `/context` |
-| `/top` (или `/ps`, `/resources`) | Мониторинг ресурсов сервера: нагрузка CPU, память RAM, свободное место на диске, Load Avg, cgroup и процессы `agy` и `claude`. | `/top` |
+| `/models` | List all available models from the agent CLI with descriptions and aliases. | `/models` |
+| `/model [name]` | Switch active model for future tasks. | `/model flash` or `/model claude-sonnet-4-6` |
+| `/agent [name]` | Switch the active agent engine (`agy` or `claude`). | `/agent claude` |
+| `/usage` (or `/limits`) | Check remaining free quotas and paid credit balances for Antigravity. | `/usage` |
+| `/tokens` (or `/stats`) | Token usage stats for the task: Input, Output, Thinking, Cache Read, and Hit Rate. | `/tokens` |
+| `/context [id]` | Visual breakdown of model context window utilization. | `/context` |
+| `/top` (or `/ps`, `/resources`) | Real-time server telemetry: CPU, RAM, disk space, Load Average, cgroup, and agent processes. | `/top` |
 
 ---
 
-### ⚙️ Управление процессом бота
+### ⚙️ Bot Process Management
 
-| Команда | Описание | Пример |
+| Command | Description | Example |
 |---|---|---|
-| `/restart` | Безопасный перезапуск службы бота через `systemctl`. | `/restart` |
-| `/rebuild [ветка] [--pull] [--force]` | Обновление кода из Git, пересборка бинарника Go и перезапуск бота. | `/rebuild main --pull` |
-| `/script <имя>` | Запуск пользовательского скрипта из папки `SCRIPTS_DIR` и вывод результата. | `/script deploy.sh` |
+| `/restart` | Safely restart the bot service via `systemctl`. | `/restart` |
+| `/rebuild [branch] [--pull] [--force]` | Pull Git updates, rebuild the Go binary, and restart the bot. | `/rebuild main --pull` |
+| `/script <name>` | Execute a custom script from `SCRIPTS_DIR` and print output. | `/script deploy.sh` |
 
 ---
 
-## 📋 Регламент работы агента (AGENT.md)
+## 📋 Agent Guidelines (AGENT.md)
 
-В корне проектов репозиториев (включая этот проект) используется файл правил **`AGENT.md`** (с символической ссылкой **`AGENTS.md`**). Antigravity CLI автоматически считывает эти инструкции при запуске задач:
+Projects managed by `bro-bot` utilize an **`AGENT.md`** file (symlinked as **`AGENTS.md`**) in their repository root. The agent CLI automatically follows these instructions:
 
-1. **Режим планирования**:
-   - При выполнении этапа планирования агент не создает ветки, не меняет файлы и формирует четкий пошаговый план для утверждения пользователем.
-2. **Ветка разработки**:
-   - Для каждой задачи создается ветка от актуального `main`: `feat/краткое-описание` или `fix/краткое-описание`.
-3. **Разработка и качество**:
-   - Изменения покрываются тестами, запускаются линтеры проекта (`go test ./...`, `go vet ./...`).
-4. **Коммиты**:
-   - Коммиты оформляются строго по стандарту **Conventional Commits** (`feat: ...`, `fix: ...`, `docs: ...`, `refactor: ...`).
-5. **Pull Request и завершение**:
-   - Ветка пушится в удаленный репозиторий: `git push -u origin HEAD`.
-   - Создается PR через GitHub CLI: `gh pr create --fill`.
-   - В конце своего финального ответа агент обязательно выводит строчку:
+1. **Planning Mode**:
+   - In planning mode, the agent creates no branches, alters no code, and formulates a step-by-step implementation plan for user review.
+2. **Feature Branching**:
+   - Every task branches from up-to-date `main`: `feat/short-description` or `fix/short-description`.
+3. **Quality & Testing**:
+   - Changes must include test coverage and pass linters (`go test ./...`, `go vet ./...`).
+4. **Conventional Commits**:
+   - Commits follow the **Conventional Commits** specification (`feat: ...`, `fix: ...`, `docs: ...`, `refactor: ...`).
+5. **Pull Request & Completion**:
+   - The branch is pushed to origin: `git push -u origin HEAD`.
+   - A PR is created via GitHub CLI: `gh pr create --fill`.
+   - The agent prints a concluding marker:
      ```text
-     PR_URL: <полная ссылка на созданный PR>
+     PR_URL: <full link to the created PR>
      ```
-   - Бот перехватывает этот маркер регулярным выражением и отправляет ссылку на готовый PR пользователю в чат!
+   - The bot intercepts this URL via regex and sends a clickable link directly to the Telegram chat!
 
-> 💡 При клонировании новых проектов командой `/clone` бот автоматически проверяет наличие `AGENT.md` и копирует его из корня `PROJECTS_ROOT`, если в репозитории его еще нет.
-
----
-
-## 🤖 Системные настройки бота (GEMINI.md)
-
-Файл **`GEMINI.md`** содержит специфичные инструкции и контекст для интеллектуального агента (agy) при работе над кодовой базой самого проекта `bro-bot`.
-
-Ключевые особенности:
-1. **Знание конфигурации**: Агент ознакомлен со списком основных переменных окружения проекта (например, `TELEGRAM_ADMIN_ID`, `PROJECTS_ROOT`, `DEFAULT_MODEL`, `QUESTION_TIMEOUT`).
-2. **Строгая безопасность**: Внедрено жесткое правило, запрещающее агенту считывать, выводить или сохранять значение переменной `TELEGRAM_BOT_TOKEN`.
-3. **Автономный рабочий процесс**: Описывает строгий алгоритм работы агента над самим ботом (от режима планирования и создания веток до запуска линтеров и открытия PR).
+> 💡 When cloning a new project with `/clone`, the bot automatically checks for `AGENT.md` and copies it from `PROJECTS_ROOT` if absent.
 
 ---
 
-## 🧪 Разработка и тестирование
+## 🤖 Bot System Instructions (GEMINI.md / AGENTS.md)
 
-### Локальный запуск без systemd (режим разработки)
+The **`AGENTS.md`** (and **`GEMINI.md`**) file contains repository-specific instructions for agents working directly on the `bro-bot` codebase:
+1. **Configuration Awareness**: Familiarity with environment parameters (`TELEGRAM_ADMIN_ID`, `PROJECTS_ROOT`, `DEFAULT_MODEL`, etc.).
+2. **Strict Security**: Explicit prohibition against reading, printing, or storing `TELEGRAM_BOT_TOKEN`.
+3. **Autonomous Lifecycle**: Adherence to planning mode, automated branch creation, linting, tests, and PR generation.
+
+---
+
+## 🧪 Development & Testing
+
+### Local Run (Development Mode)
 
 ```bash
-# Экспорт переменных из .env и запуск
+# Export environment variables from .env and run
 set -a
 source .env
 set +a
 go run ./cmd/bot
 ```
 
-### Запуск тестов
+### Running Tests
 
-Проект имеет развитое тестовое покрытие для всех модулей (`handlers`, `models`, `system`, `domain`, `utils`):
+The codebase includes test coverage across all packages (`handlers`, `models`, `system`, `domain`, `adapters`, `utils`):
 
 ```bash
-# Запуск всех тестов проекта
+# Run all project tests
 go test -v ./...
 
-# Запуск статического анализатора кода
+# Run static analysis
 go vet ./...
 
-# Проверка покрытия тестами
+# Check test coverage
 go test -cover ./...
 ```
 
 ---
 
-## 🔒 Безопасность
+## 🔒 Security
 
-1. **Строгая авторизация по Telegram ID**:
-   - Middleware бота проверяет `c.Sender().ID == config.AdminID`.
-   - Любые сообщения, команды или callback-запросы от сторонних пользователей отбрасываются без обработки.
-2. **Безопасная работа с путями и именами**:
-   - Функции `sanitizeProjectName` и проверка `filepath.Clean` защищают от атак обхода каталогов (Path Traversal `../`).
-   - Имена проектов ограничены безопасным набором символов `[a-zA-Z0-9_\.\-]`.
-3. **Защита от инъекций аргументов**:
-   - Вызовы внешних утилит (`git`, `go`, `systemctl`, `agy`) выполняются напрямую через `exec.CommandContext` без использования небезопасной оболочки `sh -c`.
-   - Аргументы URL и пути экранируются разделителем `--`.
+1. **Strict Telegram ID Authorization**:
+   - Bot middleware verifies `c.Sender().ID == config.AdminID`.
+   - All messages, commands, or inline callbacks from unauthorized accounts are dropped silently.
+2. **Path Traversal Protection**:
+   - Project name sanitization (`sanitizeProjectName`) and `filepath.Clean` prevent path traversal attacks (`../`).
+   - Project identifiers are restricted to safe characters: `[a-zA-Z0-9_\.\-]`.
+3. **Command Injection Prevention**:
+   - Subprocesses (`git`, `go`, `systemctl`, `agy`) are executed directly via `exec.CommandContext` without an intervening shell (`sh -c`).
+   - URL and path arguments are isolated with the `--` delimiter.
 
 ---
 
-## 📄 Лицензия
+## ⚠️ Disclaimer
 
-Проект распространяется под лицензией MIT. Подробности см. в файле [LICENSE](LICENSE).
+- **Elevated Agent Privileges**: `bro-bot` invokes CLI agents (`agy` and `claude`) with the `--dangerously-skip-permissions` flag. This allows agents to execute terminal commands, modify files, install packages, and manage Git repositories without per-step manual confirmation. Always run the bot under a dedicated non-root user (e.g., `deploy`) with restricted `sudoers` rules.
+- **Verification Responsibility**: While agents run tests and linters per `AGENT.md`, final validation of generated code, commits, and Pull Requests remains the responsibility of the repository maintainer.
+- **Token Consumption**: Utilizing advanced LLMs (Gemini 3.1 Pro/Flash, Claude 3.7 Sonnet/Opus) incurs context and reasoning (thinking) token usage. Keep track of metrics via `/usage` and `/tokens` to prevent unexpected API expenses.
+- **AS-IS Disclaimer**: This open-source software is distributed under the MIT License on an "AS IS" basis, without warranties of any kind. The project authors accept no liability for data loss, system failure, account penalties, or financial expenses incurred through its operation.
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
