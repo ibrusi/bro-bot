@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"tg-agent-bot/internal/ports"
-	"tg-agent-bot/internal/storage"
-	"tg-agent-bot/internal/utils"
+	"bro-bot/internal/ports"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/utils"
 	"time"
 )
 

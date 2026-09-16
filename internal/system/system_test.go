@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"tg-agent-bot/internal/domain"
-	"tg-agent-bot/internal/ports"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/ports"
 	"time"
 )
 
@@ -232,10 +232,10 @@ func TestNormalizeGitURL(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"git@github.com:ibrusi/tg-bot-agent.git", "github.com/ibrusi/tg-bot-agent"},
-		{"https://github.com/ibrusi/tg-bot-agent.git", "github.com/ibrusi/tg-bot-agent"},
-		{"http://github.com/ibrusi/tg-bot-agent", "github.com/ibrusi/tg-bot-agent"},
-		{"ssh://git@github.com/ibrusi/tg-bot-agent.git", "github.com/ibrusi/tg-bot-agent"},
+		{"git@github.com:ibrusi/bro-bot.git", "github.com/ibrusi/bro-bot"},
+		{"https://github.com/ibrusi/bro-bot.git", "github.com/ibrusi/bro-bot"},
+		{"http://github.com/ibrusi/bro-bot", "github.com/ibrusi/bro-bot"},
+		{"ssh://git@github.com/ibrusi/bro-bot.git", "github.com/ibrusi/bro-bot"},
 		{"https://gitlab.com/group/sub/repo.git/", "gitlab.com/group/sub/repo"},
 	}
 
@@ -248,14 +248,14 @@ func TestNormalizeGitURL(t *testing.T) {
 }
 
 func TestIsBotProject(t *testing.T) {
-	if !isBotProject("tg-bot-agent", "/home/deploy/tg-agent-bot", "") {
-		t.Errorf("expected tg-bot-agent to be recognized as bot project")
+	if !isBotProject("bro-bot", "/home/deploy/bro-bot", "") {
+		t.Errorf("expected bro-bot to be recognized as bot project")
 	}
-	if !isBotProject("tg-agent-bot", "/home/deploy/tg-agent-bot", "") {
-		t.Errorf("expected tg-agent-bot to be recognized as bot project")
+	if !isBotProject("bro-bot", "/home/deploy/bro-bot", "") {
+		t.Errorf("expected bro-bot to be recognized as bot project")
 	}
-	if !isBotProject("/home/deploy/projects/tg-bot-agent", "/home/deploy/tg-agent-bot", "") {
-		t.Errorf("expected path to tg-bot-agent to be recognized as bot project")
+	if !isBotProject("/home/deploy/projects/bro-bot", "/home/deploy/bro-bot", "") {
+		t.Errorf("expected path to bro-bot to be recognized as bot project")
 	}
 	if !isBotProject("my-bot", "/opt/bots/my-bot", "") {
 		t.Errorf("expected basename match to be recognized as bot project")
@@ -281,16 +281,16 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	testTM := domain.NewTaskManager()
 	domain.GlobalTaskManager = testTM
 
-	warn, blocked := checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
+	warn, blocked := checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects")
 	if blocked || warn != "" {
 		t.Errorf("expected no block when no tasks active, got blocked=%v, warn=%s", blocked, warn)
 	}
 
 	// 2. Активная задача на проекте бота при /rebuild pull
-	task := testTM.CreateTask("tg-bot-agent", "gemini", "Делаем рефакторинг", ports.ChatID("123"))
+	task := testTM.CreateTask("bro-bot", "gemini", "Делаем рефакторинг", ports.ChatID("123"))
 	task.Status = domain.TaskStatusRunning
 
-	warn, blocked = checkActiveTasksForSystemAction("/rebuild pull", SystemFlags{}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
+	warn, blocked = checkActiveTasksForSystemAction("/rebuild pull", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects")
 	if !blocked {
 		t.Errorf("expected block for active task on bot project")
 	}
@@ -307,7 +307,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	task2 := testTM2.CreateTask("some-other-project", "gemini", "Фича для сайта", ports.ChatID("123"))
 	task2.Status = domain.TaskStatusRunning
 
-	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
+	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects")
 	if !blocked {
 		t.Errorf("expected block for active task on other project without force")
 	}
@@ -316,7 +316,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	}
 
 	// 4. Флаг Force отменяет задачи и разрешает выполнение
-	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{Force: true}, "/home/deploy/tg-agent-bot", "/home/deploy/projects")
+	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{Force: true}, "/home/deploy/bro-bot", "/home/deploy/projects")
 	if blocked || warn != "" {
 		t.Errorf("expected Force to allow operation, got blocked=%v, warn=%s", blocked, warn)
 	}

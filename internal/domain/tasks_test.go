@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"tg-agent-bot/internal/ports"
-	"tg-agent-bot/internal/storage"
+	"bro-bot/internal/ports"
+	"bro-bot/internal/storage"
 	"time"
 )
 

@@ -16,13 +16,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"tg-agent-bot/internal/config"
-	"tg-agent-bot/internal/domain"
-	"tg-agent-bot/internal/models"
-	"tg-agent-bot/internal/ports"
-	"tg-agent-bot/internal/storage"
-	"tg-agent-bot/internal/system"
-	"tg-agent-bot/internal/utils"
+	"bro-bot/internal/config"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/models"
+	"bro-bot/internal/ports"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/system"
+	"bro-bot/internal/utils"
 	"time"
 )
 
@@ -116,7 +116,7 @@ func Start(t ports.Transport) {
 
 	botDir := os.Getenv("BOT_DIR")
 	if botDir == "" {
-		botDir = "/home/deploy/tg-agent-bot"
+		botDir = "/home/deploy/bro-bot"
 	}
 	config.BotDir = botDir
 

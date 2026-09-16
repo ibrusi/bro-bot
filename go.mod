@@ -1,4 +1,4 @@
-module tg-agent-bot
+module bro-bot
 
 go 1.25.0
 

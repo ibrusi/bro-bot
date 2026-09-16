@@ -1,7 +1,7 @@
 package telegram
 
 import (
-	"tg-agent-bot/internal/utils"
+	"bro-bot/internal/utils"
 
 	tele "gopkg.in/telebot.v3"
 )

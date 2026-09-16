@@ -5,11 +5,11 @@ import (
 	"os"
 	"time"
 
-	"tg-agent-bot/internal/adapters/agy"
-	"tg-agent-bot/internal/adapters/telegram"
-	"tg-agent-bot/internal/handlers"
-	"tg-agent-bot/internal/models"
-	"tg-agent-bot/internal/ports"
+	"bro-bot/internal/adapters/agy"
+	"bro-bot/internal/adapters/telegram"
+	"bro-bot/internal/handlers"
+	"bro-bot/internal/models"
+	"bro-bot/internal/ports"
 )
 
 // buildTransport выбирает и инициализирует адаптер мессенджера по переменной окружения

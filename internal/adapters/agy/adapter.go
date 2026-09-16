@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"tg-agent-bot/internal/models"
-	"tg-agent-bot/internal/ports"
+	"bro-bot/internal/models"
+	"bro-bot/internal/ports"
 
 	"github.com/creack/pty"
 )

@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"tg-agent-bot/internal/config"
-	"tg-agent-bot/internal/ports"
+	"bro-bot/internal/config"
+	"bro-bot/internal/ports"
 	"time"
 )
 

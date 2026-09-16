@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"tg-agent-bot/internal/ports"
+	"bro-bot/internal/ports"
 
 	tele "gopkg.in/telebot.v3"
 )

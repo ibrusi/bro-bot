@@ -266,7 +266,7 @@ func TestStorageMetricsLastStep(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 
-	taskID, _ := s.CreateTask(ctx, &TaskRecord{Project: "tg-bot-agent", Model: "gemini-3.8-flash-high", Status: "completed"})
+	taskID, _ := s.CreateTask(ctx, &TaskRecord{Project: "bro-bot", Model: "gemini-3.8-flash-high", Status: "completed"})
 
 	m := &TokenMetricsRecord{
 		TaskID:                  taskID,
@@ -279,7 +279,7 @@ func TestStorageMetricsLastStep(t *testing.T) {
 		Turns:                   4,
 		ToolCallsCount:          6,
 		Model:                   "gemini-3.8-flash-high",
-		PRURL:                   "https://github.com/ibrusi/tg-bot-agent/pull/35",
+		PRURL:                   "https://github.com/ibrusi/bro-bot/pull/35",
 		ConversationID:          "3fac122e-6fca-4987-a072-b2c88051ac5e",
 		LastStepInputTokens:     3706,
 		LastStepOutputTokens:    1660,
@@ -346,7 +346,7 @@ func TestStorageSettings(t *testing.T) {
 		t.Fatalf("expected empty for unset key, got %q", val)
 	}
 
-	if err := s.SetSetting(ctx, "current_project", "tg-bot-agent"); err != nil {
+	if err := s.SetSetting(ctx, "current_project", "bro-bot"); err != nil {
 		t.Fatalf("SetSetting failed: %v", err)
 	}
 
@@ -354,8 +354,8 @@ func TestStorageSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSetting after set failed: %v", err)
 	}
-	if val != "tg-bot-agent" {
-		t.Fatalf("expected 'tg-bot-agent', got %q", val)
+	if val != "bro-bot" {
+		t.Fatalf("expected 'bro-bot', got %q", val)
 	}
 
 	// Update setting

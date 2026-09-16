@@ -3,7 +3,7 @@ package telegram
 import (
 	"testing"
 
-	"tg-agent-bot/internal/ports"
+	"bro-bot/internal/ports"
 
 	tele "gopkg.in/telebot.v3"
 )

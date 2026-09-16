@@ -331,7 +331,7 @@ func TestGetContextCommandMessageIdle(t *testing.T) {
 
 func TestGetContextCommandMessageActiveAndCompleted(t *testing.T) {
 	tracker := NewTokenTracker()
-	tracker.StartTask("tg-agent-bot", "flash", "Implement context")
+	tracker.StartTask("bro-bot", "flash", "Implement context")
 	tracker.SetConversationID("conv-uuid-12345")
 	tracker.RecordToolCall()
 
@@ -345,14 +345,14 @@ func TestGetContextCommandMessageActiveAndCompleted(t *testing.T) {
 
 	task := &TaskSession{
 		ID:             1,
-		Project:        "tg-agent-bot",
+		Project:        "bro-bot",
 		Model:          "gemini-3.8-flash-high",
 		Status:         TaskStatusRunning,
 		ConversationID: "conv-uuid-12345",
 	}
 
 	// 1. Active task
-	activeMsg := tracker.GetContextCommandMessage(task, "tg-agent-bot", "flash")
+	activeMsg := tracker.GetContextCommandMessage(task, "bro-bot", "flash")
 	if !strings.Contains(activeMsg, "Контекст активной задачи #1") {
 		t.Errorf("Expected active task header, got:\n%s", activeMsg)
 	}
@@ -377,7 +377,7 @@ func TestGetContextCommandMessageActiveAndCompleted(t *testing.T) {
 	task.Status = TaskStatusCompleted
 	task.TokenMetrics = &completed
 
-	compMsg := tracker.GetContextCommandMessage(task, "tg-agent-bot", "flash")
+	compMsg := tracker.GetContextCommandMessage(task, "bro-bot", "flash")
 	if !strings.Contains(compMsg, "Контекст задачи #1") {
 		t.Errorf("Expected completed task header, got:\n%s", compMsg)
 	}
@@ -391,14 +391,14 @@ func TestGetContextCommandMessage_Task4Scenario(t *testing.T) {
 
 	task := &TaskSession{
 		ID:             4,
-		Project:        "tg-bot-agent",
+		Project:        "bro-bot",
 		Model:          "gemini-3.8-flash-high",
 		Status:         TaskStatusCompleted,
 		ConversationID: "3fac122e-6fca-4987-a072-b2c88051ac5e",
 		TokenMetrics: &TaskTokenMetrics{
-			Project:         "tg-bot-agent",
+			Project:         "bro-bot",
 			Model:           "gemini-3.8-flash-high",
-			PRURL:           "https://github.com/ibrusi/tg-bot-agent/pull/35",
+			PRURL:           "https://github.com/ibrusi/bro-bot/pull/35",
 			ConversationID:  "3fac122e-6fca-4987-a072-b2c88051ac5e",
 			DurationSeconds: 1687.0,
 			Turns:           4,
@@ -420,7 +420,7 @@ func TestGetContextCommandMessage_Task4Scenario(t *testing.T) {
 		},
 	}
 
-	msg := tracker.GetContextCommandMessage(task, "tg-bot-agent", "gemini-3.8-flash-high")
+	msg := tracker.GetContextCommandMessage(task, "bro-bot", "gemini-3.8-flash-high")
 
 	// Verify that the context window reflects the 123.5k tokens (11.8%), NOT 25.4M / 2418%!
 	if strings.Contains(msg, "2418") || strings.Contains(msg, "25.4M") {
@@ -446,11 +446,11 @@ func TestGetContextCommandMessage_FallbackNeverExceeds100(t *testing.T) {
 	// Task with NO LastStepUsage and massive cumulative usage across 10 turns
 	task := &TaskSession{
 		ID:      5,
-		Project: "tg-bot-agent",
+		Project: "bro-bot",
 		Model:   "gemini-3.8-flash-high",
 		Status:  TaskStatusCompleted,
 		TokenMetrics: &TaskTokenMetrics{
-			Project: "tg-bot-agent",
+			Project: "bro-bot",
 			Model:   "gemini-3.8-flash-high",
 			Turns:   10,
 			Usage: UsageStats{
@@ -463,7 +463,7 @@ func TestGetContextCommandMessage_FallbackNeverExceeds100(t *testing.T) {
 		},
 	}
 
-	msg := tracker.GetContextCommandMessage(task, "tg-bot-agent", "gemini-3.8-flash-high")
+	msg := tracker.GetContextCommandMessage(task, "bro-bot", "gemini-3.8-flash-high")
 
 	if strings.Contains(msg, "30.0M") || strings.Contains(msg, "32.0M") {
 		t.Errorf("Fallback summed cumulative cache into context window:\n%s", msg)

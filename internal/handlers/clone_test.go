@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"tg-agent-bot/internal/config"
+	"bro-bot/internal/config"
 )
 
 func TestParseRepoURL(t *testing.T) {

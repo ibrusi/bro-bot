@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"sync"
 
-	"tg-agent-bot/internal/ports"
+	"bro-bot/internal/ports"
 )
 
 // SentMessage — одна запись из истории Messenger.Send.
