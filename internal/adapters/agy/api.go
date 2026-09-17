@@ -13,7 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/genai"
+	"github.com/google/generative-ai-go/genai"
+	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 )
 
 // AgyAPIAdapter реализует работу с Gemini API напрямую
@@ -129,8 +131,18 @@ func (p *AgyAPIProcess) Stdout() io.Reader {
 	return p.rPipe
 }
 
+type dummyWriter struct{}
+
+func (d dummyWriter) Write(b []byte) (n int, err error) {
+	return len(b), nil
+}
+
+func (d dummyWriter) Close() error {
+	return nil
+}
+
 func (p *AgyAPIProcess) Stdin() io.WriteCloser {
-	return p.wPipe
+	return dummyWriter{}
 }
 
 func (p *AgyAPIProcess) Wait() error {
@@ -160,24 +172,32 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, modelNa
 		close(p.doneChan)
 	}()
 
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: apiKey})
+	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
 		p.handleError(err)
 		return
 	}
+	defer client.Close()
 
 	initEvt := map[string]interface{}{
 		"type":       "system",
 		"session_id": p.sessionID,
 	}
 	initBytes, _ := json.Marshal(initEvt)
-	_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(initBytes))
+	if _, err := fmt.Fprintf(p.wPipe, "%s\n", string(initBytes)); err != nil {
+		return
+	}
 
-	stream := client.Models.GenerateContentStream(ctx, modelName, genai.Text(prompt), nil)
+	model := client.GenerativeModel(modelName)
+	stream := model.GenerateContentStream(ctx, genai.Text(prompt))
 
 	var textAccumulator strings.Builder
 
-	for resp, err := range stream {
+	for {
+		resp, err := stream.Next()
+		if err == iterator.Done {
+			break
+		}
 		if err != nil {
 			p.handleError(err)
 			return
@@ -186,24 +206,29 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, modelNa
 		for _, cand := range resp.Candidates {
 			if cand.Content != nil {
 				for _, part := range cand.Content.Parts {
-					if part.Text != "" {
-						textAccumulator.WriteString(part.Text)
+					if textPart, ok := part.(genai.Text); ok {
+						text := string(textPart)
+						if text != "" {
+							textAccumulator.WriteString(text)
 
-						msgEvt := map[string]interface{}{
-							"type":       "assistant",
-							"session_id": p.sessionID,
-							"message": map[string]interface{}{
-								"role": "assistant",
-								"content": []map[string]interface{}{
-									{
-										"type": "text",
-										"text": part.Text,
+							msgEvt := map[string]interface{}{
+								"type":       "assistant",
+								"session_id": p.sessionID,
+								"message": map[string]interface{}{
+									"role": "assistant",
+									"content": []map[string]interface{}{
+										{
+											"type": "text",
+											"text": text,
+										},
 									},
 								},
-							},
+							}
+							msgBytes, _ := json.Marshal(msgEvt)
+							if _, err := fmt.Fprintf(p.wPipe, "%s\n", string(msgBytes)); err != nil {
+								return
+							}
 						}
-						msgBytes, _ := json.Marshal(msgEvt)
-						_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(msgBytes))
 					}
 				}
 			}
