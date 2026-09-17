@@ -247,7 +247,7 @@ func Start(t ports.Transport) {
 				"• /projects — список доступных проектов\n"+
 				"• /use &lt;имя&gt; — переключить активный проект\n"+
 				"• /clone &lt;url&gt; [имя] — клонировать репозиторий\n"+
-				"• /restart, /rebuild — управление процессом бота\n\n"+
+				"• /restart, /rebuild [branch=имя] [pull] [force] — управление процессом и пересборка бота\n\n"+
 				"💡 <i>Отправьте задачу сообщением в чат. Для предварительного плана используйте /plan &lt;задача&gt;. Дополнения можно отправлять через /add [id] &lt;текст&gt; или ответом на сообщения бота.</i>",
 			html.EscapeString(curProj),
 			html.EscapeString(curMod),
@@ -3493,7 +3493,7 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "use", Description: "<имя> Переключить активный проект"},
 		{Name: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
 		{Name: "restart", Description: "Перезапустить бота"},
-		{Name: "rebuild", Description: "Собрать и перезапустить бота"},
+		{Name: "rebuild", Description: "[branch=имя] [pull] [force] Собрать и перезапустить бота"},
 		{Name: "start", Description: "Перезапуск и приветственное сообщение"},
 	}
 }
