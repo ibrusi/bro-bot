@@ -38,6 +38,8 @@ func TestModeCommandAndAgentSwitchWithMode(t *testing.T) {
 	defer st.Close()
 	domain.GlobalTaskManager.InitWithStorage(st)
 
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-123")
+
 	config.ProjectState.SetExecutionMode("api")
 	msg, err := SwitchActiveAgent("claude")
 	if err != nil {

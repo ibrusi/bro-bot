@@ -45,10 +45,8 @@ func (a *ClaudeAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 		apiKey = os.Getenv("CLAUDE_API_KEY")
 	}
 
-	// Если API ключ не передан в окружении, пробуем запустить CLI адаптер как фолбэк с информационным логом
 	if apiKey == "" {
-		cliAdapter := NewClaudeAdapter()
-		return cliAdapter.ExecuteTask(ctx, args)
+		return nil, fmt.Errorf("API ключ не найден. Задайте ANTHROPIC_API_KEY или CLAUDE_API_KEY в .env для работы в режиме API")
 	}
 
 	modelName := resolveClaudeModel(args.ModelName)

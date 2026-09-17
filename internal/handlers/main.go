@@ -459,15 +459,33 @@ func Start(t ports.Transport) {
 			return s.Send("❌ Неизвестный режим. Доступны: <code>cli</code>, <code>api</code>", ports.Rich())
 		}
 
+		if targetMode == "api" {
+			if ActiveAgentName == "agy" {
+				return s.Send("⚠️ Агент <b>agy</b> (Google Antigravity) пока поддерживает только режим <code>cli</code>.", ports.Rich())
+			}
+			if ActiveAgentName == "claude" {
+				apiKey := os.Getenv("ANTHROPIC_API_KEY")
+				if apiKey == "" {
+					apiKey = os.Getenv("CLAUDE_API_KEY")
+				}
+				if apiKey == "" {
+					return s.Send("⚠️ Для работы агента <b>claude</b> в режиме <code>api</code> необходимо задать параметр <code>ANTHROPIC_API_KEY</code> или <code>CLAUDE_API_KEY</code> в файле <code>.env</code>.", ports.Rich())
+				}
+			}
+		}
+
 		config.ProjectState.SetExecutionMode(targetMode)
 		if st := domain.GlobalTaskManager.Storage(); st != nil {
 			_ = st.SetSetting(context.Background(), "execution_mode", targetMode)
 		}
 
 		// Обновляем текущий адаптер с учётом выбранного агента и нового режима
-		_, _ = SwitchActiveAgent(ActiveAgentName)
+		msg, err := SwitchActiveAgent(ActiveAgentName)
+		if err != nil {
+			return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
+		}
 
-		return s.Send(fmt.Sprintf("✅ Режим выполнения переключен на: <code>%s</code>", html.EscapeString(targetMode)), ports.Rich())
+		return s.Send(fmt.Sprintf("%s\n✅ Режим выполнения переключен на: <code>%s</code>", msg, html.EscapeString(targetMode)), ports.Rich())
 	})
 
 	handleUsage := func(s ports.Session) error {
@@ -3503,6 +3521,10 @@ func SwitchActiveAgent(name string) (string, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	switch name {
 	case "agy":
+		mode := config.ProjectState.GetExecutionMode()
+		if mode == "api" {
+			return "", fmt.Errorf("агент <b>agy</b> пока поддерживает только режим <code>cli</code>. Переключите режим: <code>/mode cli</code>")
+		}
 		adapter := agy.NewAgyAdapter()
 		Agent = adapter
 		models.Agent = adapter
@@ -3531,11 +3553,18 @@ func SwitchActiveAgent(name string) (string, error) {
 				_, _ = models.GlobalModelRegistry.RefreshModels(true)
 			}
 		}()
-		return "✅ CLI агент переключен на: <b>agy</b>" + suggested, nil
+		return fmt.Sprintf("✅ Агент переключен на: <b>agy</b> [%s]", html.EscapeString(mode)) + suggested, nil
 	case "claude":
 		var adapter ports.AgentFramework
 		mode := config.ProjectState.GetExecutionMode()
 		if mode == "api" {
+			apiKey := os.Getenv("ANTHROPIC_API_KEY")
+			if apiKey == "" {
+				apiKey = os.Getenv("CLAUDE_API_KEY")
+			}
+			if apiKey == "" {
+				return "", fmt.Errorf("для работы <b>claude</b> в режиме <code>api</code> необходимо задать <code>ANTHROPIC_API_KEY</code> или <code>CLAUDE_API_KEY</code> в .env")
+			}
 			adapter = claude.NewClaudeAPIAdapter()
 		} else {
 			adapter = claude.NewClaudeAdapter()
