@@ -172,6 +172,11 @@ func Start(t ports.Transport) {
 			log.Printf("Восстановлен PlanMode из SQLite: %v", pm)
 		}
 	}
+	if savedMode, err := sqliteStorage.GetSetting(ctx, "execution_mode"); err == nil && savedMode != "" {
+		config.ProjectState.SetExecutionMode(savedMode)
+		log.Printf("Восстановлен режим выполнения из SQLite: %s", savedMode)
+	}
+
 	if savedAgent, err := sqliteStorage.GetSetting(ctx, "current_agent"); err == nil && savedAgent != "" {
 		if _, err := SwitchActiveAgent(savedAgent); err == nil {
 			log.Printf("Восстановлен активный агент из SQLite: %s", savedAgent)
@@ -430,7 +435,8 @@ func Start(t ports.Transport) {
 	t.OnCommand("agent", func(s ports.Session) error {
 		args := s.Args()
 		if len(args) == 0 {
-			return s.Send(fmt.Sprintf("🤖 Текущий CLI агент: <code>%s</code>\nДоступны: <b>agy</b>, <b>claude</b>", html.EscapeString(ActiveAgentName)), ports.Rich())
+			mode := config.ProjectState.GetExecutionMode()
+			return s.Send(fmt.Sprintf("🤖 Текущий агент: <code>%s</code> (режим: <code>%s</code>)\nДоступны: <b>agy</b>, <b>claude</b>", html.EscapeString(ActiveAgentName), html.EscapeString(mode)), ports.Rich())
 		}
 
 		name := strings.ToLower(strings.TrimSpace(args[0]))
@@ -439,6 +445,29 @@ func Start(t ports.Transport) {
 			return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
 		}
 		return s.Send(msg, ports.Rich())
+	})
+
+	t.OnCommand("mode", func(s ports.Session) error {
+		args := s.Args()
+		if len(args) == 0 {
+			curMode := config.ProjectState.GetExecutionMode()
+			return s.Send(fmt.Sprintf("⚙️ Текущий режим выполнения агента: <code>%s</code>\nДоступные варианты: <code>cli</code>, <code>api</code>\nПереключение: <code>/mode cli</code> или <code>/mode api</code>", html.EscapeString(curMode)), ports.Rich())
+		}
+
+		targetMode := strings.ToLower(strings.TrimSpace(args[0]))
+		if targetMode != "cli" && targetMode != "api" {
+			return s.Send("❌ Неизвестный режим. Доступны: <code>cli</code>, <code>api</code>", ports.Rich())
+		}
+
+		config.ProjectState.SetExecutionMode(targetMode)
+		if st := domain.GlobalTaskManager.Storage(); st != nil {
+			_ = st.SetSetting(context.Background(), "execution_mode", targetMode)
+		}
+
+		// Обновляем текущий адаптер с учётом выбранного агента и нового режима
+		_, _ = SwitchActiveAgent(ActiveAgentName)
+
+		return s.Send(fmt.Sprintf("✅ Режим выполнения переключен на: <code>%s</code>", html.EscapeString(targetMode)), ports.Rich())
 	})
 
 	handleUsage := func(s ports.Session) error {
@@ -3458,7 +3487,8 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "usage", Description: "Остаток квот и лимиты аккаунта"},
 		{Name: "models", Description: "Список доступных моделей"},
 		{Name: "model", Description: "[имя] Переключить активную модель"},
-		{Name: "agent", Description: "[agy|claude] Переключить активного CLI агента"},
+		{Name: "agent", Description: "[agy|claude] Переключить активный агент"},
+		{Name: "mode", Description: "[cli|api] Переключить режим (CLI или API)"},
 		{Name: "projects", Description: "Список доступных проектов"},
 		{Name: "use", Description: "<имя> Переключить активный проект"},
 		{Name: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
@@ -3503,7 +3533,13 @@ func SwitchActiveAgent(name string) (string, error) {
 		}()
 		return "✅ CLI агент переключен на: <b>agy</b>" + suggested, nil
 	case "claude":
-		adapter := claude.NewClaudeAdapter()
+		var adapter ports.AgentFramework
+		mode := config.ProjectState.GetExecutionMode()
+		if mode == "api" {
+			adapter = claude.NewClaudeAPIAdapter()
+		} else {
+			adapter = claude.NewClaudeAdapter()
+		}
 		Agent = adapter
 		models.Agent = adapter
 		ActiveAgentName = "claude"
@@ -3527,7 +3563,7 @@ func SwitchActiveAgent(name string) (string, error) {
 				_, _ = models.GlobalModelRegistry.RefreshModels(true)
 			}
 		}()
-		return "✅ CLI агент переключен на: <b>claude</b>" + suggested, nil
+		return fmt.Sprintf("✅ Агент переключен на: <b>claude</b> [%s]", html.EscapeString(mode)) + suggested, nil
 	default:
 		return "", fmt.Errorf("неизвестный агент: <code>%s</code>. Доступны: <b>agy</b>, <b>claude</b>", html.EscapeString(name))
 	}
