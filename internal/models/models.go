@@ -68,8 +68,10 @@ var (
 		"gemini-3.1-pro-high":      "🧠 По умолчанию: флагман, глубокий рефакторинг, архитектура, сложные алгоритмы",
 		"gemini-3.1-pro-low":       "🧠 Gemini 3.1 Pro с быстрым рассуждением",
 		"gemini-3.1-pro":           "🧠 По умолчанию: флагман, глубокий рефакторинг, архитектура, сложные алгоритмы",
+		"claude-sonnet-5":          "🎯 Claude Sonnet 5 (Hybrid Reasoning): новое поколение с гибридным рассуждением",
 		"claude-sonnet-4-6":        "🎯 Claude Sonnet 4.6 (Thinking): сильный агентный кодинг с пошаговым рассуждением",
 		"claude-opus-4-6-thinking": "👑 Claude Opus 4.6 (Thinking): максимальный уровень рассуждений для сложных багов",
+		"claude-haiku-4-5":         "⚡ Claude Haiku 4.5: легкая и сверхбыстрая модель",
 		"gpt-oss-120b-medium":      "🌐 GPT-OSS 120B (Medium): открытая весовая архитектура",
 	}
 
@@ -81,17 +83,19 @@ var (
 		"gemini-3.8-flash":         5,
 		"gemini-3.8-flash-high":    6,
 		"gemini-3.8-flash-low":     7,
-		"claude-sonnet-4-6":        8,
-		"claude-opus-4-6-thinking": 9,
-		"gpt-oss-120b-medium":      10,
-		"gemini-3.7-flash-medium":  11,
-		"gemini-3.7-flash-high":    12,
-		"gemini-3.7-flash-low":     13,
-		"gemini-3.7-flash":         14,
-		"gemini-3.6-flash-medium":  15,
-		"gemini-3.6-flash-high":    16,
-		"gemini-3.6-flash-low":     17,
-		"gemini-3.6-flash":         18,
+		"claude-sonnet-5":          8,
+		"claude-sonnet-4-6":        9,
+		"claude-opus-4-6-thinking": 10,
+		"claude-haiku-4-5":         11,
+		"gpt-oss-120b-medium":      12,
+		"gemini-3.7-flash-medium":  13,
+		"gemini-3.7-flash-high":    14,
+		"gemini-3.7-flash-low":     15,
+		"gemini-3.7-flash":         16,
+		"gemini-3.6-flash-medium":  17,
+		"gemini-3.6-flash-high":    18,
+		"gemini-3.6-flash-low":     19,
+		"gemini-3.6-flash":         20,
 	}
 
 	baseAliases = map[string]string{
@@ -136,6 +140,9 @@ var (
 		"sonnet-thinking":   "claude-sonnet-4-6",
 		"claude-sonnet-4.6": "claude-sonnet-4-6",
 		"claude-sonnet-4-6": "claude-sonnet-4-6",
+		"sonnet-5":          "claude-sonnet-5",
+		"claude-sonnet-5":   "claude-sonnet-5",
+		"claude-5":          "claude-sonnet-5",
 
 		// Claude Opus
 		"opus":                     "claude-opus-4-6-thinking",
@@ -143,6 +150,12 @@ var (
 		"opus-thinking":            "claude-opus-4-6-thinking",
 		"claude-opus-4.6":          "claude-opus-4-6-thinking",
 		"claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
+
+		// Claude Haiku
+		"haiku":            "claude-haiku-4-5",
+		"claude-haiku":     "claude-haiku-4-5",
+		"claude-haiku-4.5": "claude-haiku-4-5",
+		"claude-haiku-4-5": "claude-haiku-4-5",
 
 		// GPT-OSS
 		"oss":                 "gpt-oss-120b-medium",
@@ -169,7 +182,7 @@ func NewModelRegistry(cacheTTL time.Duration) *ModelRegistry {
 
 	go func() {
 		if _, err := reg.RefreshModels(true); err != nil {
-			log.Printf("Предупреждение: начальная синхронизация моделей agy: %v", err)
+			log.Printf("Предупреждение: начальная синхронизация моделей: %v", err)
 		}
 	}()
 
@@ -281,7 +294,7 @@ func (m *ModelRegistry) RefreshModels(force bool) ([]ModelInfo, error) {
 		m.RLock()
 		cached := m.models
 		m.RUnlock()
-		return cached, fmt.Errorf("agy models вернул пустой список")
+		return cached, fmt.Errorf("получен пустой список моделей")
 	}
 
 	m.setModels(parsed)
@@ -366,13 +379,28 @@ func (m *ModelRegistry) FormatModelsMessage(currentModel string) string {
 		}
 	}
 
+	hasGemini := false
+	for _, mod := range models {
+		if strings.Contains(strings.ToLower(mod.ID), "gemini") {
+			hasGemini = true
+			break
+		}
+	}
+
 	bldr.WriteString("💡 <i>Короткие алиасы:</i>\n")
-	bldr.WriteString("• <code>/model flash</code> — Gemini 3.8 Flash\n")
-	bldr.WriteString("• <code>/model pro</code> — Gemini 3.1 Pro\n")
-	bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 4.6 Thinking\n")
-	bldr.WriteString("• <code>/model opus</code> — Claude Opus 4.6 Thinking\n")
-	bldr.WriteString("• <code>/model oss</code> — GPT-OSS 120B\n\n")
-	bldr.WriteString("🔄 <i>Список моделей синхронизируется динамически с agy (обновить: <code>/models refresh</code>)</i>")
+	if hasGemini {
+		bldr.WriteString("• <code>/model flash</code> — Gemini 3.8 Flash\n")
+		bldr.WriteString("• <code>/model pro</code> — Gemini 3.1 Pro\n")
+		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model opus</code> — Claude Opus 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model oss</code> — GPT-OSS 120B\n\n")
+	} else {
+		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model opus</code> — Claude Opus 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model haiku</code> — Claude Haiku 4.5\n")
+		bldr.WriteString("• <code>/model sonnet-5</code> — Claude Sonnet 5\n\n")
+	}
+	bldr.WriteString("🔄 <i>Список моделей синхронизируется динамически с CLI агентом (обновить: <code>/models refresh</code>)</i>")
 
 	return bldr.String()
 }

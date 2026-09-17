@@ -133,4 +133,22 @@ func TestFormatModelsMessage(t *testing.T) {
 	if !strings.Contains(msg, "/models refresh") {
 		t.Errorf("expected refresh instruction in message")
 	}
+
+	// Test Claude-only models formatting
+	claudeModels := []ModelInfo{
+		{ID: "claude-sonnet-5", DisplayName: "Claude Sonnet 5", Description: "Hybrid Reasoning"},
+		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6", Description: "Thinking"},
+		{ID: "claude-haiku-4-5", DisplayName: "Claude Haiku 4.5", Description: "Fast"},
+	}
+	reg.setModels(claudeModels)
+	msgClaude := reg.FormatModelsMessage("claude-sonnet-4-6")
+	if strings.Contains(msgClaude, "/model flash") {
+		t.Errorf("expected claude message not to contain flash alias")
+	}
+	if !strings.Contains(msgClaude, "/model haiku") {
+		t.Errorf("expected claude message to contain haiku alias")
+	}
+	if !strings.Contains(msgClaude, "👉 <b>claude-sonnet-4-6</b> <i>(активна)</i>") {
+		t.Errorf("expected active model marker for claude-sonnet-4-6")
+	}
 }

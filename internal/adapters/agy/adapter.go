@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/creack/pty"
 )
@@ -56,7 +57,15 @@ func (a *AgyAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (p
 }
 
 func (a *AgyAdapter) GetModels(ctx context.Context) ([]byte, error) {
-	return exec.CommandContext(ctx, "agy", "models", "--output-format", "json").CombinedOutput()
+	cmd := exec.CommandContext(ctx, "agy", "models")
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, err
+	}
+	return out, nil
 }
 
 func (a *AgyAdapter) GetQuota(ctx context.Context) ([]byte, error) {
