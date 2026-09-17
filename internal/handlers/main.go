@@ -461,7 +461,10 @@ func Start(t ports.Transport) {
 
 		if targetMode == "api" {
 			if ActiveAgentName == "agy" {
-				return s.Send("⚠️ Агент <b>agy</b> (Google Antigravity) пока поддерживает только режим <code>cli</code>.", ports.Rich())
+				apiKey := os.Getenv("GEMINI_API_KEY")
+				if apiKey == "" {
+					return s.Send("⚠️ Для работы агента <b>agy</b> в режиме <code>api</code> необходимо задать параметр <code>GEMINI_API_KEY</code> в файле <code>.env</code>.", ports.Rich())
+				}
 			}
 			if ActiveAgentName == "claude" {
 				apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -3521,11 +3524,17 @@ func SwitchActiveAgent(name string) (string, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	switch name {
 	case "agy":
+		var adapter ports.AgentFramework
 		mode := config.ProjectState.GetExecutionMode()
 		if mode == "api" {
-			return "", fmt.Errorf("агент <b>agy</b> пока поддерживает только режим <code>cli</code>. Переключите режим: <code>/mode cli</code>")
+			apiKey := os.Getenv("GEMINI_API_KEY")
+			if apiKey == "" {
+				return "", fmt.Errorf("для работы <b>agy</b> в режиме <code>api</code> необходимо задать <code>GEMINI_API_KEY</code> в .env")
+			}
+			adapter = agy.NewAgyAPIAdapter()
+		} else {
+			adapter = agy.NewAgyAdapter()
 		}
-		adapter := agy.NewAgyAdapter()
 		Agent = adapter
 		models.Agent = adapter
 		ActiveAgentName = "agy"
