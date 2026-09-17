@@ -172,6 +172,11 @@ func Start(t ports.Transport) {
 			log.Printf("Восстановлен PlanMode из SQLite: %v", pm)
 		}
 	}
+	if savedMode, err := sqliteStorage.GetSetting(ctx, "execution_mode"); err == nil && savedMode != "" {
+		config.ProjectState.SetExecutionMode(savedMode)
+		log.Printf("Восстановлен режим выполнения из SQLite: %s", savedMode)
+	}
+
 	if savedAgent, err := sqliteStorage.GetSetting(ctx, "current_agent"); err == nil && savedAgent != "" {
 		if _, err := SwitchActiveAgent(savedAgent); err == nil {
 			log.Printf("Восстановлен активный агент из SQLite: %s", savedAgent)
@@ -242,7 +247,7 @@ func Start(t ports.Transport) {
 				"• /projects — список доступных проектов\n"+
 				"• /use &lt;имя&gt; — переключить активный проект\n"+
 				"• /clone &lt;url&gt; [имя] — клонировать репозиторий\n"+
-				"• /restart, /rebuild — управление процессом бота\n\n"+
+				"• /restart, /rebuild [branch=имя] [pull] [force] — управление процессом и пересборка бота\n\n"+
 				"💡 <i>Отправьте задачу сообщением в чат. Для предварительного плана используйте /plan &lt;задача&gt;. Дополнения можно отправлять через /add [id] &lt;текст&gt; или ответом на сообщения бота.</i>",
 			html.EscapeString(curProj),
 			html.EscapeString(curMod),
@@ -430,7 +435,8 @@ func Start(t ports.Transport) {
 	t.OnCommand("agent", func(s ports.Session) error {
 		args := s.Args()
 		if len(args) == 0 {
-			return s.Send(fmt.Sprintf("🤖 Текущий CLI агент: <code>%s</code>\nДоступны: <b>agy</b>, <b>claude</b>", html.EscapeString(ActiveAgentName)), ports.Rich())
+			mode := config.ProjectState.GetExecutionMode()
+			return s.Send(fmt.Sprintf("🤖 Текущий агент: <code>%s</code> (режим: <code>%s</code>)\nДоступны: <b>agy</b>, <b>claude</b>", html.EscapeString(ActiveAgentName), html.EscapeString(mode)), ports.Rich())
 		}
 
 		name := strings.ToLower(strings.TrimSpace(args[0]))
@@ -439,6 +445,47 @@ func Start(t ports.Transport) {
 			return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
 		}
 		return s.Send(msg, ports.Rich())
+	})
+
+	t.OnCommand("mode", func(s ports.Session) error {
+		args := s.Args()
+		if len(args) == 0 {
+			curMode := config.ProjectState.GetExecutionMode()
+			return s.Send(fmt.Sprintf("⚙️ Текущий режим выполнения агента: <code>%s</code>\nДоступные варианты: <code>cli</code>, <code>api</code>\nПереключение: <code>/mode cli</code> или <code>/mode api</code>", html.EscapeString(curMode)), ports.Rich())
+		}
+
+		targetMode := strings.ToLower(strings.TrimSpace(args[0]))
+		if targetMode != "cli" && targetMode != "api" {
+			return s.Send("❌ Неизвестный режим. Доступны: <code>cli</code>, <code>api</code>", ports.Rich())
+		}
+
+		if targetMode == "api" {
+			if ActiveAgentName == "agy" {
+				return s.Send("⚠️ Агент <b>agy</b> (Google Antigravity) пока поддерживает только режим <code>cli</code>.", ports.Rich())
+			}
+			if ActiveAgentName == "claude" {
+				apiKey := os.Getenv("ANTHROPIC_API_KEY")
+				if apiKey == "" {
+					apiKey = os.Getenv("CLAUDE_API_KEY")
+				}
+				if apiKey == "" {
+					return s.Send("⚠️ Для работы агента <b>claude</b> в режиме <code>api</code> необходимо задать параметр <code>ANTHROPIC_API_KEY</code> или <code>CLAUDE_API_KEY</code> в файле <code>.env</code>.", ports.Rich())
+				}
+			}
+		}
+
+		config.ProjectState.SetExecutionMode(targetMode)
+		if st := domain.GlobalTaskManager.Storage(); st != nil {
+			_ = st.SetSetting(context.Background(), "execution_mode", targetMode)
+		}
+
+		// Обновляем текущий адаптер с учётом выбранного агента и нового режима
+		msg, err := SwitchActiveAgent(ActiveAgentName)
+		if err != nil {
+			return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
+		}
+
+		return s.Send(fmt.Sprintf("%s\n✅ Режим выполнения переключен на: <code>%s</code>", msg, html.EscapeString(targetMode)), ports.Rich())
 	})
 
 	handleUsage := func(s ports.Session) error {
@@ -3458,12 +3505,13 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "usage", Description: "Остаток квот и лимиты аккаунта"},
 		{Name: "models", Description: "Список доступных моделей"},
 		{Name: "model", Description: "[имя] Переключить активную модель"},
-		{Name: "agent", Description: "[agy|claude] Переключить активного CLI агента"},
+		{Name: "agent", Description: "[agy|claude] Переключить активный агент"},
+		{Name: "mode", Description: "[cli|api] Переключить режим (CLI или API)"},
 		{Name: "projects", Description: "Список доступных проектов"},
 		{Name: "use", Description: "<имя> Переключить активный проект"},
 		{Name: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
 		{Name: "restart", Description: "Перезапустить бота"},
-		{Name: "rebuild", Description: "Собрать и перезапустить бота"},
+		{Name: "rebuild", Description: "[branch=имя] [pull] [force] Собрать и перезапустить бота"},
 		{Name: "start", Description: "Перезапуск и приветственное сообщение"},
 	}
 }
@@ -3473,6 +3521,10 @@ func SwitchActiveAgent(name string) (string, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	switch name {
 	case "agy":
+		mode := config.ProjectState.GetExecutionMode()
+		if mode == "api" {
+			return "", fmt.Errorf("агент <b>agy</b> пока поддерживает только режим <code>cli</code>. Переключите режим: <code>/mode cli</code>")
+		}
 		adapter := agy.NewAgyAdapter()
 		Agent = adapter
 		models.Agent = adapter
@@ -3501,9 +3553,22 @@ func SwitchActiveAgent(name string) (string, error) {
 				_, _ = models.GlobalModelRegistry.RefreshModels(true)
 			}
 		}()
-		return "✅ CLI агент переключен на: <b>agy</b>" + suggested, nil
+		return fmt.Sprintf("✅ Агент переключен на: <b>agy</b> [%s]", html.EscapeString(mode)) + suggested, nil
 	case "claude":
-		adapter := claude.NewClaudeAdapter()
+		var adapter ports.AgentFramework
+		mode := config.ProjectState.GetExecutionMode()
+		if mode == "api" {
+			apiKey := os.Getenv("ANTHROPIC_API_KEY")
+			if apiKey == "" {
+				apiKey = os.Getenv("CLAUDE_API_KEY")
+			}
+			if apiKey == "" {
+				return "", fmt.Errorf("для работы <b>claude</b> в режиме <code>api</code> необходимо задать <code>ANTHROPIC_API_KEY</code> или <code>CLAUDE_API_KEY</code> в .env")
+			}
+			adapter = claude.NewClaudeAPIAdapter()
+		} else {
+			adapter = claude.NewClaudeAdapter()
+		}
 		Agent = adapter
 		models.Agent = adapter
 		ActiveAgentName = "claude"
@@ -3527,7 +3592,7 @@ func SwitchActiveAgent(name string) (string, error) {
 				_, _ = models.GlobalModelRegistry.RefreshModels(true)
 			}
 		}()
-		return "✅ CLI агент переключен на: <b>claude</b>" + suggested, nil
+		return fmt.Sprintf("✅ Агент переключен на: <b>claude</b> [%s]", html.EscapeString(mode)) + suggested, nil
 	default:
 		return "", fmt.Errorf("неизвестный агент: <code>%s</code>. Доступны: <b>agy</b>, <b>claude</b>", html.EscapeString(name))
 	}

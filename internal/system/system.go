@@ -253,17 +253,24 @@ func performGitCheckout(ctx context.Context, dir, branch string, force bool) (st
 }
 
 func performGitPull(ctx context.Context, dir, branch string, force bool) (string, error) {
+	// Сначала выполняем git fetch origin [branch], чтобы подтянуть метаданные ветки с сервера
+	fetchCmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin", branch)
+	fetchOut, fetchErr := fetchCmd.CombinedOutput()
+	if fetchErr != nil {
+		// Пробуем общий git fetch origin, если специфичный fetch возвращает ошибку
+		fetchCmdAll := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin")
+		_, _ = fetchCmdAll.CombinedOutput()
+	}
+
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "pull", "origin", branch)
 	out, err := cmd.CombinedOutput()
 	if err != nil && force {
-		fetchCmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin", branch)
-		if fetchOut, fetchErr := fetchCmd.CombinedOutput(); fetchErr == nil {
-			resetCmd := exec.CommandContext(ctx, "git", "-C", dir, "reset", "--hard", "origin/"+branch)
-			resetOut, resetErr := resetCmd.CombinedOutput()
-			if resetErr == nil {
-				return strings.TrimSpace(string(resetOut)), nil
-			}
-		} else {
+		resetCmd := exec.CommandContext(ctx, "git", "-C", dir, "reset", "--hard", "origin/"+branch)
+		resetOut, resetErr := resetCmd.CombinedOutput()
+		if resetErr == nil {
+			return strings.TrimSpace(string(resetOut)), nil
+		}
+		if fetchErr != nil {
 			return strings.TrimSpace(string(fetchOut)), fetchErr
 		}
 	}

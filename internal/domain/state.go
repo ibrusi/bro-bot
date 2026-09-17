@@ -30,10 +30,11 @@ type ProjectState struct {
 	CurrentProject string
 	CurrentModel   string
 	CurrentAgent   string
+	ExecutionMode  string // "cli" или "api"
 	PlanMode       bool
 }
 
-// GetCurrentAgent возвращает имя активного CLI агента (по умолчанию agy).
+// GetCurrentAgent возвращает имя активного агента (по умолчанию agy).
 func (ps *ProjectState) GetCurrentAgent() string {
 	ps.RLock()
 	defer ps.RUnlock()
@@ -43,10 +44,30 @@ func (ps *ProjectState) GetCurrentAgent() string {
 	return ps.CurrentAgent
 }
 
-// SetCurrentAgent обновляет имя активного CLI агента.
+// SetCurrentAgent обновляет имя активного агента.
 func (ps *ProjectState) SetCurrentAgent(agent string) {
 	ps.Lock()
 	defer ps.Unlock()
 	ps.CurrentAgent = agent
 }
 
+// GetExecutionMode возвращает текущий режим выполнения ("cli" или "api", по умолчанию "cli").
+func (ps *ProjectState) GetExecutionMode() string {
+	ps.RLock()
+	defer ps.RUnlock()
+	if ps.ExecutionMode == "" {
+		return "cli"
+	}
+	return ps.ExecutionMode
+}
+
+// SetExecutionMode обновляет режим выполнения.
+func (ps *ProjectState) SetExecutionMode(mode string) {
+	ps.Lock()
+	defer ps.Unlock()
+	if strings.ToLower(mode) == "api" {
+		ps.ExecutionMode = "api"
+	} else {
+		ps.ExecutionMode = "cli"
+	}
+}
