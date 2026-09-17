@@ -389,7 +389,7 @@ func Start(t ports.Transport) {
 		forceRefresh := len(args) > 0 && (args[0] == "refresh" || args[0] == "update")
 		if forceRefresh {
 			if _, err := models.GlobalModelRegistry.RefreshModels(true); err != nil {
-				return s.Send(fmt.Sprintf("⚠️ Ошибка синхронизации с agy: %v\nПоказан кэшированный список.", err), nil)
+				return s.Send(fmt.Sprintf("⚠️ Ошибка синхронизации с %s: %v\nПоказан кэшированный список.", ActiveAgentName, err), nil)
 			}
 		}
 
@@ -3496,6 +3496,11 @@ func SwitchActiveAgent(name string) (string, error) {
 		if st := domain.GlobalTaskManager.Storage(); st != nil {
 			_ = st.SetSetting(context.Background(), "current_agent", "agy")
 		}
+		go func() {
+			if models.GlobalModelRegistry != nil {
+				_, _ = models.GlobalModelRegistry.RefreshModels(true)
+			}
+		}()
 		return "✅ CLI агент переключен на: <b>agy</b>" + suggested, nil
 	case "claude":
 		adapter := claude.NewClaudeAdapter()
@@ -3517,6 +3522,11 @@ func SwitchActiveAgent(name string) (string, error) {
 		if st := domain.GlobalTaskManager.Storage(); st != nil {
 			_ = st.SetSetting(context.Background(), "current_agent", "claude")
 		}
+		go func() {
+			if models.GlobalModelRegistry != nil {
+				_, _ = models.GlobalModelRegistry.RefreshModels(true)
+			}
+		}()
 		return "✅ CLI агент переключен на: <b>claude</b>" + suggested, nil
 	default:
 		return "", fmt.Errorf("неизвестный агент: <code>%s</code>. Доступны: <b>agy</b>, <b>claude</b>", html.EscapeString(name))
