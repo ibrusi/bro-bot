@@ -1849,3 +1849,85 @@ func TestStartCommandAndMenuNewDescription(t *testing.T) {
 		t.Errorf("expected 'new' command description to mention '[проект] [агент]', got %q", foundNewCmd.Description)
 	}
 }
+
+func TestModelsRefreshCommand_BothAgents(t *testing.T) {
+	mt := setupTestApp(t)
+
+	modelsHandler, ok := mt.commands["models"]
+	if !ok {
+		t.Fatalf("models command handler not found")
+	}
+
+	// 1. Проверяем /models refresh для agy
+	if _, err := SwitchActiveAgent("agy"); err != nil {
+		t.Fatalf("SwitchActiveAgent(agy) failed: %v", err)
+	}
+
+	sessAgy := &mock.Session{
+		M:       mt.Messenger,
+		ChatID:  testChatID,
+		ArgsVal: []string{"refresh"},
+	}
+	if err := modelsHandler(sessAgy); err != nil {
+		t.Fatalf("modelsHandler with agy failed: %v", err)
+	}
+
+	lastAgy := mt.LastSent()
+	if lastAgy == nil {
+		t.Fatalf("expected message from /models refresh (agy)")
+	}
+	if !strings.Contains(lastAgy.Text, "gemini") {
+		t.Errorf("expected agy models message to contain gemini, got: %s", lastAgy.Text)
+	}
+	if !strings.Contains(lastAgy.Text, "Доступные модели:") {
+		t.Errorf("expected agy models message to contain header, got: %s", lastAgy.Text)
+	}
+
+	// 2. Переключаемся на claude и проверяем /models refresh
+	if _, err := SwitchActiveAgent("claude"); err != nil {
+		t.Fatalf("SwitchActiveAgent(claude) failed: %v", err)
+	}
+
+	sessClaude := &mock.Session{
+		M:       mt.Messenger,
+		ChatID:  testChatID,
+		ArgsVal: []string{"refresh"},
+	}
+	if err := modelsHandler(sessClaude); err != nil {
+		t.Fatalf("modelsHandler with claude failed: %v", err)
+	}
+
+	lastClaude := mt.LastSent()
+	if lastClaude == nil {
+		t.Fatalf("expected message from /models refresh (claude)")
+	}
+	if !strings.Contains(lastClaude.Text, "claude-sonnet") {
+		t.Errorf("expected claude models message to contain claude-sonnet, got: %s", lastClaude.Text)
+	}
+	if strings.Contains(lastClaude.Text, "gemini") {
+		t.Errorf("claude models message should not contain gemini models, got: %s", lastClaude.Text)
+	}
+
+	// 3. Переключаемся обратно на agy и проверяем /models refresh
+	if _, err := SwitchActiveAgent("agy"); err != nil {
+		t.Fatalf("SwitchActiveAgent(agy) failed: %v", err)
+	}
+
+	sessAgy2 := &mock.Session{
+		M:       mt.Messenger,
+		ChatID:  testChatID,
+		ArgsVal: []string{"refresh"},
+	}
+	if err := modelsHandler(sessAgy2); err != nil {
+		t.Fatalf("modelsHandler with agy back failed: %v", err)
+	}
+
+	lastAgy2 := mt.LastSent()
+	if lastAgy2 == nil {
+		t.Fatalf("expected message from /models refresh (agy back)")
+	}
+	if !strings.Contains(lastAgy2.Text, "gemini") {
+		t.Errorf("expected agy back models message to contain gemini, got: %s", lastAgy2.Text)
+	}
+}
+

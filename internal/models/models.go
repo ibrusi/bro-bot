@@ -182,7 +182,7 @@ func NewModelRegistry(cacheTTL time.Duration) *ModelRegistry {
 
 	go func() {
 		if _, err := reg.RefreshModels(true); err != nil {
-			log.Printf("Предупреждение: начальная синхронизация моделей agy: %v", err)
+			log.Printf("Предупреждение: начальная синхронизация моделей: %v", err)
 		}
 	}()
 
@@ -294,7 +294,7 @@ func (m *ModelRegistry) RefreshModels(force bool) ([]ModelInfo, error) {
 		m.RLock()
 		cached := m.models
 		m.RUnlock()
-		return cached, fmt.Errorf("agy models вернул пустой список")
+		return cached, fmt.Errorf("получен пустой список моделей")
 	}
 
 	m.setModels(parsed)
@@ -379,12 +379,27 @@ func (m *ModelRegistry) FormatModelsMessage(currentModel string) string {
 		}
 	}
 
+	hasGemini := false
+	for _, mod := range models {
+		if strings.Contains(strings.ToLower(mod.ID), "gemini") {
+			hasGemini = true
+			break
+		}
+	}
+
 	bldr.WriteString("💡 <i>Короткие алиасы:</i>\n")
-	bldr.WriteString("• <code>/model flash</code> — Gemini 3.8 Flash\n")
-	bldr.WriteString("• <code>/model pro</code> — Gemini 3.1 Pro\n")
-	bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 4.6 Thinking\n")
-	bldr.WriteString("• <code>/model opus</code> — Claude Opus 4.6 Thinking\n")
-	bldr.WriteString("• <code>/model oss</code> — GPT-OSS 120B\n\n")
+	if hasGemini {
+		bldr.WriteString("• <code>/model flash</code> — Gemini 3.8 Flash\n")
+		bldr.WriteString("• <code>/model pro</code> — Gemini 3.1 Pro\n")
+		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model opus</code> — Claude Opus 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model oss</code> — GPT-OSS 120B\n\n")
+	} else {
+		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model opus</code> — Claude Opus 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model haiku</code> — Claude Haiku 4.5\n")
+		bldr.WriteString("• <code>/model sonnet-5</code> — Claude Sonnet 5\n\n")
+	}
 	bldr.WriteString("🔄 <i>Список моделей синхронизируется динамически с CLI агентом (обновить: <code>/models refresh</code>)</i>")
 
 	return bldr.String()

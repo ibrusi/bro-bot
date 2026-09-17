@@ -3481,7 +3481,7 @@ func SwitchActiveAgent(name string) (string, error) {
 		config.ProjectState.Lock()
 		curModel := config.ProjectState.CurrentModel
 		suggested := ""
-		if strings.Contains(strings.ToLower(curModel), "claude") || strings.Contains(strings.ToLower(curModel), "sonnet") || strings.Contains(strings.ToLower(curModel), "opus") {
+		if strings.Contains(strings.ToLower(curModel), "claude") || strings.Contains(strings.ToLower(curModel), "sonnet") || strings.Contains(strings.ToLower(curModel), "opus") || strings.Contains(strings.ToLower(curModel), "haiku") {
 			defaultModel := os.Getenv("DEFAULT_MODEL")
 			if defaultModel == "" {
 				defaultModel = "gemini-3.1-pro-high"
