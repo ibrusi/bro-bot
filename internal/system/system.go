@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -239,6 +240,33 @@ func parseSystemFlags(args []string) SystemFlags {
 		}
 	}
 	return f
+}
+
+// validBranchNameRegex — подмножество допустимых имён веток git: буква или цифра в
+// начале, дальше буквы, цифры, дефис, подчёркивание, точка и слэш.
+var validBranchNameRegex = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
+
+// validateBranchName проверяет имя ветки перед передачей его в git.
+//
+// Имя приходит из аргументов команды /rebuild и попадает в позиционные аргументы
+// git checkout / fetch / pull. Значение, начинающееся с дефиса, git разобрал бы как
+// опцию (например --upload-pack=...), поэтому имя должно пройти белый список.
+func validateBranchName(branch string) error {
+	name := strings.TrimSpace(branch)
+
+	switch {
+	case name == "":
+		return fmt.Errorf("имя ветки не может быть пустым")
+	case len(name) > 255:
+		return fmt.Errorf("имя ветки слишком длинное")
+	case !validBranchNameRegex.MatchString(name):
+		return fmt.Errorf("имя ветки содержит недопустимые символы. Разрешены буквы, цифры, дефис, подчёркивание, точка и слэш; начинаться имя должно с буквы или цифры")
+	case strings.Contains(name, ".."), strings.Contains(name, "//"), strings.Contains(name, "@{"):
+		return fmt.Errorf("имя ветки содержит недопустимую последовательность")
+	case strings.HasSuffix(name, "/"), strings.HasSuffix(name, "."), strings.HasSuffix(name, ".lock"):
+		return fmt.Errorf("недопустимое окончание имени ветки")
+	}
+	return nil
 }
 
 func performGitCheckout(ctx context.Context, dir, branch string, force bool) (string, error) {
@@ -593,6 +621,16 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 		targetBranch := "main"
 		if flags.Branch != "" {
 			targetBranch = flags.Branch
+		}
+
+		// Имя проверяем до первого обращения к git: иначе значение вроде "-f" или
+		// "--upload-pack=..." ушло бы в команду как опция, а не как ветка.
+		if err := validateBranchName(targetBranch); err != nil {
+			updateStatus(fmt.Sprintf(
+				"❌ <b>Недопустимое имя ветки:</b> %s\n<i>Сборка отменена, бот продолжает работу на текущей ветке.</i>",
+				html.EscapeString(err.Error()),
+			))
+			return nil
 		}
 
 		updateStatus(fmt.Sprintf("🌿 <b>Переключаюсь на ветку %s...</b>", html.EscapeString(targetBranch)))
