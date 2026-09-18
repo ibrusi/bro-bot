@@ -1,17 +1,15 @@
 package domain
 
 import (
-	"io"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 )
 
+// AgentSession — устаревшее зеркало состояния активной задачи для отчётов и /status.
+// Процесс агента здесь не хранится: им владеет TaskSession.
 type AgentSession struct {
 	sync.Mutex
-	Cmd              *exec.Cmd
-	Stdin            io.WriteCloser
 	IsRunning        bool
 	Waiting          bool
 	StartedAt        time.Time

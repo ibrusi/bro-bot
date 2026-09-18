@@ -1273,8 +1273,8 @@ func Start(t ports.Transport) {
 		if optIdx >= 0 && optIdx < len(task.QuestionOptions) {
 			chosenText = task.QuestionOptions[optIdx]
 		}
-		cmdIsNil := (task.Cmd == nil || task.Cmd.Process == nil)
 		task.Unlock()
+		cmdIsNil := !task.HasLiveProcess()
 
 		if chosenText == "" {
 			return s.Respond("Вариант не найден")
@@ -1655,9 +1655,9 @@ func Start(t ports.Transport) {
 		if status == domain.TaskStatusWaitingInput {
 			if answer != "" {
 				task.Lock()
-				cmdIsNil := (task.Cmd == nil || task.Cmd.Process == nil)
 				proj := task.Project
 				task.Unlock()
+				cmdIsNil := !task.HasLiveProcess()
 
 				if !cmdIsNil {
 					task.DeliverAnswer(answer)
@@ -2481,10 +2481,13 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}
 	defer func() { _ = agentProcess.Close() }()
 
-	task.Lock()
-	task.Cmd = agentProcess.GetCmd()
-	task.Stdin = agentProcess.Stdin()
-	task.Unlock()
+	// Привязываем процесс к задаче: с этого момента /cancel, /pause и /resume
+	// останавливают его сами, одинаково для CLI и API. Если /cancel успел прийти
+	// раньше привязки, гасим процесс здесь, иначе он доработал бы до конца.
+	if !task.AttachProcess(agentProcess, stepCancel) {
+		_ = agentProcess.Kill()
+		return StepResult{Outcome: StepOutcomeCancelled}
+	}
 	syncLegacySession(task)
 
 	scanner := bufio.NewScanner(agentProcess.Stdout())
@@ -2675,12 +2678,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	<-done
 	close(stopLiveUpdate)
 	waitErr := agentProcess.Wait()
+	task.DetachProcess()
 
 	task.Lock()
-	if task.Stdin != nil {
-		_ = task.Stdin.Close()
-		task.Stdin = nil
-	}
 	isCancelled := (task.Status == domain.TaskStatusCancelled)
 	lastPR := task.LastPRURL
 	fullResp := strings.TrimSpace(task.FullOutput.String())
@@ -3010,8 +3010,8 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 
 	task.Lock()
 	status := task.Status
-	cmdIsNil := (task.Cmd == nil || task.Cmd.Process == nil)
 	task.Unlock()
+	cmdIsNil := !task.HasLiveProcess()
 
 	if status == domain.TaskStatusWaitingApproval {
 		if isConfirmationText(text) {
@@ -3039,8 +3039,8 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 		task.Lock()
 		curStatus := task.Status
 		proj := task.Project
-		cmdIsNil = (task.Cmd == nil || task.Cmd.Process == nil)
 		task.Unlock()
+		cmdIsNil = !task.HasLiveProcess()
 
 		if curStatus == domain.TaskStatusQueued {
 			return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
@@ -3560,8 +3560,6 @@ func syncLegacySession(task *domain.TaskSession) {
 		config.Session.Lock()
 		config.Session.IsRunning = false
 		config.Session.Waiting = false
-		config.Session.Cmd = nil
-		config.Session.Stdin = nil
 		config.Session.Unlock()
 		return
 	}
@@ -3578,8 +3576,6 @@ func syncLegacySession(task *domain.TaskSession) {
 	config.Session.LastPRURL = task.LastPRURL
 	config.Session.LastModelUsed = task.LastModelUsed
 	config.Session.LastTokensUsed = task.LastTokensUsed
-	config.Session.Cmd = task.Cmd
-	config.Session.Stdin = task.Stdin
 	config.Session.Unlock()
 	task.Unlock()
 

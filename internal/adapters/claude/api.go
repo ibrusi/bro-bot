@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -379,8 +378,9 @@ func (p *ClaudeAPIProcess) Close() error {
 	return p.Kill()
 }
 
-func (p *ClaudeAPIProcess) GetCmd() *exec.Cmd {
-	return nil
+// PID — у API-запроса нет процесса в ОС.
+func (p *ClaudeAPIProcess) PID() int {
+	return 0
 }
 
 // handleError сохраняет ошибку и отдаёт её в поток событий как результат с признаком ошибки.

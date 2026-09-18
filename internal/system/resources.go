@@ -644,10 +644,6 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 	projName := config.Session.CurrentProject
 	prompt := config.Session.CurrentPrompt
 	startedAt := config.Session.StartedAt
-	var activeWorkerPid int
-	if config.Session.Cmd != nil && config.Session.Cmd.Process != nil {
-		activeWorkerPid = config.Session.Cmd.Process.Pid
-	}
 	config.Session.Unlock()
 
 	activeAgent := config.ProjectState.GetCurrentAgent()
@@ -672,17 +668,13 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 			if activeTask.Agent != "" {
 				activeWorkerAgent = activeTask.Agent
 			}
-			if activeTask.Cmd != nil && activeTask.Cmd.Process != nil && activeTask.Cmd.Process.Pid > 0 {
-				activeWorkerPid = activeTask.Cmd.Process.Pid
-			}
 		}
 		activeTask.Unlock()
 	}
 
-	activePid, otherPids := domain.GlobalTaskManager.GetRunningWorkerPids()
-	if activePid > 0 {
-		activeWorkerPid = activePid
-	}
+	// PID воркера берём только у менеджера задач: он единственный, кто знает про
+	// процесс шага. В api-режиме процесса в ОС нет, и PID остаётся нулевым.
+	activeWorkerPid, otherPids := domain.GlobalTaskManager.GetRunningWorkerPids()
 
 	allAgyPids := findSystemAgyPids()
 	allClaudePids := findSystemClaudePids()

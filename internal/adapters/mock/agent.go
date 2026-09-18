@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 	"sync"
 
@@ -31,21 +30,94 @@ type AgentFramework struct {
 	StartErr error
 	// WaitErr — ошибка завершения процесса агента.
 	WaitErr error
+	// Hang — процесс отдаёт событие system и затем «работает» бесконечно: поток
+	// не завершается, пока его не остановят через Kill или отмену контекста. Нужен
+	// для проверки /cancel: обычный мок заканчивается раньше, чем его успеют отменить.
+	Hang bool
 
-	calls []ports.ExecuteArgs
+	calls   []ports.ExecuteArgs
+	killed  bool
+	stopped bool
 }
 
 // ExecuteTask имитирует запуск агента и возвращает процесс с готовым потоком событий.
-func (f *AgentFramework) ExecuteTask(_ context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
+func (f *AgentFramework) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, args)
 	startErr := f.StartErr
+	hang := f.Hang
 	f.mu.Unlock()
 
 	if startErr != nil {
 		return nil, startErr
 	}
+	if hang {
+		return f.newHangingProcess(ctx), nil
+	}
 	return &AgentProcess{reader: strings.NewReader(f.buildStream()), waitErr: f.WaitErr}, nil
+}
+
+// Killed сообщает, вызывали ли у последнего процесса Kill.
+func (f *AgentFramework) Killed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.killed
+}
+
+// Stopped сообщает, завершился ли «висящий» процесс — через Kill или отмену контекста.
+func (f *AgentFramework) Stopped() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopped
+}
+
+// newHangingProcess собирает процесс, который пишет событие system и затем держит поток
+// открытым до Kill или отмены ctx — так же ведёт себя настоящий API-стрим.
+func (f *AgentFramework) newHangingProcess(ctx context.Context) *AgentProcess {
+	f.mu.Lock()
+	convID := f.ConversationID
+	f.mu.Unlock()
+	if convID == "" {
+		convID = "mock-conversation"
+	}
+
+	pr, pw := io.Pipe()
+	killCh := make(chan struct{})
+	done := make(chan struct{})
+
+	var once sync.Once
+	kill := func() {
+		once.Do(func() {
+			f.mu.Lock()
+			f.killed = true
+			f.mu.Unlock()
+			close(killCh)
+		})
+	}
+
+	go func() {
+		defer close(done)
+		var bldr strings.Builder
+		writeEvent(&bldr, map[string]interface{}{"type": "system", "session_id": convID})
+		_, _ = io.WriteString(pw, bldr.String())
+
+		select {
+		case <-killCh:
+		case <-ctx.Done():
+		}
+
+		f.mu.Lock()
+		f.stopped = true
+		f.mu.Unlock()
+		_ = pw.Close()
+	}()
+
+	return &AgentProcess{
+		reader:  pr,
+		waitErr: f.WaitErr,
+		kill:    kill,
+		done:    done,
+	}
 }
 
 // Calls возвращает аргументы всех запусков агента.
@@ -138,22 +210,39 @@ func (f *AgentFramework) GetCredits(_ context.Context) ([]byte, error) {
 }
 
 // AgentProcess — процесс мок-агента: читает заранее подготовленный поток событий.
+// У «висящего» процесса kill и done заполнены, у обычного — nil.
 type AgentProcess struct {
 	reader  io.Reader
 	waitErr error
+	kill    func()
+	done    chan struct{}
 }
 
 func (p *AgentProcess) Stdout() io.Reader { return p.reader }
 
 func (p *AgentProcess) Stdin() io.WriteCloser { return nopWriteCloser{} }
 
-func (p *AgentProcess) Wait() error { return p.waitErr }
+// Wait у висящего процесса дожидается его остановки, как настоящий Wait.
+func (p *AgentProcess) Wait() error {
+	if p.done != nil {
+		<-p.done
+	}
+	return p.waitErr
+}
 
-func (p *AgentProcess) Kill() error { return nil }
+func (p *AgentProcess) Kill() error {
+	if p.kill != nil {
+		p.kill()
+	}
+	return nil
+}
 
+// Close ничего не делает: висящий процесс останавливается только через Kill или
+// отмену контекста, иначе Killed() перестал бы отличать /cancel от обычного завершения.
 func (p *AgentProcess) Close() error { return nil }
 
-func (p *AgentProcess) GetCmd() *exec.Cmd { return nil }
+// PID — у мок-процесса нет процесса в ОС.
+func (p *AgentProcess) PID() int { return 0 }
 
 type nopWriteCloser struct{}
 

@@ -1,6 +1,7 @@
 package agy
 
 import (
+	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
 	"context"
@@ -101,17 +102,15 @@ func (p *AgyProcess) Wait() error {
 	return p.cmd.Wait()
 }
 
+// Kill останавливает агента вместе с дочерними процессами (git, node и т. п.).
 func (p *AgyProcess) Kill() error {
-	if p.cmd.Process != nil {
-		return p.cmd.Process.Kill()
-	}
-	return nil
+	return cliproc.KillGroup(p.cmd)
 }
 
 func (p *AgyProcess) Close() error {
 	return p.ptmx.Close()
 }
 
-func (p *AgyProcess) GetCmd() *exec.Cmd {
-	return p.cmd
+func (p *AgyProcess) PID() int {
+	return cliproc.PID(p.cmd)
 }
