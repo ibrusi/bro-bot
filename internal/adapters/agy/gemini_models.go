@@ -61,6 +61,10 @@ type geminiModel struct {
 	Version     []int
 	Effort      int  // high=3, medium=2, low=1, не указан=0
 	Preview     bool // preview / exp / experimental
+
+	// Лимиты модели из ListModels: окно контекста и предельный размер ответа.
+	InputTokenLimit  int
+	OutputTokenLimit int
 }
 
 // parseGeminiModelName разбирает имя модели в структуру с семейством и версией.
@@ -373,6 +377,8 @@ func listGeminiModels(ctx context.Context, client *genai.Client, force bool) ([]
 
 		parsed := parseGeminiModelName(id)
 		parsed.ID = id
+		parsed.InputTokenLimit = int(info.InputTokenLimit)
+		parsed.OutputTokenLimit = int(info.OutputTokenLimit)
 		parsed.DisplayName = strings.TrimSpace(info.DisplayName)
 		if parsed.DisplayName == "" {
 			parsed.DisplayName = id

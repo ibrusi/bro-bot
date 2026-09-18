@@ -42,6 +42,8 @@ func (a *ClaudeAPIAdapter) AgentName() string {
 // buildClaudeMessagesBody собирает тело запроса к Messages API: историю диалога
 // (Claude API не хранит сессии на своей стороне) и текущий вопрос пользователя.
 func buildClaudeMessagesBody(modelName string, args ports.ExecuteArgs) map[string]interface{} {
+	maxTokens := claudeMaxTokensFor(modelName)
+
 	messages := make([]map[string]interface{}, 0, len(args.History)+1)
 	for _, msg := range args.History {
 		content := strings.TrimSpace(msg.Content)
@@ -58,7 +60,7 @@ func buildClaudeMessagesBody(modelName string, args ports.ExecuteArgs) map[strin
 
 	reqBody := map[string]interface{}{
 		"model":      modelName,
-		"max_tokens": 8192,
+		"max_tokens": maxTokens,
 		"messages":   messages,
 		"stream":     true,
 	}
@@ -66,6 +68,27 @@ func buildClaudeMessagesBody(modelName string, args ports.ExecuteArgs) map[strin
 		reqBody["system"] = systemPrompt
 	}
 	return reqBody
+}
+
+// Пределы размера ответа. Жёсткое значение 8192 резало длинные ответы, поэтому берём
+// предел самой модели из /v1/models, ограничивая его потолком для стриминга.
+const (
+	claudeDefaultMaxTokens = 8192  // когда лимит модели неизвестен
+	claudeStreamMaxTokens  = 64000 // разумный потолок для потокового ответа
+)
+
+// claudeMaxTokensFor возвращает размер ответа для модели по её лимиту из списка API.
+func claudeMaxTokensFor(modelName string) int {
+	for _, m := range modelCache.cached() {
+		if !strings.EqualFold(m.ID, modelName) || m.MaxTokens <= 0 {
+			continue
+		}
+		if m.MaxTokens < claudeStreamMaxTokens {
+			return m.MaxTokens
+		}
+		return claudeStreamMaxTokens
+	}
+	return claudeDefaultMaxTokens
 }
 
 // ExecuteTask запускает генерацию сообщений через Claude Messages API со стримингом в формате stream-json NDJSON
@@ -149,6 +172,11 @@ func doClaudeRequest(ctx context.Context, stream claudeStreamRequest, model stri
 	if err != nil {
 		return nil, err
 	}
+
+	// Лимиты приходят заголовками и на успехе, и на ошибке (в том числе на 429):
+	// снимаем их бесплатно, без отдельных запросов ради /usage.
+	captureClaudeRateLimits(resp.Header)
+
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
@@ -201,16 +229,119 @@ func (a *ClaudeAPIAdapter) GetModels(ctx context.Context) ([]byte, error) {
 	return []byte(formatClaudeModelsList(available)), nil
 }
 
+// GetQuota отдаёт лимиты ключа API в том же формате, который понимает рендер /usage:
+// группы и корзины с долей остатка и временем восполнения.
+//
+// Данные берутся из снимка заголовков последнего ответа Messages API. Пока запросов не было,
+// групп в ответе нет — тогда обработчик покажет текст из GetQuotaText, а не пустые шкалы.
 func (a *ClaudeAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
-	return []byte(`{"status":"SUCCESS","response":"Claude API usage is managed in Anthropic Console"}`), nil
+	snapshot := lastClaudeRateLimits()
+
+	payload := map[string]interface{}{
+		"status": "SUCCESS",
+		"command": map[string]interface{}{
+			"name": "quota",
+			"data": map[string]interface{}{
+				"description": claudeQuotaDescription(snapshot),
+			},
+		},
+	}
+
+	if len(snapshot.Buckets) > 0 {
+		buckets := make([]map[string]interface{}, 0, len(snapshot.Buckets))
+		for _, bucket := range snapshot.Buckets {
+			item := map[string]interface{}{
+				"name":       bucket.Name,
+				"reset_time": bucket.Reset,
+			}
+			if frac := bucket.Fraction(); frac != nil {
+				item["remaining_fraction"] = *frac
+				item["description"] = fmt.Sprintf("осталось %s из %s",
+					formatClaudeCount(bucket.Remaining), formatClaudeCount(bucket.Limit))
+			}
+			buckets = append(buckets, item)
+		}
+
+		data := payload["command"].(map[string]interface{})["data"].(map[string]interface{})
+		data["groups"] = []map[string]interface{}{{
+			"name":        "Лимиты ключа API",
+			"description": "по данным последнего ответа API",
+			"buckets":     buckets,
+		}}
+	}
+
+	return json.Marshal(payload)
 }
 
+// claudeQuotaDescription поясняет, насколько свежий снимок лимитов.
+func claudeQuotaDescription(snapshot claudeRateLimits) string {
+	if len(snapshot.Buckets) == 0 {
+		return "Лимиты появятся после первого ответа агента."
+	}
+	return fmt.Sprintf("Снимок от %s", snapshot.CapturedAt.Format("15:04:05"))
+}
+
+// GetQuotaText — человекочитаемая сводка для случаев, когда структурных данных нет.
 func (a *ClaudeAPIAdapter) GetQuotaText(ctx context.Context) ([]byte, error) {
-	return []byte("Claude API integration active via Anthropic Console."), nil
+	var bldr strings.Builder
+
+	snapshot := lastClaudeRateLimits()
+	if len(snapshot.Buckets) == 0 {
+		bldr.WriteString("Лимиты ключа API приходят вместе с ответами Claude, поэтому появятся здесь ")
+		bldr.WriteString("после первого ответа агента — отдельные запросы ради этого бот не делает.\n")
+	} else {
+		bldr.WriteString(fmt.Sprintf("Лимиты ключа API на %s:\n", snapshot.CapturedAt.Format("15:04:05")))
+		for _, bucket := range snapshot.Buckets {
+			if frac := bucket.Fraction(); frac != nil {
+				bldr.WriteString(fmt.Sprintf("• %s: осталось %s из %s (%.0f%%)\n",
+					bucket.Name, formatClaudeCount(bucket.Remaining), formatClaudeCount(bucket.Limit), *frac*100))
+				continue
+			}
+			bldr.WriteString(fmt.Sprintf("• %s: предел не сообщён\n", bucket.Name))
+		}
+	}
+
+	if model, ok := currentClaudeModelLimits(); ok {
+		bldr.WriteString(fmt.Sprintf("Модель %s: контекст %s токенов, ответ до %s токенов.\n",
+			model.ID, formatClaudeCount(int64(model.MaxInputTokens)), formatClaudeCount(int64(model.MaxTokens))))
+	}
+
+	bldr.WriteString("Расход токенов ботом: /tokens. Счета и лимиты организации: консоль Anthropic.")
+	return []byte(bldr.String()), nil
 }
 
+// currentClaudeModelLimits возвращает лимиты модели, выбранной для api-режима.
+func currentClaudeModelLimits() (claudeModel, bool) {
+	available := modelCache.cached()
+	if len(available) == 0 {
+		return claudeModel{}, false
+	}
+
+	resolved := resolveClaudeAPIModel("", available)
+	for _, m := range available {
+		if strings.EqualFold(m.ID, resolved) && (m.MaxInputTokens > 0 || m.MaxTokens > 0) {
+			return m, true
+		}
+	}
+	return claudeModel{}, false
+}
+
+// GetCredits — у ключа API нет понятия «кредиты»: это механика подписки CLI,
+// поэтому отдаём пустой объект, и блок кредитов в /usage не показывается.
 func (a *ClaudeAPIAdapter) GetCredits(ctx context.Context) ([]byte, error) {
 	return []byte(`{}`), nil
+}
+
+// formatClaudeCount печатает крупные числа компактно: 1.2M, 45K, 900.
+func formatClaudeCount(value int64) string {
+	switch {
+	case value >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(value)/1_000_000)
+	case value >= 1_000:
+		return fmt.Sprintf("%.0fK", float64(value)/1_000)
+	default:
+		return fmt.Sprintf("%d", value)
+	}
 }
 
 type ClaudeAPIProcess struct {
@@ -269,6 +400,8 @@ func (p *ClaudeAPIProcess) handleError(err error) {
 }
 
 func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStreamRequest) {
+	startedAt := time.Now()
+
 	defer func() {
 		_ = p.wPipe.Close()
 		close(p.doneChan)
@@ -294,7 +427,7 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 	readBuf := make([]byte, 4096)
 
 	var textAccumulator strings.Builder
-	var inputTokens, outputTokens int64
+	var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int64
 
 	for {
 		n, err := scanner.Read(readBuf)
@@ -354,6 +487,13 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 							if inp, ok := usage["input_tokens"].(float64); ok {
 								inputTokens = int64(inp)
 							}
+							// Токены кэша считаются отдельно от входных и нужны /tokens.
+							if cached, ok := usage["cache_read_input_tokens"].(float64); ok {
+								cacheReadTokens = int64(cached)
+							}
+							if created, ok := usage["cache_creation_input_tokens"].(float64); ok {
+								cacheCreationTokens = int64(created)
+							}
 						}
 					}
 				} else if evtType == "message_delta" {
@@ -371,15 +511,20 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 		}
 	}
 
-	// 2. Отправляем итоговый результат
+	// 2. Отправляем итоговый результат.
+	// Длительность и число ходов нужны трекеру токенов: без них /tokens показывает нулевую скорость.
 	resEvt := map[string]interface{}{
-		"type":       "result",
-		"session_id": p.sessionID,
-		"is_error":   false,
-		"result":     textAccumulator.String(),
+		"type":        "result",
+		"session_id":  p.sessionID,
+		"is_error":    false,
+		"result":      textAccumulator.String(),
+		"duration_ms": float64(time.Since(startedAt).Milliseconds()),
+		"num_turns":   1,
 		"usage": map[string]interface{}{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
+			"input_tokens":                inputTokens,
+			"output_tokens":               outputTokens,
+			"cache_read_input_tokens":     cacheReadTokens,
+			"cache_creation_input_tokens": cacheCreationTokens,
 		},
 	}
 	resBytes, _ := json.Marshal(resEvt)
