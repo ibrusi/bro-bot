@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"bro-bot/internal/adapters/agy"
-	"bro-bot/internal/adapters/claude"
 	"bro-bot/internal/adapters/transcript"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
@@ -114,6 +112,17 @@ func Start(t ports.Transport) {
 		}
 	}
 
+	config.ChatTimeout = 5 * time.Minute
+	if envChatTimeout := os.Getenv("CHAT_TIMEOUT"); envChatTimeout != "" {
+		if d, err := time.ParseDuration(envChatTimeout); err == nil && d > 0 {
+			config.ChatTimeout = d
+		} else if sec, err := strconv.Atoi(envChatTimeout); err == nil && sec > 0 {
+			config.ChatTimeout = time.Duration(sec) * time.Second
+		} else {
+			log.Printf("Предупреждение: некорректный формат CHAT_TIMEOUT, используется значение по умолчанию %v", config.ChatTimeout)
+		}
+	}
+
 	if os.Getenv("BOT_SERVICE_NAME") == "" {
 		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр BOT_SERVICE_NAME не задан")
 	}
@@ -141,6 +150,7 @@ func Start(t ports.Transport) {
 		log.Fatalf("Не удалось инициализировать SQLite базу данных: %v", err)
 	}
 	domain.GlobalTaskManager.InitWithStorage(sqliteStorage)
+	domain.GlobalChatManager.InitWithStorage(sqliteStorage)
 
 	models.GlobalModelRegistry = models.NewModelRegistry(10 * time.Minute)
 
@@ -175,6 +185,10 @@ func Start(t ports.Transport) {
 	if savedMode, err := sqliteStorage.GetSetting(ctx, "execution_mode"); err == nil && savedMode != "" {
 		config.ProjectState.SetExecutionMode(savedMode)
 		log.Printf("Восстановлен режим выполнения из SQLite: %s", savedMode)
+	}
+	if savedInteraction, err := sqliteStorage.GetSetting(ctx, "interaction_mode"); err == nil && savedInteraction != "" {
+		config.ProjectState.SetInteractionMode(savedInteraction)
+		log.Printf("Восстановлен режим взаимодействия из SQLite: %s", savedInteraction)
 	}
 
 	if savedAgent, err := sqliteStorage.GetSetting(ctx, "current_agent"); err == nil && savedAgent != "" {
@@ -224,6 +238,10 @@ func Start(t ports.Transport) {
 			"🤖 <b>Агент-воркер готов к работе!</b>\n\n"+
 				"📁 Выбранный проект: <code>%s</code>\n"+
 				"🧠 Активная модель: <code>%s</code>\n\n"+
+				"<b>Диалог:</b>\n"+
+				"• Обычное сообщение — вопрос агенту по проекту, контекст разговора сохраняется\n"+
+				"• /chat [вопрос|new|stop] — статус разговора, новый разговор или остановка ответа\n"+
+				"• /chatmode [on|off] — отвечать в чате или сразу создавать задачу\n\n"+
 				"<b>Задачи:</b>\n"+
 				"• /tasks — список задач и быстрое переключение\n"+
 				"• /task &lt;id&gt; [текст] — переключить фокус на задачу или дополнить её\n"+
@@ -231,7 +249,7 @@ func Start(t ports.Transport) {
 				"• /planmode [on|off] — включить обязательный план для всех задач\n"+
 				"• /approve [id] — утвердить план задачи и начать реализацию\n"+
 				"• /add [id] &lt;текст&gt; — отправить дополнение конкретной задаче\n"+
-				"• /new [проект] [агент] &lt;текст&gt; — создать новую задачу (с выбором проекта и агента)\n" +
+				"• /new [проект] [агент] &lt;текст&gt; — создать новую задачу (с выбором проекта и агента)\n"+
 				"• /resume [id] [ответ] — возобновить задачу или передать ответ\n"+
 				"• /retry [id] — перезапустить задачу с чистой сессией agy\n"+
 				"• /pause [id] — приостановить задачу\n"+
@@ -248,7 +266,7 @@ func Start(t ports.Transport) {
 				"• /use &lt;имя&gt; — переключить активный проект\n"+
 				"• /clone &lt;url&gt; [имя] — клонировать репозиторий\n"+
 				"• /restart, /rebuild [branch=имя] [pull] [force] — управление процессом и пересборка бота\n\n"+
-				"💡 <i>Отправьте задачу сообщением в чат. Для предварительного плана используйте /plan &lt;задача&gt;. Дополнения можно отправлять через /add [id] &lt;текст&gt; или ответом на сообщения бота.</i>",
+				"💡 <i>Обычное сообщение — это разговор с агентом. Если бот увидит запрос на изменение кода, он предложит составить план или создать задачу. Прямые команды: /plan &lt;задача&gt; и /new &lt;задача&gt;, дополнения — через /add [id] &lt;текст&gt; или ответом на сообщения бота.</i>",
 			html.EscapeString(curProj),
 			html.EscapeString(curMod),
 		)
@@ -858,6 +876,110 @@ func Start(t ports.Transport) {
 		}
 
 		return s.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nНовые задачи будут сразу приступать к реализации (для плана используйте <code>/plan &lt;задача&gt;</code>).", ports.Rich())
+	})
+
+	t.OnCommand("chat", func(s ports.Session) error {
+		args := s.Args()
+		config.ProjectState.RLock()
+		curProj := config.ProjectState.CurrentProject
+		curModel := config.ProjectState.CurrentModel
+		config.ProjectState.RUnlock()
+
+		if len(args) == 0 {
+			if curProj == "" {
+				return s.Send("❌ Сначала выберите проект: /projects", nil)
+			}
+			return s.Send(formatChatStatus(curProj), ports.RichWith(buildChatModeMarkup()))
+		}
+
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "new", "reset", "новый", "сброс":
+			if curProj == "" {
+				return s.Send("❌ Сначала выберите проект: /projects", nil)
+			}
+			if session := domain.GlobalChatManager.Get(curProj); session != nil {
+				session.Cancel()
+			}
+			domain.GlobalChatManager.Reset(curProj, curModel)
+			return s.Send(fmt.Sprintf("🔄 <b>Начат новый разговор</b> в проекте <code>%s</code>. Прошлый контекст больше не используется.", html.EscapeString(curProj)), ports.Rich())
+
+		case "stop", "стоп", "отмена":
+			if curProj == "" {
+				return s.Send("❌ Сначала выберите проект: /projects", nil)
+			}
+			session := domain.GlobalChatManager.Get(curProj)
+			if session == nil || !session.Cancel() {
+				return s.Send("ℹ️ Сейчас нет активного ответа в диалоге.", ports.Rich())
+			}
+			return s.Send("🛑 <b>Ответ агента остановлен.</b>", ports.Rich())
+		}
+
+		return handleChatMessage(s, strings.TrimSpace(strings.Join(args, " ")))
+	})
+
+	t.OnCommand("chatmode", func(s ports.Session) error {
+		args := s.Args()
+		current := config.ProjectState.GetInteractionMode()
+		target := domain.InteractionModeChat
+
+		if len(args) == 0 {
+			if current == domain.InteractionModeChat {
+				target = domain.InteractionModeTask
+			}
+		} else {
+			switch strings.ToLower(strings.TrimSpace(args[0])) {
+			case "on", "enable", "true", "1", "вкл", "да", "chat":
+				target = domain.InteractionModeChat
+			case "off", "disable", "false", "0", "выкл", "нет", "task":
+				target = domain.InteractionModeTask
+			case "toggle":
+				if current == domain.InteractionModeChat {
+					target = domain.InteractionModeTask
+				}
+			default:
+				return s.Send("Использование: <code>/chatmode [on|off|toggle]</code>", ports.Rich())
+			}
+		}
+
+		return applyInteractionMode(s, target, false)
+	})
+
+	t.OnCallback("chat_mode_toggle", func(s ports.Session) error {
+		target := domain.InteractionModeTask
+		if config.ProjectState.GetInteractionMode() == domain.InteractionModeTask {
+			target = domain.InteractionModeChat
+		}
+		return applyInteractionMode(s, target, true)
+	})
+
+	t.OnCallback("chat_answer", func(s ports.Session) error {
+		sug, ok := takeChatSuggestion(s)
+		if !ok {
+			_ = s.Respond("Карточка устарела")
+			return s.Send("ℹ️ Карточка устарела — отправьте сообщение ещё раз.", ports.Rich())
+		}
+		_ = s.Respond("Отвечаю в чате")
+		return startChatTurn(s.Messenger(), s.Chat(), sug.Project, sug.Agent, sug.Text, "")
+	})
+
+	t.OnCallback("chat_plan", func(s ports.Session) error {
+		sug, ok := takeChatSuggestion(s)
+		if !ok {
+			_ = s.Respond("Карточка устарела")
+			return s.Send("ℹ️ Карточка устарела — отправьте сообщение ещё раз.", ports.Rich())
+		}
+		_ = s.Respond("Составляю план")
+		return handleCreateNewTaskWithOptions(s, sug.Text, true)
+	})
+
+	t.OnCallback("chat_task", func(s ports.Session) error {
+		sug, ok := takeChatSuggestion(s)
+		if !ok {
+			_ = s.Respond("Карточка устарела")
+			return s.Send("ℹ️ Карточка устарела — отправьте сообщение ещё раз.", ports.Rich())
+		}
+		_ = s.Respond("Создаю задачу")
+		return handleCreateNewTaskWithOptions(s, sug.Text, false)
 	})
 
 	t.OnCommand("planfile", func(s ports.Session) error {
@@ -1670,18 +1792,28 @@ func Start(t ports.Transport) {
 		}
 
 		// 2. Проверяем активную задачу в фокусе
+		note := ""
 		active := domain.GlobalTaskManager.GetActiveTask()
 		if active != nil {
-			active.Lock()
-			st := active.Status
-			active.Unlock()
-			if active.IsActive() || st == domain.TaskStatusPaused {
+			if active.IsActive() {
 				return handleAddFollowupToTask(s, active.ID, userText)
+			}
+			// Приостановленная задача забирает сообщение, только если она действительно ждёт ответа
+			// на свежий вопрос. Иначе задача, зависшая после перезапуска бота, навсегда
+			// перехватывала бы весь диалог.
+			if hasFreshPendingQuestion(active) {
+				return handleAddFollowupToTask(s, active.ID, userText)
+			}
+			if isAwaitingAnswer(active) {
+				note = fmt.Sprintf("❓ Задача #%d всё ещё ждёт ответа: /resume %d", active.ID, active.ID)
 			}
 		}
 
-		// 3. Нет активных задач — запускаем новую задачу
-		return handleCreateNewTask(s, userText)
+		// 3. Нет активных задач — диалоговый режим или создание задачи
+		if config.ProjectState.GetInteractionMode() == domain.InteractionModeTask {
+			return handleCreateNewTask(s, userText)
+		}
+		return handleTextInChatModeWithNote(s, userText, note)
 	})
 
 	go system.CheckAndNotifyRestart(t, config.AdminID)
@@ -2256,13 +2388,14 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	stepCtx, stepCancel := context.WithTimeout(context.Background(), stepTimeout+2*time.Minute)
 	defer stepCancel()
 
-	framework := Agent
-	if framework == nil || !strings.EqualFold(taskAgent, ActiveAgentName) {
-		if strings.EqualFold(taskAgent, "claude") {
-			framework = claude.NewClaudeAdapter()
-		} else {
-			framework = agy.NewAgyAdapter()
-		}
+	framework, frameworkErr := agentFrameworkFor(taskAgent)
+	if frameworkErr != nil {
+		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, frameworkErr), ports.Rich())
+		task.Lock()
+		task.Status = domain.TaskStatusFailed
+		task.Unlock()
+		syncLegacySession(task)
+		return StepResult{Outcome: StepOutcomeError, Error: frameworkErr}
 	}
 	agentProcess, err := framework.ExecuteTask(stepCtx, args)
 	if err != nil {
@@ -3497,6 +3630,8 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "planfile", Description: "[id] Скачать полный план задачи в виде .md файла"},
 		{Name: "history", Description: "[id] Показать переписку пользователя и агента в сессии задачи"},
 		{Name: "add", Description: "[id] <текст> Дополнить задачу текстом"},
+		{Name: "chat", Description: "[вопрос|new|stop] Разговор с агентом по текущему проекту"},
+		{Name: "chatmode", Description: "[on|off] Отвечать в чате вместо создания задачи"},
 		{Name: "new", Description: "[проект] [агент] <текст> Создать новую задачу в проекте/агенте"},
 		{Name: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
 		{Name: "retry", Description: "[id] Перезапустить задачу с чистого листа"},
@@ -3524,19 +3659,13 @@ func SwitchActiveAgent(name string) (string, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	switch name {
 	case "agy":
-		var adapter ports.AgentFramework
 		mode := config.ProjectState.GetExecutionMode()
-		if mode == "api" {
-			apiKey := os.Getenv("GEMINI_API_KEY")
-			if apiKey == "" {
-				return "", fmt.Errorf("для работы <b>agy</b> в режиме <code>api</code> необходимо задать <code>GEMINI_API_KEY</code> в .env")
-			}
-			adapter = agy.NewAgyAPIAdapter()
-		} else {
-			adapter = agy.NewAgyAdapter()
+		adapter, err := buildAgentFramework("agy", mode)
+		if err != nil {
+			return "", err
 		}
 		Agent = adapter
-		models.Agent = adapter
+		models.SetAgent(adapter)
 		ActiveAgentName = "agy"
 		config.ProjectState.SetCurrentAgent("agy")
 		config.ProjectState.Lock()
@@ -3564,22 +3693,13 @@ func SwitchActiveAgent(name string) (string, error) {
 		}()
 		return fmt.Sprintf("✅ Агент переключен на: <b>agy</b> [%s]", html.EscapeString(mode)) + suggested, nil
 	case "claude":
-		var adapter ports.AgentFramework
 		mode := config.ProjectState.GetExecutionMode()
-		if mode == "api" {
-			apiKey := os.Getenv("ANTHROPIC_API_KEY")
-			if apiKey == "" {
-				apiKey = os.Getenv("CLAUDE_API_KEY")
-			}
-			if apiKey == "" {
-				return "", fmt.Errorf("для работы <b>claude</b> в режиме <code>api</code> необходимо задать <code>ANTHROPIC_API_KEY</code> или <code>CLAUDE_API_KEY</code> в .env")
-			}
-			adapter = claude.NewClaudeAPIAdapter()
-		} else {
-			adapter = claude.NewClaudeAdapter()
+		adapter, err := buildAgentFramework("claude", mode)
+		if err != nil {
+			return "", err
 		}
 		Agent = adapter
-		models.Agent = adapter
+		models.SetAgent(adapter)
 		ActiveAgentName = "claude"
 		config.ProjectState.SetCurrentAgent("claude")
 		config.ProjectState.Lock()
