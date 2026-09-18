@@ -38,7 +38,7 @@ func buildTransport() ports.Transport {
 
 func main() {
 	adapter := agy.NewAgyAdapter()
-	handlers.Agent = adapter
+	handlers.SetActiveAgent(adapter, "agy")
 	models.SetAgent(adapter)
 
 	handlers.Start(buildTransport())

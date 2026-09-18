@@ -36,11 +36,15 @@ const (
 // agentFrameworkFor возвращает адаптер для указанного агента с учётом текущего режима выполнения.
 // Это единая точка выбора адаптера: она одинаково работает для agy и claude, для cli и api.
 func agentFrameworkFor(agentName string) (ports.AgentFramework, error) {
+	// Адаптер и имя берём одной парой: иначе можно сравнить имя с новым агентом,
+	// а вернуть адаптер от предыдущего.
+	activeFramework, activeName := ActiveAgent()
+
 	name := normalizeAgentName(agentName)
 
 	// Активный агент уже собран при переключении /agent и /mode — переиспользуем его.
-	if Agent != nil && strings.EqualFold(name, ActiveAgentName) {
-		return Agent, nil
+	if activeFramework != nil && strings.EqualFold(name, activeName) {
+		return activeFramework, nil
 	}
 	return buildAgentFramework(name, config.ProjectState.GetExecutionMode())
 }
@@ -77,7 +81,7 @@ func buildAgentFramework(agentName, mode string) (ports.AgentFramework, error) {
 func normalizeAgentName(agentName string) string {
 	name := strings.ToLower(strings.TrimSpace(agentName))
 	if name == "" {
-		name = strings.ToLower(strings.TrimSpace(ActiveAgentName))
+		name = strings.ToLower(strings.TrimSpace(ActiveAgentName()))
 	}
 	if name != "claude" {
 		name = "agy"
@@ -200,7 +204,7 @@ func handleTextInChatModeWithNote(s ports.Session, text, note string) error {
 	curProj := config.ProjectState.CurrentProject
 	config.ProjectState.RUnlock()
 
-	targetProj, targetAgent, prompt := parseNewTaskInput(text, curProj, ActiveAgentName)
+	targetProj, targetAgent, prompt := parseNewTaskInput(text, curProj, ActiveAgentName())
 	if strings.TrimSpace(prompt) == "" {
 		return nil
 	}
@@ -223,7 +227,7 @@ func handleChatMessage(s ports.Session, text string) error {
 	curProj := config.ProjectState.CurrentProject
 	config.ProjectState.RUnlock()
 
-	targetProj, targetAgent, prompt := parseNewTaskInput(text, curProj, ActiveAgentName)
+	targetProj, targetAgent, prompt := parseNewTaskInput(text, curProj, ActiveAgentName())
 	if strings.TrimSpace(prompt) == "" {
 		return s.Send("Использование: <code>/chat &lt;вопрос&gt;</code>", ports.Rich())
 	}
@@ -680,7 +684,7 @@ func applyInteractionMode(s ports.Session, target string, fromButton bool) error
 // formatChatStatus описывает текущий разговор: проект, агент, режим и вид памяти.
 func formatChatStatus(project string) string {
 	mode := config.ProjectState.GetExecutionMode()
-	agent := ActiveAgentName
+	agent := ActiveAgentName()
 	if agent == "" {
 		agent = "agy"
 	}

@@ -22,14 +22,13 @@ func setupChatTestApp(t *testing.T, response string) (*mockTransport, *mock.Agen
 	mt := setupTestApp(t)
 
 	agent := &mock.AgentFramework{Name: "agy", Response: response, ConversationID: "conv-agy-cli"}
-	prevAgent, prevName := Agent, ActiveAgentName
-	Agent = agent
-	ActiveAgentName = "agy"
+	prevFramework, prevName := ActiveAgent()
+	SetActiveAgent(agent, "agy")
 	config.ProjectState.SetExecutionMode("cli")
 	config.ProjectState.SetInteractionMode(domain.InteractionModeChat)
 
 	t.Cleanup(func() {
-		Agent, ActiveAgentName = prevAgent, prevName
+		SetActiveAgent(prevFramework, prevName)
 		config.ProjectState.SetExecutionMode("cli")
 		config.ProjectState.SetInteractionMode(domain.InteractionModeChat)
 	})
