@@ -1,6 +1,10 @@
 package claude
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -107,15 +111,59 @@ func TestResolveClaudeModel(t *testing.T) {
 	}
 }
 
-func TestClaudeAdapter_GetModels(t *testing.T) {
-	adapter := NewClaudeAdapter()
-	out, err := adapter.GetModels(nil)
+// TestClaudeAdapter_GetModelsWithoutKeyReturnsAliases — без ключа API список состоит
+// только из псевдонимов CLI: они не протухают, в отличие от зашитых версий.
+func TestClaudeAdapter_GetModelsWithoutKeyReturnsAliases(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_API_KEY", "")
+
+	out, err := NewClaudeAdapter().GetModels(context.Background())
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("GetModels: %v", err)
 	}
 	s := string(out)
-	if !strings.Contains(s, "claude-sonnet") {
-		t.Errorf("expected GetModels output to contain claude-sonnet, got %s", s)
+	for _, alias := range []string{"sonnet", "opus", "fable"} {
+		if !strings.HasPrefix(s, alias+" ") && !strings.Contains(s, "\n"+alias+" ") {
+			t.Errorf("в списке нет псевдонима %q: %s", alias, s)
+		}
+	}
+	if strings.Contains(s, "claude-3") || strings.Contains(s, "4-6") || strings.Contains(s, "4-5") {
+		t.Errorf("в списке не должно быть зашитых версий: %s", s)
+	}
+}
+
+// TestClaudeAdapter_GetModelsWithKeyUsesLiveList — с ключом cli-режим показывает тот же
+// живой список, что и api-режим.
+func TestClaudeAdapter_GetModelsWithKeyUsesLiveList(t *testing.T) {
+	resetClaudeModelCache(t)
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{
+				{"id": "claude-opus-5", "display_name": "Claude Opus 5"},
+				{"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"},
+			},
+			"has_more": false,
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	adapter := &ClaudeAdapter{HTTPClient: srv.Client(), BaseURL: srv.URL}
+	out, err := adapter.GetModels(context.Background())
+	if err != nil {
+		t.Fatalf("GetModels: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "claude-opus-5 Claude Opus 5") || !strings.Contains(s, "claude-sonnet-5 Claude Sonnet 5") {
+		t.Errorf("ожидали живой список из /v1/models, получили: %s", s)
+	}
+	if strings.Contains(s, "актуальная версия") {
+		t.Errorf("при живом списке псевдонимы не нужны: %s", s)
 	}
 }
 
@@ -129,7 +177,6 @@ func TestClaudeAdapter_GetCredits(t *testing.T) {
 		t.Errorf("expected GetCredits to return '{}', got %s", string(out))
 	}
 }
-
 
 // История диалога в CLI-режиме не влияет на аргументы: claude восстанавливает контекст по --resume.
 func TestBuildClaudeArgs_IgnoresHistory(t *testing.T) {

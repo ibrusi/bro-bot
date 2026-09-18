@@ -112,3 +112,44 @@ func TestUsageSourceTitle(t *testing.T) {
 		}
 	}
 }
+
+// TestUsageUsesCLIResultWithoutSecondProcess — конверт CLI Claude Code уже несёт текст
+// в поле result; второй запуск процесса ради GetQuotaText — лишняя секунда ожидания.
+func TestUsageUsesCLIResultWithoutSecondProcess(t *testing.T) {
+	mt, agent := setupMatrixApp(t, "claude", "cli", "claude-cli-usage", "ответ")
+	// Снято с настоящего `claude --output-format json -p /usage` (лишние поля опущены).
+	agent.QuotaOutput = `{"type":"result","subtype":"success","is_error":false,` +
+		`"result":"Total cost:            $0.0000\nUsage:                 0 input, 0 output",` +
+		`"local_command":"usage","session_id":"x"}`
+
+	handler := mt.commands["usage"]
+	if err := handler(adminSession(mt, &mock.Session{})); err != nil {
+		t.Fatalf("/usage: %v", err)
+	}
+
+	texts := mt.AllTexts()
+	out := texts[len(texts)-1]
+	if !strings.Contains(out, "Total cost") {
+		t.Errorf("текст из result не дошёл до пользователя: %s", out)
+	}
+	if strings.Contains(out, "<pre>") || strings.Contains(out, `"type"`) {
+		t.Errorf("в ответ попал служебный конверт: %s", out)
+	}
+	if calls := agent.QuotaTextCalls(); calls != 0 {
+		t.Errorf("GetQuotaText вызван %d раз — второй процесс не нужен, текст уже есть", calls)
+	}
+}
+
+// TestUsageStillAsksTextWhenEnvelopeHasNone — у API-адаптеров конверт без текста,
+// и сводка по-прежнему берётся из GetQuotaText.
+func TestUsageStillAsksTextWhenEnvelopeHasNone(t *testing.T) {
+	mt, agent := setupMatrixApp(t, "agy", "api", "agy-api-usage", "ответ")
+
+	handler := mt.commands["usage"]
+	if err := handler(adminSession(mt, &mock.Session{})); err != nil {
+		t.Fatalf("/usage: %v", err)
+	}
+	if calls := agent.QuotaTextCalls(); calls != 1 {
+		t.Errorf("GetQuotaText должен быть вызван один раз, вызван %d", calls)
+	}
+}

@@ -6,10 +6,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const testChatID ports.ChatID = "12345"
@@ -701,7 +703,9 @@ func TestTaskManagerWithSQLiteStorage(t *testing.T) {
 	task2.Unlock()
 	tm1.SaveTask(task2)
 
-	// 2. Имитация перезапуска сервиса (создаём новый TaskManager над той же БД)
+	// 2. Имитация перезапуска сервиса (создаём новый TaskManager над той же БД).
+	// Логи пишутся пачками в фоне — перед чтением из базы их нужно дописать.
+	tm1.FlushLogs()
 	tm2 := NewTaskManagerWithStorage(s)
 
 	if len(tm2.ListTasks()) != 2 {
@@ -1158,5 +1162,112 @@ func TestGetRunningWorkerPidsIgnoresProcessesWithoutPID(t *testing.T) {
 	}
 	if len(others) != 0 {
 		t.Errorf("процесс без PID не должен попадать в список: %v", others)
+	}
+}
+
+func TestAppendOutputLockedCapsSize(t *testing.T) {
+	task := &TaskSession{ID: 1}
+
+	chunk := strings.Repeat("я", 64*1024) // 128 КиБ: кириллица по два байта
+	for i := 0; i < 20; i++ {
+		task.Lock()
+		task.AppendOutputLocked(chunk)
+		task.Unlock()
+	}
+
+	task.Lock()
+	size := task.FullOutput.Len()
+	out := task.FullOutput.String()
+	task.Unlock()
+
+	if !task.OutputTruncated() {
+		t.Fatal("после 2.5 МиБ вывод должен быть помечен обрезанным")
+	}
+	if size > maxFullOutputBytes+len(outputTruncatedMarker) {
+		t.Errorf("размер %d превышает потолок %d", size, maxFullOutputBytes)
+	}
+	if !utf8.ValidString(out) {
+		t.Error("обрезка порвала руну: строка не является корректным UTF-8")
+	}
+	if !strings.HasSuffix(out, outputTruncatedMarker) {
+		t.Error("в конце должна стоять пометка об обрезке")
+	}
+
+	// После обрезки ничего не дописывается, а сброс снимает пометку.
+	task.Lock()
+	task.AppendOutputLocked("ещё")
+	after := task.FullOutput.Len()
+	task.ResetOutputLocked()
+	task.AppendOutputLocked("снова")
+	restarted := task.FullOutput.String()
+	task.Unlock()
+	if after != size {
+		t.Error("после обрезки вывод не должен расти")
+	}
+	if restarted != "снова" || task.OutputTruncated() {
+		t.Errorf("после сброса вывод должен копиться заново, получили %q", restarted)
+	}
+}
+
+func TestAppendLogWritesInBatchesAndKeepsOrder(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "logs.db")
+	s, err := storage.NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	tm := NewTaskManagerWithStorage(s)
+	task := tm.CreateTask("proj", "m", "логи", testChatID)
+
+	const n = 250 // больше одной пачки и больше буфера RecentLogs
+	for i := 0; i < n; i++ {
+		task.AppendLog(fmt.Sprintf("строка %03d", i))
+	}
+	tm.FlushLogs()
+
+	logs, err := s.GetRecentLogs(context.Background(), task.ID, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != n {
+		t.Fatalf("в хранилище %d строк, ожидали %d", len(logs), n)
+	}
+	for i, line := range logs {
+		if want := fmt.Sprintf("строка %03d", i); line != want {
+			t.Fatalf("порядок нарушен: строка %d = %q, ожидали %q", i, line, want)
+		}
+	}
+
+	task.Lock()
+	recent := len(task.RecentLogs)
+	task.Unlock()
+	if recent != 20 {
+		t.Errorf("RecentLogs должен хранить 20 последних строк, хранит %d", recent)
+	}
+}
+
+// TestInitWithStorageStopsPreviousLogWriter — переинициализация не должна терять
+// строки, поставленные в очередь прежнему писателю.
+func TestInitWithStorageStopsPreviousLogWriter(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "logs.db")
+	s, err := storage.NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	tm := NewTaskManagerWithStorage(s)
+	task := tm.CreateTask("proj", "m", "логи", testChatID)
+	task.AppendLog("до переинициализации")
+
+	tm.InitWithStorage(s) // закрывает прежнего писателя, дописав очередь
+
+	logs, err := s.GetRecentLogs(context.Background(), task.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || logs[0] != "до переинициализации" {
+		t.Errorf("строка из очереди прежнего писателя потеряна: %v", logs)
 	}
 }

@@ -30,14 +30,17 @@ type AgentFramework struct {
 	StartErr error
 	// WaitErr — ошибка завершения процесса агента.
 	WaitErr error
+	// QuotaOutput — ответ GetQuota; пустой — конверт без данных, как у заглушки.
+	QuotaOutput string
 	// Hang — процесс отдаёт событие system и затем «работает» бесконечно: поток
 	// не завершается, пока его не остановят через Kill или отмену контекста. Нужен
 	// для проверки /cancel: обычный мок заканчивается раньше, чем его успеют отменить.
 	Hang bool
 
-	calls   []ports.ExecuteArgs
-	killed  bool
-	stopped bool
+	calls          []ports.ExecuteArgs
+	killed         bool
+	stopped        bool
+	quotaTextCalls int
 }
 
 // ExecuteTask имитирует запуск агента и возвращает процесс с готовым потоком событий.
@@ -198,11 +201,27 @@ func (f *AgentFramework) GetModels(_ context.Context) ([]byte, error) {
 }
 
 func (f *AgentFramework) GetQuota(_ context.Context) ([]byte, error) {
-	return []byte(`{"status":"SUCCESS","response":"mock quota"}`), nil
+	f.mu.Lock()
+	out := f.QuotaOutput
+	f.mu.Unlock()
+	if out == "" {
+		out = `{"status":"SUCCESS","response":"mock quota"}`
+	}
+	return []byte(out), nil
 }
 
 func (f *AgentFramework) GetQuotaText(_ context.Context) ([]byte, error) {
+	f.mu.Lock()
+	f.quotaTextCalls++
+	f.mu.Unlock()
 	return []byte(fmt.Sprintf("mock quota (%s)", f.Name)), nil
+}
+
+// QuotaTextCalls — сколько раз звали GetQuotaText: у CLI это отдельный процесс.
+func (f *AgentFramework) QuotaTextCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.quotaTextCalls
 }
 
 func (f *AgentFramework) GetCredits(_ context.Context) ([]byte, error) {

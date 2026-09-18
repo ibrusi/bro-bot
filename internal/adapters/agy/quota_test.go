@@ -101,16 +101,3 @@ func TestAgyGetCreditsIsEmptyForAPIKey(t *testing.T) {
 		t.Errorf("у ключа API нет кредитов, ожидали пустой объект, получили %s", raw)
 	}
 }
-
-func TestFormatGeminiCount(t *testing.T) {
-	cases := map[int64]string{
-		900:     "900",
-		65536:   "66K",
-		1048576: "1.0M",
-	}
-	for value, want := range cases {
-		if got := formatGeminiCount(value); got != want {
-			t.Errorf("formatGeminiCount(%d) = %q, ожидали %q", value, got, want)
-		}
-	}
-}

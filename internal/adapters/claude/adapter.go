@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,10 +15,16 @@ import (
 	"github.com/creack/pty"
 )
 
-type ClaudeAdapter struct{}
+// ClaudeAdapter запускает CLI Claude Code. HTTPClient и BaseURL нужны только для
+// списка моделей: у CLI нет команды, которая его выдаёт, поэтому при наличии ключа
+// список берётся из /v1/models тем же кодом, что и в api-режиме.
+type ClaudeAdapter struct {
+	HTTPClient *http.Client
+	BaseURL    string
+}
 
 func NewClaudeAdapter() *ClaudeAdapter {
-	return &ClaudeAdapter{}
+	return &ClaudeAdapter{BaseURL: defaultClaudeBaseURL}
 }
 
 func resolveClaudeModel(modelName string) string {
@@ -75,13 +82,28 @@ func (a *ClaudeAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 	}, nil
 }
 
+// claudeCLIAliases — псевдонимы, которые принимает флаг --model CLI («alias for the
+// latest model»). Они не протухают по построению: CLI сам сопоставляет их с актуальной
+// версией. Это запасной список на случай, когда ключа API нет и живой список недоступен.
+const claudeCLIAliases = "sonnet Claude Sonnet (актуальная версия)\n" +
+	"opus Claude Opus (актуальная версия)\n" +
+	"fable Claude Fable (актуальная версия)\n"
+
+// GetModels возвращает список моделей для cli-режима. Раньше здесь был зашитый список
+// конкретных версий, который устаревал так же, как устарели claude-3-*: теперь при
+// наличии ключа список живой (/v1/models), а без ключа — только псевдонимы CLI.
 func (a *ClaudeAdapter) GetModels(ctx context.Context) ([]byte, error) {
-	// Возвращаем список поддерживаемых моделей Claude в формате, совместимом с parseAgyModelsOutput
-	modelsText := "claude-sonnet-5 Claude Sonnet 5 (Hybrid Reasoning)\n" +
-		"claude-sonnet-4-6 Claude Sonnet 4.6 (Thinking)\n" +
-		"claude-opus-4-6-thinking Claude Opus 4.6 (Thinking)\n" +
-		"claude-haiku-4-5 Claude Haiku 4.5 (Fast & Lightweight)\n"
-	return []byte(modelsText), nil
+	if apiKey := apiKeyFromEnv(); apiKey != "" {
+		baseURL := a.BaseURL
+		if baseURL == "" {
+			baseURL = defaultClaudeBaseURL
+		}
+		available, err := listClaudeModels(ctx, a.HTTPClient, baseURL, apiKey, false)
+		if err == nil && len(available) > 0 {
+			return []byte(formatClaudeModelsList(available)), nil
+		}
+	}
+	return []byte(claudeCLIAliases), nil
 }
 
 func (a *ClaudeAdapter) GetQuota(ctx context.Context) ([]byte, error) {

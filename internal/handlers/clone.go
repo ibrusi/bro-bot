@@ -214,9 +214,7 @@ func handleCloneCommand(s ports.Session) error {
 			// git цитирует адрес репозитория в своих ошибках ("Authentication failed
 			// for 'https://token@...'"), поэтому вывод тоже чистим от учётных данных.
 			outStr := strings.TrimSpace(utils.RedactURLCredentials(string(out)))
-			if len(outStr) > 1500 {
-				outStr = outStr[:1500] + "\n... (вывод обрезан)"
-			}
+			outStr = utils.TruncateWithNote(outStr, 1500, "\n... (вывод обрезан)")
 			if outStr == "" {
 				outStr = cloneErr.Error()
 			}

@@ -2,6 +2,7 @@ package agy
 
 import (
 	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 	"context"
 	"encoding/json"
 	"errors"
@@ -121,7 +122,7 @@ func (a *AgyAPIAdapter) GetQuotaText(ctx context.Context) ([]byte, error) {
 			name = model.ID
 		}
 		bldr.WriteString(fmt.Sprintf("Модель %s: контекст %s токенов, ответ до %s токенов.\n",
-			name, formatGeminiCount(int64(model.InputTokenLimit)), formatGeminiCount(int64(model.OutputTokenLimit))))
+			name, utils.FormatCount(int64(model.InputTokenLimit)), utils.FormatCount(int64(model.OutputTokenLimit))))
 	}
 
 	bldr.WriteString("Расход токенов ботом: /tokens.")
@@ -143,18 +144,6 @@ func currentGeminiModelLimits() (geminiModel, bool) {
 		}
 	}
 	return geminiModel{}, false
-}
-
-// formatGeminiCount печатает крупные числа компактно: 1.2M, 45K, 900.
-func formatGeminiCount(value int64) string {
-	switch {
-	case value >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(value)/1_000_000)
-	case value >= 1_000:
-		return fmt.Sprintf("%.0fK", float64(value)/1_000)
-	default:
-		return fmt.Sprintf("%d", value)
-	}
 }
 
 // GetCredits — у ключа API нет понятия «кредиты»: это механика подписки CLI,

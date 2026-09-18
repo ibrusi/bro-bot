@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -27,11 +28,23 @@ type ClaudeAPIAdapter struct {
 	BaseURL    string
 }
 
+// defaultClaudeBaseURL — корень Claude API; тесты подменяют его на httptest-сервер.
+const defaultClaudeBaseURL = "https://api.anthropic.com/v1"
+
 func NewClaudeAPIAdapter() *ClaudeAPIAdapter {
 	return &ClaudeAPIAdapter{
 		HTTPClient: &http.Client{Timeout: 0}, // No client-level timeout for streaming
-		BaseURL:    "https://api.anthropic.com/v1",
+		BaseURL:    defaultClaudeBaseURL,
 	}
+}
+
+// apiKeyFromEnv возвращает ключ Claude API из окружения: ANTHROPIC_API_KEY либо
+// устаревший CLAUDE_API_KEY. Пустая строка — ключа нет.
+func apiKeyFromEnv() string {
+	if key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); key != "" {
+		return key
+	}
+	return strings.TrimSpace(os.Getenv("CLAUDE_API_KEY"))
 }
 
 func (a *ClaudeAPIAdapter) AgentName() string {
@@ -92,10 +105,7 @@ func claudeMaxTokensFor(modelName string) int {
 
 // ExecuteTask запускает генерацию сообщений через Claude Messages API со стримингом в формате stream-json NDJSON
 func (a *ClaudeAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		apiKey = os.Getenv("CLAUDE_API_KEY")
-	}
+	apiKey := apiKeyFromEnv()
 
 	if apiKey == "" {
 		return nil, fmt.Errorf("API ключ не найден. Задайте ANTHROPIC_API_KEY или CLAUDE_API_KEY в .env для работы в режиме API")
@@ -212,10 +222,7 @@ func (r claudeStreamRequest) build(ctx context.Context, model string) (*http.Req
 }
 
 func (a *ClaudeAPIAdapter) GetModels(ctx context.Context) ([]byte, error) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		apiKey = os.Getenv("CLAUDE_API_KEY")
-	}
+	apiKey := apiKeyFromEnv()
 	if apiKey == "" {
 		return nil, fmt.Errorf("API ключ не найден. Задайте ANTHROPIC_API_KEY или CLAUDE_API_KEY в .env для работы в режиме API")
 	}
@@ -256,7 +263,7 @@ func (a *ClaudeAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
 			if frac := bucket.Fraction(); frac != nil {
 				item["remaining_fraction"] = *frac
 				item["description"] = fmt.Sprintf("осталось %s из %s",
-					formatClaudeCount(bucket.Remaining), formatClaudeCount(bucket.Limit))
+					utils.FormatCount(bucket.Remaining), utils.FormatCount(bucket.Limit))
 			}
 			buckets = append(buckets, item)
 		}
@@ -293,7 +300,7 @@ func (a *ClaudeAPIAdapter) GetQuotaText(ctx context.Context) ([]byte, error) {
 		for _, bucket := range snapshot.Buckets {
 			if frac := bucket.Fraction(); frac != nil {
 				bldr.WriteString(fmt.Sprintf("• %s: осталось %s из %s (%.0f%%)\n",
-					bucket.Name, formatClaudeCount(bucket.Remaining), formatClaudeCount(bucket.Limit), *frac*100))
+					bucket.Name, utils.FormatCount(bucket.Remaining), utils.FormatCount(bucket.Limit), *frac*100))
 				continue
 			}
 			bldr.WriteString(fmt.Sprintf("• %s: предел не сообщён\n", bucket.Name))
@@ -302,7 +309,7 @@ func (a *ClaudeAPIAdapter) GetQuotaText(ctx context.Context) ([]byte, error) {
 
 	if model, ok := currentClaudeModelLimits(); ok {
 		bldr.WriteString(fmt.Sprintf("Модель %s: контекст %s токенов, ответ до %s токенов.\n",
-			model.ID, formatClaudeCount(int64(model.MaxInputTokens)), formatClaudeCount(int64(model.MaxTokens))))
+			model.ID, utils.FormatCount(int64(model.MaxInputTokens)), utils.FormatCount(int64(model.MaxTokens))))
 	}
 
 	bldr.WriteString("Расход токенов ботом: /tokens. Счета и лимиты организации: консоль Anthropic.")
@@ -329,18 +336,6 @@ func currentClaudeModelLimits() (claudeModel, bool) {
 // поэтому отдаём пустой объект, и блок кредитов в /usage не показывается.
 func (a *ClaudeAPIAdapter) GetCredits(ctx context.Context) ([]byte, error) {
 	return []byte(`{}`), nil
-}
-
-// formatClaudeCount печатает крупные числа компактно: 1.2M, 45K, 900.
-func formatClaudeCount(value int64) string {
-	switch {
-	case value >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(value)/1_000_000)
-	case value >= 1_000:
-		return fmt.Sprintf("%.0fK", float64(value)/1_000)
-	default:
-		return fmt.Sprintf("%d", value)
-	}
 }
 
 type ClaudeAPIProcess struct {

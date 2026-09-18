@@ -1968,8 +1968,13 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 	if lastClaude == nil {
 		t.Fatalf("expected message from /models refresh (claude)")
 	}
-	if !strings.Contains(lastClaude.Text, "claude-sonnet") {
-		t.Errorf("expected claude models message to contain claude-sonnet, got: %s", lastClaude.Text)
+	// Без ключа API cli-адаптер claude отдаёт псевдонимы CLI (sonnet/opus/fable):
+	// зашитых версий, которые протухают, в списке больше нет.
+	if !strings.Contains(lastClaude.Text, "sonnet") {
+		t.Errorf("expected claude models message to contain sonnet alias, got: %s", lastClaude.Text)
+	}
+	if strings.Contains(lastClaude.Text, "claude-3") || strings.Contains(lastClaude.Text, "4-6") {
+		t.Errorf("claude models message should not contain hardcoded versions, got: %s", lastClaude.Text)
 	}
 	if strings.Contains(lastClaude.Text, "gemini") {
 		t.Errorf("claude models message should not contain gemini models, got: %s", lastClaude.Text)
