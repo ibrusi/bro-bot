@@ -50,6 +50,9 @@ func buildClaudeArgs(convID, modelName, prompt string) []string {
 	return args
 }
 
+// ExecuteTask запускает CLI-агента claude.
+// Поля args.History и args.SystemPrompt намеренно игнорируются: историю диалога claude хранит сам
+// и восстанавливает по флагу --resume, а преамбула подмешивается в текст промпта.
 func (a *ClaudeAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
 	cmdArgs := buildClaudeArgs(args.ConversationID, args.ModelName, args.Prompt)
 	cmd := exec.CommandContext(ctx, "claude", cmdArgs...)

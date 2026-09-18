@@ -38,6 +38,35 @@ func (a *ClaudeAPIAdapter) AgentName() string {
 	return "claude-api"
 }
 
+// buildClaudeMessagesBody собирает тело запроса к Messages API: историю диалога
+// (Claude API не хранит сессии на своей стороне) и текущий вопрос пользователя.
+func buildClaudeMessagesBody(modelName string, args ports.ExecuteArgs) map[string]interface{} {
+	messages := make([]map[string]interface{}, 0, len(args.History)+1)
+	for _, msg := range args.History {
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			continue
+		}
+		role := "user"
+		if strings.EqualFold(msg.Role, "assistant") || strings.EqualFold(msg.Role, "model") {
+			role = "assistant"
+		}
+		messages = append(messages, map[string]interface{}{"role": role, "content": content})
+	}
+	messages = append(messages, map[string]interface{}{"role": "user", "content": args.Prompt})
+
+	reqBody := map[string]interface{}{
+		"model":      modelName,
+		"max_tokens": 8192,
+		"messages":   messages,
+		"stream":     true,
+	}
+	if systemPrompt := strings.TrimSpace(args.SystemPrompt); systemPrompt != "" {
+		reqBody["system"] = systemPrompt
+	}
+	return reqBody
+}
+
 // ExecuteTask запускает генерацию сообщений через Claude Messages API со стримингом в формате stream-json NDJSON
 func (a *ClaudeAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -63,19 +92,7 @@ func (a *ClaudeAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 		sessionID = fmt.Sprintf("claude-api-%d", time.Now().UnixNano())
 	}
 
-	reqBody := map[string]interface{}{
-		"model":      modelName,
-		"max_tokens": 8192,
-		"messages": []map[string]interface{}{
-			{
-				"role":    "user",
-				"content": args.Prompt,
-			},
-		},
-		"stream": true,
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
+	bodyBytes, err := json.Marshal(buildClaudeMessagesBody(modelName, args))
 	if err != nil {
 		return nil, fmt.Errorf("ошибка маршалинга запроса Claude API: %w", err)
 	}

@@ -20,12 +20,24 @@ type AgentFramework interface {
 	GetCredits(ctx context.Context) ([]byte, error)
 }
 
+// ChatMessage — одна реплика диалога, передаваемая агенту для восстановления контекста.
+type ChatMessage struct {
+	Role    string // "user" или "assistant"
+	Content string
+}
+
 // ExecuteArgs содержит аргументы для запуска агента
 type ExecuteArgs struct {
 	ConversationID string
 	ModelName      string
 	Prompt         string
 	WorkDir        string
+	// History — предыдущие реплики диалога. Используется только API-адаптерами:
+	// CLI-агенты хранят историю сами (agy --conversation, claude --resume) и это поле игнорируют.
+	History []ChatMessage
+	// SystemPrompt — системная инструкция (например, преамбула диалогового режима).
+	// Также только для API-адаптеров: у CLI-агентов преамбула подмешивается в текст промпта.
+	SystemPrompt string
 }
 
 // AgentProcess инкапсулирует запущенный процесс агента

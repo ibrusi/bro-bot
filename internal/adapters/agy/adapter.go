@@ -35,6 +35,9 @@ func buildAgyArgs(convID, modelName, prompt string) []string {
 	return args
 }
 
+// ExecuteTask запускает CLI-агента agy.
+// Поля args.History и args.SystemPrompt намеренно игнорируются: историю диалога agy хранит сам
+// и восстанавливает по флагу --conversation, а преамбула подмешивается в текст промпта.
 func (a *AgyAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
 	cmdArgs := buildAgyArgs(args.ConversationID, args.ModelName, args.Prompt)
 	cmd := exec.CommandContext(ctx, "agy", cmdArgs...)

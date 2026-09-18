@@ -6,6 +6,10 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"bro-bot/internal/ports"
+
+	"github.com/google/generative-ai-go/genai"
 )
 
 func TestAgyAPIAdapter_AgentName(t *testing.T) {
@@ -208,5 +212,50 @@ func TestIsModelUnavailableError(t *testing.T) {
 	}
 	if isModelUnavailableError(nil) {
 		t.Error("nil не является ошибкой модели")
+	}
+}
+
+func TestGeminiHistoryContentsRoleMapping(t *testing.T) {
+	history := []ports.ChatMessage{
+		{Role: "user", Content: "привет"},
+		{Role: "assistant", Content: "здравствуй"},
+		{Role: "model", Content: "уточню"},
+		{Role: "user", Content: "   "}, // пустые реплики отбрасываем
+	}
+
+	contents := geminiHistoryContents(history)
+	if len(contents) != 3 {
+		t.Fatalf("ожидали 3 реплики, получили %d", len(contents))
+	}
+	wantRoles := []string{"user", "model", "model"}
+	for i, want := range wantRoles {
+		if contents[i].Role != want {
+			t.Errorf("роль реплики %d = %q, ожидали %q", i, contents[i].Role, want)
+		}
+	}
+	if text, ok := contents[0].Parts[0].(genai.Text); !ok || string(text) != "привет" {
+		t.Errorf("текст первой реплики: %+v", contents[0].Parts[0])
+	}
+
+	if geminiHistoryContents(nil) != nil {
+		t.Error("пустая история должна давать nil")
+	}
+	if geminiHistoryContents([]ports.ChatMessage{{Role: "user", Content: " "}}) != nil {
+		t.Error("история из пустых реплик должна давать nil")
+	}
+}
+
+func TestUsageFromMetadata(t *testing.T) {
+	if usageFromMetadata(nil) != nil {
+		t.Error("без метаданных ожидали nil")
+	}
+
+	usage := usageFromMetadata(&genai.UsageMetadata{
+		PromptTokenCount:        120,
+		CandidatesTokenCount:    45,
+		CachedContentTokenCount: 10,
+	})
+	if usage["input_tokens"] != int64(120) || usage["output_tokens"] != int64(45) || usage["cache_read_input_tokens"] != int64(10) {
+		t.Errorf("неожиданные счётчики токенов: %+v", usage)
 	}
 }

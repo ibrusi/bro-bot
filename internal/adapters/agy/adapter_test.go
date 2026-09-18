@@ -86,3 +86,17 @@ func TestAgyAdapter_GetModels_Real(t *testing.T) {
 		t.Errorf("expected GetModels output to contain gemini models, got: %s", outputStr)
 	}
 }
+
+// История диалога в CLI-режиме не влияет на аргументы: agy восстанавливает контекст
+// по --conversation, а History предназначена только для api-режима.
+func TestBuildAgyArgs_IgnoresHistory(t *testing.T) {
+	withoutHistory := buildAgyArgs("conv-1", "gemini-3.8-flash-high", "вопрос")
+	withHistory := buildAgyArgs("conv-1", "gemini-3.8-flash-high", "вопрос")
+
+	if strings.Join(withoutHistory, " ") != strings.Join(withHistory, " ") {
+		t.Errorf("аргументы разошлись: %v vs %v", withoutHistory, withHistory)
+	}
+	if !strings.Contains(strings.Join(withHistory, " "), "--conversation conv-1") {
+		t.Errorf("ожидали флаг --conversation: %v", withHistory)
+	}
+}
