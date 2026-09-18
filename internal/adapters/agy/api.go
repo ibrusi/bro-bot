@@ -1,12 +1,13 @@
 package agy
 
 import (
-	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -30,51 +31,11 @@ func (a *AgyAPIAdapter) AgentName() string {
 	return "agy-api"
 }
 
-func resolveGeminiModel(modelName string) string {
-	if modelName == "default" || modelName == "" {
-		return "gemini-2.5-pro"
-	}
-
-	if models.GlobalModelRegistry != nil {
-		if resolved, ok := models.GlobalModelRegistry.ResolveModel(modelName); ok {
-			// Models from registry might have CLI specific names, let's map known aliases
-			if strings.Contains(strings.ToLower(resolved), "flash") {
-			    if strings.Contains(strings.ToLower(resolved), "2.5") {
-					return "gemini-2.5-flash"
-				}
-				if strings.Contains(strings.ToLower(resolved), "8b") {
-					return "gemini-1.5-flash-8b"
-				}
-				return "gemini-1.5-flash"
-			}
-			if strings.Contains(strings.ToLower(resolved), "pro") {
-				if strings.Contains(strings.ToLower(resolved), "2.5") {
-					return "gemini-2.5-pro"
-				}
-				return "gemini-1.5-pro"
-			}
-			return resolved
-		}
-	}
-
-	lower := strings.ToLower(modelName)
-	if strings.Contains(lower, "flash") {
-		return "gemini-1.5-flash"
-	}
-	if strings.Contains(lower, "pro") {
-		return "gemini-1.5-pro"
-	}
-
-	return modelName
-}
-
 func (a *AgyAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("API ключ не найден. Задайте GEMINI_API_KEY в .env для работы в режиме API")
 	}
-
-	modelName := resolveGeminiModel(args.ModelName)
 
 	sessionID := args.ConversationID
 	if sessionID == "" {
@@ -91,18 +52,44 @@ func (a *AgyAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 		sessionID: sessionID,
 	}
 
-	go proc.runStreaming(ctx, apiKey, modelName, args.Prompt)
+	go proc.runStreaming(ctx, apiKey, args.ModelName, args.Prompt)
 
 	return proc, nil
 }
 
 func (a *AgyAPIAdapter) GetModels(ctx context.Context) ([]byte, error) {
-	modelsText := "gemini-2.5-pro Gemini 2.5 Pro\n" +
-		"gemini-2.5-flash Gemini 2.5 Flash\n" +
-		"gemini-1.5-pro Gemini 1.5 Pro\n" +
-		"gemini-1.5-flash Gemini 1.5 Flash\n" +
-		"gemini-1.5-flash-8b Gemini 1.5 Flash-8B\n"
-	return []byte(modelsText), nil
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("API ключ не найден. Задайте GEMINI_API_KEY в .env для работы в режиме API")
+	}
+
+	available, err := availableGeminiModels(ctx, apiKey, false)
+	if err != nil {
+		return nil, err
+	}
+
+	return []byte(formatGeminiModelsList(available)), nil
+}
+
+// formatGeminiModelsList приводит список моделей к формату "id Отображаемое имя",
+// который понимает парсер реестра моделей.
+func formatGeminiModelsList(available []geminiModel) string {
+	items := make([]geminiModel, len(available))
+	copy(items, available)
+	if len(items) == 0 {
+		items = append(items, fallbackGeminiModels...)
+	}
+	sortGeminiModels(items)
+
+	var bldr strings.Builder
+	for _, m := range items {
+		displayName := m.DisplayName
+		if displayName == "" {
+			displayName = m.ID
+		}
+		bldr.WriteString(fmt.Sprintf("%s %s\n", m.ID, displayName))
+	}
+	return bldr.String()
 }
 
 func (a *AgyAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
@@ -166,7 +153,7 @@ func (p *AgyAPIProcess) GetCmd() *exec.Cmd {
 	return nil
 }
 
-func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, modelName string, prompt string) {
+func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, requestedModel string, prompt string) {
 	defer func() {
 		_ = p.wPipe.Close()
 		close(p.doneChan)
@@ -188,6 +175,42 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, modelNa
 		return
 	}
 
+	modelName := resolveGeminiModelWithClient(ctx, client, requestedModel)
+
+	text, err := p.streamOnce(ctx, client, modelName, prompt)
+	if err != nil && isModelUnavailableError(err) && text == "" {
+		// Кэш моделей мог устареть (модель отключили): обновляем список и
+		// повторяем запрос на актуальной модели по умолчанию.
+		if fallback, ok := fallbackModelAfterFailure(ctx, client, modelName); ok {
+			log.Printf("agy-api: модель %q недоступна (%v), повторяем на %q", modelName, err, fallback)
+			modelName = fallback
+			text, err = p.streamOnce(ctx, client, modelName, prompt)
+		}
+	}
+	if err != nil {
+		if errors.Is(err, errStreamOutputClosed) {
+			return
+		}
+		p.handleError(err)
+		return
+	}
+
+	resEvt := map[string]interface{}{
+		"type":       "result",
+		"session_id": p.sessionID,
+		"is_error":   false,
+		"result":     text,
+	}
+	resBytes, _ := json.Marshal(resEvt)
+	_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(resBytes))
+}
+
+// errStreamOutputClosed означает, что читатель закрыл канал вывода — ошибку
+// показывать не нужно, достаточно тихо завершиться.
+var errStreamOutputClosed = errors.New("поток вывода закрыт")
+
+// streamOnce выполняет один проход генерации и возвращает накопленный текст.
+func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, modelName string, prompt string) (string, error) {
 	model := client.GenerativeModel(modelName)
 	stream := model.GenerateContentStream(ctx, genai.Text(prompt))
 
@@ -199,50 +222,46 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, modelNa
 			break
 		}
 		if err != nil {
-			p.handleError(err)
-			return
+			return textAccumulator.String(), err
 		}
 
 		for _, cand := range resp.Candidates {
-			if cand.Content != nil {
-				for _, part := range cand.Content.Parts {
-					if textPart, ok := part.(genai.Text); ok {
-						text := string(textPart)
-						if text != "" {
-							textAccumulator.WriteString(text)
+			if cand.Content == nil {
+				continue
+			}
+			for _, part := range cand.Content.Parts {
+				textPart, ok := part.(genai.Text)
+				if !ok {
+					continue
+				}
+				text := string(textPart)
+				if text == "" {
+					continue
+				}
+				textAccumulator.WriteString(text)
 
-							msgEvt := map[string]interface{}{
-								"type":       "assistant",
-								"session_id": p.sessionID,
-								"message": map[string]interface{}{
-									"role": "assistant",
-									"content": []map[string]interface{}{
-										{
-											"type": "text",
-											"text": text,
-										},
-									},
-								},
-							}
-							msgBytes, _ := json.Marshal(msgEvt)
-							if _, err := fmt.Fprintf(p.wPipe, "%s\n", string(msgBytes)); err != nil {
-								return
-							}
-						}
-					}
+				msgEvt := map[string]interface{}{
+					"type":       "assistant",
+					"session_id": p.sessionID,
+					"message": map[string]interface{}{
+						"role": "assistant",
+						"content": []map[string]interface{}{
+							{
+								"type": "text",
+								"text": text,
+							},
+						},
+					},
+				}
+				msgBytes, _ := json.Marshal(msgEvt)
+				if _, err := fmt.Fprintf(p.wPipe, "%s\n", string(msgBytes)); err != nil {
+					return textAccumulator.String(), errStreamOutputClosed
 				}
 			}
 		}
 	}
 
-	resEvt := map[string]interface{}{
-		"type":       "result",
-		"session_id": p.sessionID,
-		"is_error":   false,
-		"result":     textAccumulator.String(),
-	}
-	resBytes, _ := json.Marshal(resEvt)
-	_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(resBytes))
+	return textAccumulator.String(), nil
 }
 
 func (p *AgyAPIProcess) handleError(err error) {
