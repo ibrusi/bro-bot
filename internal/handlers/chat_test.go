@@ -54,7 +54,7 @@ func sendText(t *testing.T, mt *mockTransport, text string) {
 	if mt.textH == nil {
 		t.Fatal("обработчик текста не зарегистрирован")
 	}
-	sess := &mock.Session{M: mt.Messenger, ChatID: testChatID, TextVal: text}
+	sess := adminSession(mt, &mock.Session{TextVal: text})
 	if err := mt.textH(sess); err != nil {
 		t.Fatalf("обработчик текста вернул ошибку: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestChatModeCommandTogglePersists(t *testing.T) {
 		t.Fatal("команда /chatmode не зарегистрирована")
 	}
 
-	if err := handler(&mock.Session{M: mt.Messenger, ChatID: testChatID, ArgsVal: []string{"off"}}); err != nil {
+	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{"off"}})); err != nil {
 		t.Fatalf("/chatmode off: %v", err)
 	}
 	if got := config.ProjectState.GetInteractionMode(); got != domain.InteractionModeTask {
@@ -89,7 +89,7 @@ func TestChatModeCommandTogglePersists(t *testing.T) {
 		}
 	}
 
-	if err := handler(&mock.Session{M: mt.Messenger, ChatID: testChatID, ArgsVal: []string{"on"}}); err != nil {
+	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{"on"}})); err != nil {
 		t.Fatalf("/chatmode on: %v", err)
 	}
 	if got := config.ProjectState.GetInteractionMode(); got != domain.InteractionModeChat {
@@ -226,6 +226,7 @@ func TestChatSuggestionCallbacksCreateTasks(t *testing.T) {
 			sess := &mock.Session{
 				M:      mt.Messenger,
 				ChatID: testChatID,
+				Sender: string(testChatID),
 				CB: &ports.CallbackQuery{
 					ID:      "cb-1",
 					Chat:    testChatID,
@@ -264,6 +265,7 @@ func TestChatSuggestionExpired(t *testing.T) {
 	sess := &mock.Session{
 		M:      mt.Messenger,
 		ChatID: testChatID,
+		Sender: string(testChatID),
 		CB: &ports.CallbackQuery{
 			ID:      "cb-x",
 			Chat:    testChatID,
@@ -366,7 +368,7 @@ func TestChatNewResetsConversation(t *testing.T) {
 	})
 
 	handler := mt.commands["chat"]
-	if err := handler(&mock.Session{M: mt.Messenger, ChatID: testChatID, ArgsVal: []string{"new"}}); err != nil {
+	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{"new"}})); err != nil {
 		t.Fatalf("/chat new: %v", err)
 	}
 
@@ -384,7 +386,7 @@ func TestChatStatusShowsAgentAndMode(t *testing.T) {
 	mt, _ := setupChatTestApp(t, "ответ")
 
 	handler := mt.commands["chat"]
-	if err := handler(&mock.Session{M: mt.Messenger, ChatID: testChatID}); err != nil {
+	if err := handler(adminSession(mt, &mock.Session{})); err != nil {
 		t.Fatalf("/chat: %v", err)
 	}
 

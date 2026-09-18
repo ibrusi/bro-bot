@@ -1178,6 +1178,7 @@ type mockTransport struct {
 	commands  map[string]ports.Handler
 	callbacks map[string]ports.Handler
 	textH     ports.Handler
+	mws       []func(ports.Handler) ports.Handler
 }
 
 func newMockTransport() *mockTransport {
@@ -1188,18 +1189,50 @@ func newMockTransport() *mockTransport {
 	}
 }
 
+// wrap оборачивает обработчик зарегистрированными middleware — как это делает боевой
+// транспорт (internal/adapters/telegram/transport.go). Раньше Use здесь был пустышкой,
+// и проверка доступа в тестах не выполнялась ни разу.
+func (m *mockTransport) wrap(h ports.Handler) ports.Handler {
+	return func(s ports.Session) error {
+		wrapped := h
+		for i := len(m.mws) - 1; i >= 0; i-- {
+			wrapped = m.mws[i](wrapped)
+		}
+		return wrapped(s)
+	}
+}
+
 func (m *mockTransport) OnCommand(name string, h ports.Handler) {
-	m.commands[name] = h
+	m.commands[name] = m.wrap(h)
 }
 func (m *mockTransport) OnText(h ports.Handler) {
-	m.textH = h
+	m.textH = m.wrap(h)
 }
 func (m *mockTransport) OnCallback(action string, h ports.Handler) {
-	m.callbacks[action] = h
+	m.callbacks[action] = m.wrap(h)
 }
-func (m *mockTransport) Use(mw func(ports.Handler) ports.Handler) {}
-func (m *mockTransport) Start(ctx context.Context) error          { return nil }
-func (m *mockTransport) Stop()                                    {}
+func (m *mockTransport) Use(mw func(ports.Handler) ports.Handler) {
+	m.mws = append(m.mws, mw)
+}
+func (m *mockTransport) Start(ctx context.Context) error { return nil }
+func (m *mockTransport) Stop()                           {}
+
+// adminSession собирает сессию администратора: мок-транспорт, как и боевой, пропускает
+// только её. Мессенджер, отправитель и чат проставляются по умолчанию, поэтому забыть
+// их в новом тесте нельзя.
+func adminSession(mt *mockTransport, s *mock.Session) *mock.Session {
+	if s == nil {
+		s = &mock.Session{}
+	}
+	s.M = mt.Messenger
+	if s.ChatID == "" {
+		s.ChatID = testChatID
+	}
+	if s.Sender == "" {
+		s.Sender = string(testChatID)
+	}
+	return s
+}
 
 func TestHasAgentConflict(t *testing.T) {
 	// 1. nil task -> false
@@ -1319,6 +1352,7 @@ func TestSendAgentConflictDialog(t *testing.T) {
 	sess := &mock.Session{
 		M:      m,
 		ChatID: testChatID,
+		Sender: string(testChatID),
 	}
 
 	setActiveAgentNameForTest(t, "agy")
@@ -1423,6 +1457,7 @@ func TestResumeAgentConflictDialog(t *testing.T) {
 	sess := &mock.Session{
 		M:       mt.Messenger,
 		ChatID:  testChatID,
+		Sender:  string(testChatID),
 		ArgsVal: []string{strconv.Itoa(task.ID), "answer text to resume"},
 	}
 
@@ -1474,6 +1509,7 @@ func TestTaskAgentRestartCallback(t *testing.T) {
 	sess := &mock.Session{
 		M:      mt.Messenger,
 		ChatID: testChatID,
+		Sender: string(testChatID),
 		CB: &ports.CallbackQuery{
 			ID:          "cb1",
 			Action:      "task_agent_restart",
@@ -1523,6 +1559,7 @@ func TestTaskAgentSwitchCallback(t *testing.T) {
 	sess := &mock.Session{
 		M:      mt.Messenger,
 		ChatID: testChatID,
+		Sender: string(testChatID),
 		CB: &ports.CallbackQuery{
 			ID:          "cb2",
 			Action:      "task_agent_switch",
@@ -1715,6 +1752,7 @@ func TestNewCommandWithAgent(t *testing.T) {
 	sessUsage := &mock.Session{
 		M:       mt.Messenger,
 		ChatID:  testChatID,
+		Sender:  string(testChatID),
 		ArgsVal: []string{},
 	}
 	if err := newHandler(sessUsage); err != nil {
@@ -1729,6 +1767,7 @@ func TestNewCommandWithAgent(t *testing.T) {
 	sessOnlyAgent := &mock.Session{
 		M:       mt.Messenger,
 		ChatID:  testChatID,
+		Sender:  string(testChatID),
 		ArgsVal: []string{"claude"},
 	}
 	if err := newHandler(sessOnlyAgent); err != nil {
@@ -1743,6 +1782,7 @@ func TestNewCommandWithAgent(t *testing.T) {
 	sessWithProjAndAgent := &mock.Session{
 		M:       mt.Messenger,
 		ChatID:  testChatID,
+		Sender:  string(testChatID),
 		ArgsVal: []string{"testproj", "claude", "implement", "feature"},
 	}
 	if err := newHandler(sessWithProjAndAgent); err != nil {
@@ -1772,6 +1812,7 @@ func TestNewCommandWithAgent(t *testing.T) {
 	sessWithAgentAndProj := &mock.Session{
 		M:       mt.Messenger,
 		ChatID:  testChatID,
+		Sender:  string(testChatID),
 		ArgsVal: []string{"claude", "testproj2", "fix", "critical", "bug"},
 	}
 	if err := newHandler(sessWithAgentAndProj); err != nil {
@@ -1798,6 +1839,7 @@ func TestNewCommandWithAgent(t *testing.T) {
 	sessWithAgy := &mock.Session{
 		M:       mt.Messenger,
 		ChatID:  testChatID,
+		Sender:  string(testChatID),
 		ArgsVal: []string{"agy", "testproj3", "write", "integration", "tests"},
 	}
 	if err := newHandler(sessWithAgy); err != nil {
@@ -1832,6 +1874,7 @@ func TestStartCommandAndMenuNewDescription(t *testing.T) {
 	sess := &mock.Session{
 		M:      mt.Messenger,
 		ChatID: testChatID,
+		Sender: string(testChatID),
 	}
 	if err := startHandler(sess); err != nil {
 		t.Fatalf("startHandler failed: %v", err)
@@ -1878,6 +1921,7 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 	sessAgy := &mock.Session{
 		M:       mt.Messenger,
 		ChatID:  testChatID,
+		Sender:  string(testChatID),
 		ArgsVal: []string{"refresh"},
 	}
 	if err := modelsHandler(sessAgy); err != nil {
@@ -1900,6 +1944,7 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 	sessClaude := &mock.Session{
 		M:       mt.Messenger,
 		ChatID:  testChatID,
+		Sender:  string(testChatID),
 		ArgsVal: []string{"refresh"},
 	}
 	if err := modelsHandler(sessClaude); err != nil {
@@ -1925,6 +1970,7 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 	sessAgy2 := &mock.Session{
 		M:       mt.Messenger,
 		ChatID:  testChatID,
+		Sender:  string(testChatID),
 		ArgsVal: []string{"refresh"},
 	}
 	if err := modelsHandler(sessAgy2); err != nil {

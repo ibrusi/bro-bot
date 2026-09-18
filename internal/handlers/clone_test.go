@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bro-bot/internal/adapters/mock"
 	"bro-bot/internal/config"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -205,5 +207,36 @@ func TestCloneDestinationAndActiveProjectUnchanged(t *testing.T) {
 
 	if currentActive != initialActiveProject {
 		t.Errorf("active project changed: got %q, want %q", currentActive, initialActiveProject)
+	}
+}
+
+// TestCloneDoesNotEchoToken — бот сам предлагает встраивать Personal Access Token
+// в HTTPS-ссылку, поэтому в чат адрес должен уходить только без учётных данных:
+// история переписки хранится вечно.
+func TestCloneDoesNotEchoToken(t *testing.T) {
+	mt := setupTestApp(t)
+
+	const token = "ghp_SecretToken123"
+	handler, ok := mt.commands["clone"]
+	if !ok {
+		t.Fatal("команда /clone не зарегистрирована")
+	}
+
+	url := "https://" + token + "@github.com/owner/repo.git"
+	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{url}})); err != nil {
+		t.Fatalf("/clone вернула ошибку: %v", err)
+	}
+
+	texts := mt.AllTexts()
+	if len(texts) == 0 {
+		t.Fatal("/clone ничего не отправила")
+	}
+	for _, text := range texts {
+		if strings.Contains(text, token) {
+			t.Errorf("токен утёк в чат: %s", text)
+		}
+	}
+	if !strings.Contains(texts[0], "https://***@github.com/owner/repo.git") {
+		t.Errorf("адрес должен остаться читаемым: %s", texts[0])
 	}
 }

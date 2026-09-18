@@ -27,6 +27,14 @@ import (
 	"time"
 )
 
+const (
+	// scriptTimeout ограничивает время работы скрипта из /script: без него зависший
+	// скрипт держал бы обработчик команды бесконечно.
+	scriptTimeout = 2 * time.Minute
+	// scriptOutputLimit — сколько символов вывода скрипта уходит в чат.
+	scriptOutputLimit = 3500
+)
+
 // activeAgentMu защищает активного агента бота: его меняют команды /agent, /mode и /new <агент>,
 // а читают фоновые горутины пайплайна задач. Адаптер и имя лежат под одним мьютексом и читаются
 // парой: код сравнивает их между собой, и увидеть новое имя со старым адаптером нельзя.
@@ -191,8 +199,11 @@ func Start(t ports.Transport) {
 	// Восстанавливаем сохраненные настройки из базы данных
 	ctx := context.Background()
 	if savedProj, err := sqliteStorage.GetSetting(ctx, "current_project"); err == nil && savedProj != "" {
-		projPath := filepath.Join(config.ProjectsRoot, savedProj)
-		if fi, err := os.Stat(projPath); err == nil && fi.IsDir() {
+		// Значение приходит из базы, но проверяем его так же, как ввод пользователя:
+		// в базу оно когда-то попало из команды /use.
+		if projPath, pathErr := utils.SafeJoinSegment(config.ProjectsRoot, savedProj); pathErr != nil {
+			log.Printf("Сохранённый проект %q отклонён: %v", savedProj, pathErr)
+		} else if fi, err := os.Stat(projPath); err == nil && fi.IsDir() {
 			config.ProjectState.Lock()
 			config.ProjectState.CurrentProject = savedProj
 			config.ProjectState.Unlock()
@@ -234,14 +245,7 @@ func Start(t ports.Transport) {
 		log.Printf("Предупреждение: не удалось зарегистрировать команды: %v", err)
 	}
 
-	t.Use(func(next ports.Handler) ports.Handler {
-		return func(s ports.Session) error {
-			if s.SenderID() != string(config.AdminID) {
-				return nil
-			}
-			return next(s)
-		}
-	})
+	t.Use(authMiddleware(config.AdminID))
 
 	t.OnCommand("start", func(s ports.Session) error {
 		args := s.Args()
@@ -744,7 +748,13 @@ func Start(t ports.Transport) {
 		}
 
 		target := strings.TrimSpace(args[0])
-		targetPath := filepath.Join(config.ProjectsRoot, target)
+
+		// Без проверки имени "/use ../../etc" сделал бы рабочим каталогом агента
+		// произвольную директорию хоста.
+		targetPath, err := utils.SafeJoinSegment(config.ProjectsRoot, target)
+		if err != nil {
+			return s.Send(fmt.Sprintf("❌ Недопустимое имя проекта: %s", html.EscapeString(err.Error())), ports.Rich())
+		}
 
 		if fi, err := os.Stat(targetPath); err != nil || !fi.IsDir() {
 			return s.Send(fmt.Sprintf("❌ Проект <code>%s</code> не найден.", html.EscapeString(target)), ports.Rich())
@@ -1792,19 +1802,28 @@ func Start(t ports.Transport) {
 		if config.ScriptsDir == "" {
 			return s.Send("Директория скриптов не настроена (SCRIPTS_DIR)", nil)
 		}
-		scriptPath := filepath.Join(config.ScriptsDir, scriptName)
-		if !strings.HasPrefix(filepath.Clean(scriptPath), filepath.Clean(config.ScriptsDir)) {
-			return s.Send("Недопустимое имя скрипта", nil)
+
+		// Проверка префикса без разделителя пропускала каталог-сосед:
+		// "../scripts-evil/x" при корне "/opt/scripts" давал "/opt/scripts-evil/x".
+		scriptPath, err := utils.SafeJoin(config.ScriptsDir, scriptName)
+		if err != nil {
+			return s.Send(fmt.Sprintf("Недопустимое имя скрипта: %s", err.Error()), nil)
 		}
 		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
 			return s.Send(fmt.Sprintf("Скрипт %s не найден в %s", scriptName, config.ScriptsDir), nil)
 		}
 
-		cmd := exec.Command(scriptPath)
-		out, err := cmd.CombinedOutput()
-		msg := fmt.Sprintf("Результат выполнения %s:\n\n%s", scriptName, string(out))
-		if err != nil {
-			msg += fmt.Sprintf("\nОшибка: %v", err)
+		ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
+		defer cancel()
+
+		out, runErr := exec.CommandContext(ctx, scriptPath).CombinedOutput()
+		if ctx.Err() == context.DeadlineExceeded {
+			return s.Send(fmt.Sprintf("Скрипт %s прерван по таймауту (%s)", scriptName, scriptTimeout), nil)
+		}
+
+		msg := fmt.Sprintf("Результат выполнения %s:\n\n%s", scriptName, utils.TruncateString(string(out), scriptOutputLimit))
+		if runErr != nil {
+			msg += fmt.Sprintf("\nОшибка: %v", runErr)
 		}
 		return s.Send(msg, nil)
 	})
@@ -2846,13 +2865,15 @@ func isKnownAgent(name string) bool {
 
 // isProjectDir проверяет, существует ли директория проекта с таким именем в ProjectsRoot.
 func isProjectDir(name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" || strings.HasPrefix(name, ".") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+	if strings.HasPrefix(strings.TrimSpace(name), ".") {
 		return false
 	}
-	path := filepath.Join(config.ProjectsRoot, name)
-	fi, err := os.Stat(path)
-	return err == nil && fi.IsDir()
+	path, err := utils.SafeJoinSegment(config.ProjectsRoot, name)
+	if err != nil {
+		return false
+	}
+	fi, statErr := os.Stat(path)
+	return statErr == nil && fi.IsDir()
 }
 
 // stripLeadingWords удаляет count первых слов из строки text, сохраняя форматирование остатка.

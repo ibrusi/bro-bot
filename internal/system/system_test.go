@@ -1,6 +1,7 @@
 package system
 
 import (
+	"bro-bot/internal/adapters/mock"
 	"bro-bot/internal/domain"
 	"bro-bot/internal/ports"
 	"context"
@@ -39,6 +40,46 @@ func TestParseSystemFlags(t *testing.T) {
 		if got.Pull != tt.wantPull || got.Force != tt.wantForce || got.Branch != tt.wantBranch {
 			t.Errorf("parseSystemFlags(%v) = {Pull: %v, Force: %v, Branch: %v}, want {Pull: %v, Force: %v, Branch: %v}",
 				tt.args, got.Pull, got.Force, got.Branch, tt.wantPull, tt.wantForce, tt.wantBranch)
+		}
+	}
+}
+
+func TestValidateBranchName(t *testing.T) {
+	valid := []string{
+		"main",
+		"develop",
+		"feat/quota-limits",
+		"claude/intelligent-volta-vfwfj5",
+		"release-1.2.3",
+		"v2",
+	}
+	for _, name := range valid {
+		if err := validateBranchName(name); err != nil {
+			t.Errorf("validateBranchName(%q) вернул ошибку: %v", name, err)
+		}
+	}
+
+	// Ключевой случай: имя, начинающееся с дефиса, git разберёт как опцию,
+	// а не как ветку.
+	invalid := map[string]string{
+		"подстановка опции": "--upload-pack=touch /tmp/pwn",
+		"короткая опция":    "-f",
+		"пустое":            "",
+		"только пробелы":    "   ",
+		"две точки":         "feat/..\\/etc",
+		"переход вверх":     "../main",
+		"двойной слэш":      "feat//x",
+		"reflog":            "main@{1}",
+		"завершающий слэш":  "feat/",
+		"завершающая точка": "main.",
+		"суффикс lock":      "main.lock",
+		"пробел внутри":     "feat x",
+		"точка с запятой":   "main;rm -rf /",
+		"перевод строки":    "main\nls",
+	}
+	for what, name := range invalid {
+		if err := validateBranchName(name); err == nil {
+			t.Errorf("validateBranchName(%q) (%s) должен был вернуть ошибку", name, what)
 		}
 	}
 }
@@ -322,5 +363,55 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	}
 	if task2.Status != domain.TaskStatusCancelled {
 		t.Errorf("expected task2 to be cancelled by Force, got status %s", task2.Status)
+	}
+}
+
+// stubTransport — минимальный ports.Transport поверх мок-мессенджера: HandleRebuild
+// нужен только для отправки и правки статусных сообщений.
+type stubTransport struct {
+	*mock.Messenger
+}
+
+func (stubTransport) OnCommand(string, ports.Handler)       {}
+func (stubTransport) OnText(ports.Handler)                  {}
+func (stubTransport) OnCallback(string, ports.Handler)      {}
+func (stubTransport) Use(func(ports.Handler) ports.Handler) {}
+func (stubTransport) Start(context.Context) error           { return nil }
+func (stubTransport) Stop()                                 {}
+
+// TestHandleRebuildRejectsBadBranchName сторожит не саму validateBranchName, а её вызов
+// в HandleRebuild: без него имя вроде "--upload-pack=..." ушло бы в git как опция, и
+// сообщение было бы уже про ошибку git, а не про недопустимое имя.
+func TestHandleRebuildRejectsBadBranchName(t *testing.T) {
+	origTM := domain.GlobalTaskManager
+	defer func() { domain.GlobalTaskManager = origTM }()
+	domain.GlobalTaskManager = domain.NewTaskManager()
+
+	botDir := t.TempDir()
+	t.Setenv("BOT_DIR", botDir)
+
+	transport := stubTransport{Messenger: mock.New()}
+	sess := &mock.Session{
+		M:       transport.Messenger,
+		ChatID:  ports.ChatID("12345"),
+		Sender:  "12345",
+		ArgsVal: []string{"branch=--upload-pack=touch /tmp/pwn"},
+	}
+
+	if err := HandleRebuild(transport, sess); err != nil {
+		t.Fatalf("HandleRebuild вернул ошибку: %v", err)
+	}
+
+	texts := transport.AllTexts()
+	if len(texts) == 0 {
+		t.Fatal("HandleRebuild ничего не отправил")
+	}
+	last := texts[len(texts)-1]
+	if !strings.Contains(last, "Недопустимое имя ветки") {
+		t.Errorf("ожидали отказ до обращения к git, получили: %s", last)
+	}
+	// Сборка не должна была начаться.
+	if _, err := os.Stat(filepath.Join(botDir, "bot")); err == nil {
+		t.Error("сборка не должна была выполниться")
 	}
 }

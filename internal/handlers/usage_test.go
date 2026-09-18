@@ -18,7 +18,7 @@ func runUsage(t *testing.T, agentName, mode string) string {
 	if !ok {
 		t.Fatal("команда /usage не зарегистрирована")
 	}
-	if err := handler(&mock.Session{M: mt.Messenger, ChatID: testChatID}); err != nil {
+	if err := handler(adminSession(mt, &mock.Session{})); err != nil {
 		t.Fatalf("/usage вернула ошибку: %v", err)
 	}
 

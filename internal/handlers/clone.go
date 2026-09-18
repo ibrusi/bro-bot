@@ -3,6 +3,7 @@ package handlers
 import (
 	"bro-bot/internal/config"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 	"context"
 	"fmt"
 	"html"
@@ -10,12 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
-
-var validProjectNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_\.\-]+$`)
 
 // parseRepoURL parses git SSH and HTTPS URLs, returning the clean URL and inferred repo name.
 func parseRepoURL(rawURL string) (cleanURL, repoName string, err error) {
@@ -68,24 +66,14 @@ func parseRepoURL(rawURL string) (cleanURL, repoName string, err error) {
 }
 
 // sanitizeProjectName validates and cleans the target folder name for a project.
+// Общие правила для сегмента пути живут в utils.SanitizeSegment — здесь остаётся
+// только специфичное для репозиториев отбрасывание суффикса .git.
 func sanitizeProjectName(name string) (string, error) {
-	clean := strings.TrimSpace(name)
-	clean = strings.TrimSuffix(clean, ".git")
+	clean := strings.TrimSuffix(strings.TrimSpace(name), ".git")
 
-	if clean == "" {
-		return "", fmt.Errorf("имя проекта не может быть пустым")
-	}
-	if strings.HasPrefix(clean, "-") {
-		return "", fmt.Errorf("имя проекта не может начинаться с дефиса")
-	}
-	if clean == "." || clean == ".." {
-		return "", fmt.Errorf("недопустимое имя проекта")
-	}
-	if strings.ContainsAny(clean, "/\\: \t\r\n") {
-		return "", fmt.Errorf("имя проекта не должно содержать слэши, двоеточия или пробелы")
-	}
-	if !validProjectNameRegex.MatchString(clean) {
-		return "", fmt.Errorf("имя проекта содержит недопустимые символы. Разрешены только буквы, цифры, дефис, подчеркивание и точка")
+	clean, err := utils.SanitizeSegment(clean)
+	if err != nil {
+		return "", fmt.Errorf("имя проекта: %w", err)
 	}
 	return clean, nil
 }
@@ -165,6 +153,11 @@ func handleCloneCommand(s ports.Session) error {
 		return s.Send(fmt.Sprintf("❌ Ошибка в URL: %s\n\nИспользование: <code>/clone &lt;url&gt; [имя_папки]</code>", html.EscapeString(err.Error())), ports.Rich())
 	}
 
+	// В чат и в лог уходит ссылка без учётных данных: в HTTPS-URL часто встраивают
+	// токен доступа, и он не должен оставаться в истории переписки. Сам git clone
+	// ниже получает полный cleanURL.
+	displayURL := utils.RedactURLCredentials(cleanURL)
+
 	targetName := defaultName
 	if len(args) > 1 {
 		customName, err := sanitizeProjectName(args[1])
@@ -176,7 +169,7 @@ func handleCloneCommand(s ports.Session) error {
 		validatedName, err := sanitizeProjectName(defaultName)
 		if err != nil {
 			return s.Send(fmt.Sprintf("❌ Не удалось использовать автоматически извлеченное имя <code>%s</code>: %s\nУкажите имя явно: <code>/clone %s &lt;имя&gt;</code>",
-				html.EscapeString(defaultName), html.EscapeString(err.Error()), html.EscapeString(rawURL)), ports.Rich())
+				html.EscapeString(defaultName), html.EscapeString(err.Error()), html.EscapeString(displayURL)), ports.Rich())
 		}
 		targetName = validatedName
 	}
@@ -185,11 +178,10 @@ func handleCloneCommand(s ports.Session) error {
 	if err := os.MkdirAll(cleanRoot, 0755); err != nil {
 		return s.Send(fmt.Sprintf("❌ Ошибка доступа к каталогу проектов: %s", html.EscapeString(err.Error())), ports.Rich())
 	}
-	targetPath := filepath.Join(cleanRoot, targetName)
-	cleanTargetPath := filepath.Clean(targetPath)
 
-	if !strings.HasPrefix(cleanTargetPath, cleanRoot+string(filepath.Separator)) {
-		return s.Send("❌ Недопустимый путь для проекта.", ports.Rich())
+	targetPath, err := utils.SafeJoinSegment(cleanRoot, targetName)
+	if err != nil {
+		return s.Send(fmt.Sprintf("❌ Недопустимый путь для проекта: %s", html.EscapeString(err.Error())), ports.Rich())
 	}
 
 	if _, err := os.Stat(targetPath); err == nil {
@@ -204,7 +196,7 @@ func handleCloneCommand(s ports.Session) error {
 			"🌐 <b>URL:</b> <code>%s</code>\n"+
 			"📁 <b>Имя проекта:</b> <code>%s</code>\n\n"+
 			"<i>Пожалуйста, подождите, выполняется git clone...</i>",
-		html.EscapeString(cleanURL),
+		html.EscapeString(displayURL),
 		html.EscapeString(targetName),
 	), ports.Rich())
 	if err != nil {
@@ -219,7 +211,9 @@ func handleCloneCommand(s ports.Session) error {
 		if cloneErr != nil {
 			_ = os.RemoveAll(targetPath)
 
-			outStr := strings.TrimSpace(string(out))
+			// git цитирует адрес репозитория в своих ошибках ("Authentication failed
+			// for 'https://token@...'"), поэтому вывод тоже чистим от учётных данных.
+			outStr := strings.TrimSpace(utils.RedactURLCredentials(string(out)))
 			if len(outStr) > 1500 {
 				outStr = outStr[:1500] + "\n... (вывод обрезан)"
 			}
@@ -285,7 +279,7 @@ func handleCloneCommand(s ports.Session) error {
 				"💡 <i>Активный проект не изменился. Чтобы переключиться на склонированный проект, выполните:</i>\n"+
 				"• <code>/use %s</code>",
 			html.EscapeString(targetName),
-			html.EscapeString(cleanURL),
+			html.EscapeString(displayURL),
 			html.EscapeString(targetPath),
 			curProjInfo,
 			html.EscapeString(targetName),
