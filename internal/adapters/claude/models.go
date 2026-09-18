@@ -53,6 +53,10 @@ type claudeModel struct {
 	Version     []int
 	CreatedAt   time.Time
 	Dated       bool // в идентификаторе есть суффикс-дата снапшота
+
+	// Лимиты модели из /v1/models: окно контекста и предельный размер ответа.
+	MaxInputTokens int
+	MaxTokens      int
 }
 
 // parseClaudeModelName разбирает идентификатор модели в структуру с семейством и версией.
@@ -262,9 +266,11 @@ func sortClaudeModels(items []claudeModel) {
 // claudeModelsResponse — ответ GET /v1/models.
 type claudeModelsResponse struct {
 	Data []struct {
-		ID          string `json:"id"`
-		DisplayName string `json:"display_name"`
-		CreatedAt   string `json:"created_at"`
+		ID             string `json:"id"`
+		DisplayName    string `json:"display_name"`
+		CreatedAt      string `json:"created_at"`
+		MaxInputTokens int    `json:"max_input_tokens"`
+		MaxTokens      int    `json:"max_tokens"`
 	} `json:"data"`
 	HasMore bool   `json:"has_more"`
 	LastID  string `json:"last_id"`
@@ -363,6 +369,8 @@ func listClaudeModels(ctx context.Context, httpClient *http.Client, baseURL, api
 			if ts, err := time.Parse(time.RFC3339, item.CreatedAt); err == nil {
 				model.CreatedAt = ts
 			}
+			model.MaxInputTokens = item.MaxInputTokens
+			model.MaxTokens = item.MaxTokens
 			items = append(items, model)
 		}
 
@@ -457,4 +465,107 @@ func fallbackClaudeModelAfterFailure(ctx context.Context, httpClient *http.Clien
 		return "", false
 	}
 	return def.ID, true
+}
+
+// claudeRateLimitBucket — одно ограничение API: предел, остаток и время восполнения.
+type claudeRateLimitBucket struct {
+	Name      string
+	Limit     int64
+	Remaining int64
+	Reset     string // RFC 3339, как его отдаёт API
+}
+
+// Fraction возвращает долю оставшегося ресурса (0..1) или nil, если предел неизвестен.
+func (b claudeRateLimitBucket) Fraction() *float64 {
+	if b.Limit <= 0 {
+		return nil
+	}
+	frac := float64(b.Remaining) / float64(b.Limit)
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	return &frac
+}
+
+// claudeRateLimits — снимок лимитов, снятый с заголовков последнего ответа API.
+type claudeRateLimits struct {
+	Buckets    []claudeRateLimitBucket
+	CapturedAt time.Time
+}
+
+// rateLimitsStore хранит последний снимок лимитов.
+// Лимиты приходят заголовками в каждом ответе Messages API, поэтому отдельные
+// запросы ради /usage не нужны — снимок обновляется бесплатно по ходу работы.
+var rateLimitsStore struct {
+	mu   sync.Mutex
+	last claudeRateLimits
+}
+
+// claudeRateLimitHeaders перечисляет группы заголовков лимитов в порядке показа.
+var claudeRateLimitHeaders = []struct {
+	Name   string
+	Prefix string
+}{
+	{"Запросы", "anthropic-ratelimit-requests"},
+	{"Входные токены", "anthropic-ratelimit-input-tokens"},
+	{"Выходные токены", "anthropic-ratelimit-output-tokens"},
+	{"Токены суммарно", "anthropic-ratelimit-tokens"},
+}
+
+// captureClaudeRateLimits снимает лимиты с заголовков ответа API.
+// Заголовки приходят и на успешных ответах, и на ошибках (в том числе на 429).
+func captureClaudeRateLimits(header http.Header) {
+	if header == nil {
+		return
+	}
+
+	snapshot := claudeRateLimits{CapturedAt: time.Now()}
+	for _, group := range claudeRateLimitHeaders {
+		limit, hasLimit := parseHeaderInt(header, group.Prefix+"-limit")
+		remaining, hasRemaining := parseHeaderInt(header, group.Prefix+"-remaining")
+		reset := strings.TrimSpace(header.Get(group.Prefix + "-reset"))
+
+		if !hasLimit && !hasRemaining && reset == "" {
+			continue
+		}
+		snapshot.Buckets = append(snapshot.Buckets, claudeRateLimitBucket{
+			Name:      group.Name,
+			Limit:     limit,
+			Remaining: remaining,
+			Reset:     reset,
+		})
+	}
+
+	if len(snapshot.Buckets) == 0 {
+		return
+	}
+
+	rateLimitsStore.mu.Lock()
+	defer rateLimitsStore.mu.Unlock()
+	rateLimitsStore.last = snapshot
+}
+
+// lastClaudeRateLimits возвращает последний снимок лимитов.
+func lastClaudeRateLimits() claudeRateLimits {
+	rateLimitsStore.mu.Lock()
+	defer rateLimitsStore.mu.Unlock()
+
+	snapshot := rateLimitsStore.last
+	snapshot.Buckets = append([]claudeRateLimitBucket(nil), snapshot.Buckets...)
+	return snapshot
+}
+
+func parseHeaderInt(header http.Header, name string) (int64, bool) {
+	raw := strings.TrimSpace(header.Get(name))
+	if raw == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }

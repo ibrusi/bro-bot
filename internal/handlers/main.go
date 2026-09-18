@@ -545,7 +545,9 @@ func Start(t ports.Transport) {
 		chat := s.Chat()
 		// Адаптер снимаем один раз здесь: горутины ниже не должны читать активного агента,
 		// пока пользователь может переключить его командой /agent или /mode.
-		framework, loadingAgent := ActiveAgent()
+		framework, agentName := ActiveAgent()
+		execMode := config.ProjectState.GetExecutionMode()
+		loadingAgent := agentName
 		if loadingAgent == "" {
 			loadingAgent = "агента"
 		}
@@ -561,6 +563,8 @@ func Start(t ports.Transport) {
 			quotaResp   AgyQuotaResponse
 			creditsResp AgyCreditsResponse
 			quotaRaw    string
+			quotaText   string
+			quotaParsed bool
 			quotaErr    error
 			creditsErr  error
 			wg          sync.WaitGroup
@@ -573,16 +577,23 @@ func Start(t ports.Transport) {
 			cleanOut := utils.AnsiRegex.ReplaceAllString(string(out), "")
 			quotaRaw = strings.TrimSpace(cleanOut)
 			if err != nil {
-				textOut, textErr := framework.GetQuotaText(ctx)
-				if textErr == nil && len(textOut) > 0 {
-					quotaRaw = strings.TrimSpace(utils.AnsiRegex.ReplaceAllString(string(textOut), ""))
-				}
 				quotaErr = err
+			} else if jsonErr := json.Unmarshal([]byte(cleanOut), &quotaResp); jsonErr != nil {
+				quotaErr = jsonErr
+			} else {
+				quotaParsed = true
+			}
+
+			// Структурных данных нет — берём человекочитаемую сводку, иначе
+			// пользователь увидит служебный JSON вместо ответа.
+			if len(quotaResp.Command.Data.Groups) > 0 {
 				return
 			}
-			if err := json.Unmarshal([]byte(cleanOut), &quotaResp); err != nil {
-				quotaErr = err
+			textOut, textErr := framework.GetQuotaText(ctx)
+			if textErr != nil {
+				return
 			}
+			quotaText = strings.TrimSpace(utils.AnsiRegex.ReplaceAllString(string(textOut), ""))
 		}()
 
 		go func() {
@@ -621,11 +632,8 @@ func Start(t ports.Transport) {
 		}
 
 		var bldr strings.Builder
-		headerTitle := "📊 <b>Лимиты и квоты аккаунта (Google Antigravity)</b>\n\n"
-		if ActiveAgentName() == "claude" {
-			headerTitle = "📊 <b>Лимиты и квоты аккаунта (Claude Code)</b>\n\n"
-		}
-		bldr.WriteString(headerTitle)
+		bldr.WriteString(fmt.Sprintf("📊 <b>Лимиты и квоты аккаунта (%s)</b>\n\n",
+			html.EscapeString(usageSourceTitle(agentName, execMode))))
 
 		if quotaErr == nil && len(quotaResp.Command.Data.Groups) > 0 {
 			for _, g := range quotaResp.Command.Data.Groups {
@@ -652,20 +660,22 @@ func Start(t ports.Transport) {
 				}
 				bldr.WriteString("\n")
 			}
+		} else if quotaText != "" {
+			// Обычный текст, а не <pre> с JSON: это сводка для человека.
+			bldr.WriteString(html.EscapeString(quotaText))
+			bldr.WriteString("\n\n")
+		} else if quotaParsed {
+			// Ответ разобран, но данных в нём нет — показываем пояснение, если оно есть,
+			// и ни при каких условиях не печатаем служебный конверт.
+			if descr := strings.TrimSpace(firstNonEmpty(quotaResp.Command.Data.Description, quotaResp.Response)); descr != "" {
+				bldr.WriteString(fmt.Sprintf("<i>%s</i>\n\n", html.EscapeString(descr)))
+			}
 		} else if quotaRaw != "" {
-			agentTitle := "Ответ агента"
-			if ActiveAgentName() == "claude" {
-				agentTitle = "Ответ Claude"
-			} else if ActiveAgentName() == "agy" {
-				agentTitle = "Ответ agy"
-			}
-			bldr.WriteString(fmt.Sprintf("<b>%s:</b>\n<pre>%s</pre>\n\n", agentTitle, html.EscapeString(quotaRaw)))
+			// Запасная ветка для CLI: вывод терминала показываем как есть.
+			bldr.WriteString(fmt.Sprintf("<b>%s:</b>\n<pre>%s</pre>\n\n",
+				html.EscapeString(fmt.Sprintf("Ответ %s", loadingAgent)), html.EscapeString(quotaRaw)))
 		} else if quotaErr != nil {
-			agentTitle := ActiveAgentName()
-			if agentTitle == "" {
-				agentTitle = "агента"
-			}
-			bldr.WriteString(fmt.Sprintf("⚠️ <i>Не удалось получить актуальные лимиты из %s: %s</i>\n\n", html.EscapeString(agentTitle), html.EscapeString(quotaErr.Error())))
+			bldr.WriteString(fmt.Sprintf("⚠️ <i>Не удалось получить актуальные лимиты из %s: %s</i>\n\n", html.EscapeString(loadingAgent), html.EscapeString(quotaErr.Error())))
 		}
 
 		if creditsErr == nil && creditsResp.Command.Name == "credits" {
@@ -677,7 +687,7 @@ func Start(t ports.Transport) {
 		bldr.WriteString(fmt.Sprintf("• Модель в сессии: <code>%s</code>\n", html.EscapeString(lastModel)))
 		bldr.WriteString(fmt.Sprintf("• Использовано токенов: <code>%s</code>\n\n", html.EscapeString(lastTokens)))
 
-		bldr.WriteString("💡 <i>Лимиты 5-часового окна и недели сглаживают общую нагрузку и обновляются автоматически.</i>")
+		bldr.WriteString(usageFooter(execMode))
 
 		resultMsg := bldr.String()
 		if statusRef.ID != "" {
@@ -3616,6 +3626,49 @@ func quotaStatusEmoji(fraction float64) string {
 	default:
 		return "🔴"
 	}
+}
+
+// usageSourceTitle называет источник лимитов в шапке /usage. В cli-режиме это
+// названия CLI-продуктов, в api-режиме работа идёт по ключу API — и подписывать
+// её как «Claude Code» или «Google Antigravity» было бы неверно.
+func usageSourceTitle(agentName, execMode string) string {
+	api := strings.EqualFold(execMode, "api")
+	switch strings.ToLower(strings.TrimSpace(agentName)) {
+	case "claude":
+		if api {
+			return "Claude API"
+		}
+		return "Claude Code"
+	case "agy":
+		if api {
+			return "Gemini API"
+		}
+		return "Google Antigravity"
+	default:
+		if api {
+			return "API агента"
+		}
+		return "CLI агента"
+	}
+}
+
+// usageFooter подбирает подпись под режим: окна 5 часов и недели — это семантика
+// подписки CLI, к ключу API она не относится.
+func usageFooter(execMode string) string {
+	if strings.EqualFold(execMode, "api") {
+		return "💡 <i>Лимиты ключа API восполняются непрерывно. Расход токенов ботом: /tokens.</i>"
+	}
+	return "💡 <i>Лимиты 5-часового окна и недели сглаживают общую нагрузку и обновляются автоматически.</i>"
+}
+
+// firstNonEmpty возвращает первое непустое значение после обрезки пробелов.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func formatBucketName(name, window string) string {

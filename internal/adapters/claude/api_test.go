@@ -16,17 +16,22 @@ import (
 // поэтому проверки живого списка живут в models_test.go
 // (TestGetModelsReturnsLiveList, TestGetModelsRequiresAPIKey).
 
+// TestClaudeAPIAdapterQuota следит за форматом ответа: он должен разбираться
+// рендером /usage. Проверки содержимого живут в quota_test.go.
 func TestClaudeAPIAdapterQuota(t *testing.T) {
 	adapter := NewClaudeAPIAdapter()
-	ctx := context.Background()
 
-	quota, err := adapter.GetQuota(ctx)
+	quota, err := adapter.GetQuota(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(string(quota), "SUCCESS") {
-		t.Errorf("expected quota response to contain SUCCESS, got: %s", string(quota))
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(quota, &parsed); err != nil {
+		t.Fatalf("ответ квоты не разбирается как JSON: %v (%s)", err, quota)
+	}
+	if _, ok := parsed["command"]; !ok {
+		t.Errorf("в ответе нет блока command, рендер /usage его не поймёт: %s", quota)
 	}
 }
 
@@ -193,6 +198,74 @@ func TestExecuteTaskMapsRetiredModelBeforeRequest(t *testing.T) {
 	if strings.HasPrefix(models[0], "claude-3-") {
 		t.Errorf("в API ушла снятая модель %q", models[0])
 	}
+}
+
+// TestResultEventCarriesUsageAndDuration — трекеру токенов нужны длительность и
+// число ходов, иначе /tokens показывает нулевую скорость, а кэш — пустым.
+func TestResultEventCarriesUsageAndDuration(t *testing.T) {
+	resetClaudeModelCache(t)
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data":     []map[string]interface{}{{"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"}},
+				"has_more": false,
+			})
+			return
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":120,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":10}}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Готово.\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":45}}\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	adapter := &ClaudeAPIAdapter{HTTPClient: srv.Client(), BaseURL: srv.URL}
+	out := readClaudeAnswer(t, adapter)
+
+	result := lastResultEvent(t, out)
+	usage, ok := result["usage"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("в событии result нет usage: %+v", result)
+	}
+
+	for field, want := range map[string]float64{
+		"input_tokens":                120,
+		"output_tokens":               45,
+		"cache_read_input_tokens":     30,
+		"cache_creation_input_tokens": 10,
+	} {
+		if got, _ := usage[field].(float64); got != want {
+			t.Errorf("usage[%s] = %v, ожидали %v", field, usage[field], want)
+		}
+	}
+
+	if _, ok := result["duration_ms"].(float64); !ok {
+		t.Errorf("в событии result нет duration_ms: %+v", result)
+	}
+	if turns, _ := result["num_turns"].(float64); turns != 1 {
+		t.Errorf("num_turns = %v, ожидали 1", result["num_turns"])
+	}
+}
+
+// lastResultEvent достаёт последнее событие result из потока NDJSON.
+func lastResultEvent(t *testing.T, stream string) map[string]interface{} {
+	t.Helper()
+	var last map[string]interface{}
+	for _, line := range strings.Split(strings.TrimSpace(stream), "\n") {
+		var evt map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			continue
+		}
+		if evt["type"] == "result" {
+			last = evt
+		}
+	}
+	if last == nil {
+		t.Fatalf("в потоке нет события result: %s", stream)
+	}
+	return last
 }
 
 // TestExecuteTaskRetriesWhenModelRejected — если модель отключили уже после получения

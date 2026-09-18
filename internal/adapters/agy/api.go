@@ -92,14 +92,74 @@ func formatGeminiModelsList(available []geminiModel) string {
 	return bldr.String()
 }
 
+// GetQuota отдаёт ответ без групп: Gemini API не сообщает остаток квоты по ключу
+// ни в теле ответа, ни в заголовках. Рисовать проценты было бы враньём, поэтому
+// структурных данных нет, и обработчик покажет текст из GetQuotaText.
 func (a *AgyAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
-	return []byte(`{"status":"SUCCESS","response":"Gemini API usage is managed in Google AI Studio / Google Cloud Console"}`), nil
+	payload := map[string]interface{}{
+		"status": "SUCCESS",
+		"command": map[string]interface{}{
+			"name": "quota",
+			"data": map[string]interface{}{
+				"description": "Gemini API не отдаёт остаток квоты по ключу.",
+			},
+		},
+	}
+	return json.Marshal(payload)
 }
 
+// GetQuotaText — человекочитаемая сводка: лимиты выбранной модели плюс указание,
+// где смотреть расход и квоты.
 func (a *AgyAPIAdapter) GetQuotaText(ctx context.Context) ([]byte, error) {
-	return []byte("Gemini API integration active via Google AI Studio / Google Cloud."), nil
+	var bldr strings.Builder
+
+	bldr.WriteString("Gemini API не сообщает остаток квоты по ключу — лимиты и биллинг видны ")
+	bldr.WriteString("в Google AI Studio и Google Cloud Console.\n")
+
+	if model, ok := currentGeminiModelLimits(); ok {
+		name := model.DisplayName
+		if name == "" {
+			name = model.ID
+		}
+		bldr.WriteString(fmt.Sprintf("Модель %s: контекст %s токенов, ответ до %s токенов.\n",
+			name, formatGeminiCount(int64(model.InputTokenLimit)), formatGeminiCount(int64(model.OutputTokenLimit))))
+	}
+
+	bldr.WriteString("Расход токенов ботом: /tokens.")
+	return []byte(bldr.String()), nil
 }
 
+// currentGeminiModelLimits возвращает лимиты модели, выбранной для api-режима.
+// Список берётся из кэша: отдельный запрос ради /usage не делаем.
+func currentGeminiModelLimits() (geminiModel, bool) {
+	available := modelCache.cached()
+	if len(available) == 0 {
+		return geminiModel{}, false
+	}
+
+	resolved := resolveGeminiModel("", available)
+	for _, m := range available {
+		if strings.EqualFold(m.ID, resolved) && (m.InputTokenLimit > 0 || m.OutputTokenLimit > 0) {
+			return m, true
+		}
+	}
+	return geminiModel{}, false
+}
+
+// formatGeminiCount печатает крупные числа компактно: 1.2M, 45K, 900.
+func formatGeminiCount(value int64) string {
+	switch {
+	case value >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(value)/1_000_000)
+	case value >= 1_000:
+		return fmt.Sprintf("%.0fK", float64(value)/1_000)
+	default:
+		return fmt.Sprintf("%d", value)
+	}
+}
+
+// GetCredits — у ключа API нет понятия «кредиты»: это механика подписки CLI,
+// поэтому отдаём пустой объект, и блок кредитов в /usage не показывается.
 func (a *AgyAPIAdapter) GetCredits(ctx context.Context) ([]byte, error) {
 	return []byte(`{}`), nil
 }
@@ -177,6 +237,7 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, args po
 
 	modelName := resolveGeminiModelWithClient(ctx, client, args.ModelName)
 
+	startedAt := time.Now()
 	text, usage, err := p.streamOnce(ctx, client, modelName, args)
 	if err != nil && isModelUnavailableError(err) && text == "" {
 		// Кэш моделей мог устареть (модель отключили): обновляем список и
@@ -195,11 +256,15 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, args po
 		return
 	}
 
+	// duration_ms и num_turns нужны трекеру токенов: без них скорость ответа
+	// считается нулевой.
 	resEvt := map[string]interface{}{
-		"type":       "result",
-		"session_id": p.sessionID,
-		"is_error":   false,
-		"result":     text,
+		"type":        "result",
+		"session_id":  p.sessionID,
+		"is_error":    false,
+		"result":      text,
+		"duration_ms": float64(time.Since(startedAt).Milliseconds()),
+		"num_turns":   1,
 	}
 	if usage != nil {
 		resEvt["usage"] = usage
