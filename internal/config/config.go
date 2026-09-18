@@ -13,7 +13,9 @@ var (
 	ProjectsRoot    string
 	QuestionTimeout time.Duration
 	StepTimeout     time.Duration
-	BotDir          string
-	DBPath          string
-	ScriptsDir      string
+	// ChatTimeout — таймаут одного хода диалогового режима.
+	ChatTimeout time.Duration
+	BotDir      string
+	DBPath      string
+	ScriptsDir  string
 )

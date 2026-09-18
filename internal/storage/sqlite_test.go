@@ -486,3 +486,144 @@ func TestStorageUpdateTaskAgent(t *testing.T) {
 	}
 }
 
+
+func TestChatSessionsCRUD(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	if rec, err := s.GetActiveChatSession(ctx, "proj-a"); err != nil || rec != nil {
+		t.Fatalf("ожидали отсутствие сессии, получили %v (ошибка %v)", rec, err)
+	}
+
+	id, err := s.CreateChatSession(ctx, "proj-a", "gemini-3.1-pro-high")
+	if err != nil {
+		t.Fatalf("CreateChatSession: %v", err)
+	}
+
+	rec, err := s.GetActiveChatSession(ctx, "proj-a")
+	if err != nil || rec == nil {
+		t.Fatalf("GetActiveChatSession: %v (запись %v)", err, rec)
+	}
+	if rec.ID != id || rec.Project != "proj-a" || rec.Model != "gemini-3.1-pro-high" || !rec.Active {
+		t.Errorf("неожиданная запись сессии: %+v", rec)
+	}
+
+	// Вторая активная сессия того же проекта невозможна без деактивации.
+	if _, err := s.CreateChatSession(ctx, "proj-a", "m"); err == nil {
+		t.Error("ожидали нарушение уникальности активной сессии проекта")
+	}
+
+	if err := s.DeactivateChatSessions(ctx, "proj-a"); err != nil {
+		t.Fatalf("DeactivateChatSessions: %v", err)
+	}
+	newID, err := s.CreateChatSession(ctx, "proj-a", "m2")
+	if err != nil {
+		t.Fatalf("CreateChatSession после деактивации: %v", err)
+	}
+	if newID == id {
+		t.Error("ожидали новую сессию с новым идентификатором")
+	}
+
+	if _, err := s.CreateChatSession(ctx, "proj-b", "m"); err != nil {
+		t.Fatalf("сессия другого проекта: %v", err)
+	}
+	active, err := s.ListActiveChatSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveChatSessions: %v", err)
+	}
+	if len(active) != 2 {
+		t.Errorf("ожидали 2 активные сессии, получили %d", len(active))
+	}
+}
+
+func TestChatConversationsPerAgentAndMode(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	id, err := s.CreateChatSession(ctx, "proj", "model")
+	if err != nil {
+		t.Fatalf("CreateChatSession: %v", err)
+	}
+
+	pairs := map[string]string{
+		"agy/cli":    "agy-cli-conv",
+		"agy/api":    "agy-api-conv",
+		"claude/cli": "claude-cli-conv",
+		"claude/api": "claude-api-conv",
+	}
+	for key, convID := range pairs {
+		parts := strings.SplitN(key, "/", 2)
+		if err := s.SetChatConversationID(ctx, id, parts[0], parts[1], convID); err != nil {
+			t.Fatalf("SetChatConversationID(%s): %v", key, err)
+		}
+	}
+
+	rec, err := s.GetActiveChatSession(ctx, "proj")
+	if err != nil || rec == nil {
+		t.Fatalf("GetActiveChatSession: %v", err)
+	}
+	for key, want := range pairs {
+		if got := rec.Conversations[key]; got != want {
+			t.Errorf("сессия %s = %q, ожидали %q", key, got, want)
+		}
+	}
+
+	// Повторная запись обновляет значение, а не плодит строки.
+	if err := s.SetChatConversationID(ctx, id, "agy", "cli", "agy-cli-conv-2"); err != nil {
+		t.Fatalf("повторная запись: %v", err)
+	}
+	rec, _ = s.GetActiveChatSession(ctx, "proj")
+	if rec.Conversations["agy/cli"] != "agy-cli-conv-2" {
+		t.Errorf("ожидали обновлённый id сессии, получили %q", rec.Conversations["agy/cli"])
+	}
+	if len(rec.Conversations) != 4 {
+		t.Errorf("ожидали 4 пары агент/режим, получили %d", len(rec.Conversations))
+	}
+}
+
+func TestChatMessagesAppendAndTrim(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	id, err := s.CreateChatSession(ctx, "proj", "model")
+	if err != nil {
+		t.Fatalf("CreateChatSession: %v", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		if err := s.AppendChatMessage(ctx, id, role, fmt.Sprintf("реплика %d", i)); err != nil {
+			t.Fatalf("AppendChatMessage: %v", err)
+		}
+	}
+
+	all, err := s.GetChatMessages(ctx, id, 0)
+	if err != nil {
+		t.Fatalf("GetChatMessages: %v", err)
+	}
+	if len(all) != 10 {
+		t.Fatalf("ожидали 10 реплик, получили %d", len(all))
+	}
+	if all[0].Content != "реплика 0" || all[9].Content != "реплика 9" {
+		t.Errorf("нарушен хронологический порядок: %q … %q", all[0].Content, all[9].Content)
+	}
+
+	last3, err := s.GetChatMessages(ctx, id, 3)
+	if err != nil {
+		t.Fatalf("GetChatMessages(limit): %v", err)
+	}
+	if len(last3) != 3 || last3[0].Content != "реплика 7" || last3[2].Content != "реплика 9" {
+		t.Errorf("ожидали последние три реплики в прямом порядке, получили %d шт: %+v", len(last3), last3)
+	}
+
+	if err := s.TrimChatMessages(ctx, id, 4); err != nil {
+		t.Fatalf("TrimChatMessages: %v", err)
+	}
+	all, _ = s.GetChatMessages(ctx, id, 0)
+	if len(all) != 4 || all[0].Content != "реплика 6" {
+		t.Errorf("после обрезки ожидали 4 последние реплики, получили %d шт (первая %q)", len(all), all[0].Content)
+	}
+}

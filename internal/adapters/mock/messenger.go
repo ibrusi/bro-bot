@@ -172,3 +172,37 @@ func (s *Session) Respond(text string) error {
 	s.Responses = append(s.Responses, text)
 	return nil
 }
+
+// LastEdited возвращает последнее изменённое сообщение, либо nil.
+func (m *Messenger) LastEdited() *EditedMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.Edited) == 0 {
+		return nil
+	}
+	last := m.Edited[len(m.Edited)-1]
+	return &last
+}
+
+// AllTexts возвращает тексты всех отправленных и изменённых сообщений.
+// Безопасен для чтения, пока обработчик пишет сообщения из другой горутины.
+func (m *Messenger) AllTexts() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	texts := make([]string, 0, len(m.Sent)+len(m.Edited))
+	for _, msg := range m.Sent {
+		texts = append(texts, msg.Text)
+	}
+	for _, msg := range m.Edited {
+		texts = append(texts, msg.Text)
+	}
+	return texts
+}
+
+// SentCount возвращает число отправленных сообщений.
+func (m *Messenger) SentCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Sent)
+}

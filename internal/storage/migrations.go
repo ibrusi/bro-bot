@@ -140,6 +140,44 @@ ALTER TABLE tasks ADD COLUMN agent TEXT NOT NULL DEFAULT 'agy';
 CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent);
 `,
 	},
+	{
+		version: 5,
+		name:    "add_chat_sessions",
+		sql: `
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    active BOOLEAN NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_sessions_active_project
+    ON chat_sessions(project) WHERE active = 1;
+
+-- Отдельный идентификатор сессии агента для каждой пары агент+режим:
+-- сессии agy и claude, cli и api несовместимы между собой.
+CREATE TABLE IF NOT EXISTS chat_conversations (
+    session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    agent TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    conversation_id TEXT NOT NULL DEFAULT '',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, agent, mode)
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
+`,
+	},
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

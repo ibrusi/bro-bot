@@ -760,6 +760,214 @@ func (s *SQLiteStorage) ListAllMessageTasks(ctx context.Context) (map[string]int
 	return res, rows.Err()
 }
 
+// CreateChatSession создаёт новую активную разговорную сессию проекта.
+// Предыдущие активные сессии этого проекта должны быть деактивированы заранее.
+func (s *SQLiteStorage) CreateChatSession(ctx context.Context, project, model string) (int, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO chat_sessions (project, model, active, created_at, updated_at)
+		 VALUES (?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		project, model)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return int(id), nil
+}
+
+// GetActiveChatSession возвращает активную разговорную сессию проекта вместе с идентификаторами
+// сессий агентов. Если сессии нет, возвращается (nil, nil).
+func (s *SQLiteStorage) GetActiveChatSession(ctx context.Context, project string) (*ChatSessionRecord, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, project, model, active, created_at, updated_at
+		 FROM chat_sessions WHERE project = ? AND active = 1`, project)
+
+	rec, err := scanChatSessionRow(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if err := s.loadChatConversations(ctx, rec); err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+// ListActiveChatSessions возвращает все активные разговорные сессии (по одной на проект).
+func (s *SQLiteStorage) ListActiveChatSessions(ctx context.Context) ([]*ChatSessionRecord, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, project, model, active, created_at, updated_at
+		 FROM chat_sessions WHERE active = 1 ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*ChatSessionRecord
+	for rows.Next() {
+		rec, err := scanChatSessionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, rec := range items {
+		if err := s.loadChatConversations(ctx, rec); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+// DeactivateChatSessions помечает все сессии проекта как неактивные (история при этом сохраняется).
+func (s *SQLiteStorage) DeactivateChatSessions(ctx context.Context, project string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE chat_sessions SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE project = ? AND active = 1`,
+		project)
+	return err
+}
+
+// SetChatConversationID сохраняет идентификатор сессии агента для пары агент+режим.
+func (s *SQLiteStorage) SetChatConversationID(ctx context.Context, sessionID int, agent, mode, conversationID string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO chat_conversations (session_id, agent, mode, conversation_id, updated_at)
+		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(session_id, agent, mode)
+		 DO UPDATE SET conversation_id = excluded.conversation_id, updated_at = CURRENT_TIMESTAMP`,
+		sessionID, agent, mode, conversationID)
+	return err
+}
+
+// AppendChatMessage добавляет реплику в историю разговора.
+func (s *SQLiteStorage) AppendChatMessage(ctx context.Context, sessionID int, role, content string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO chat_messages (session_id, role, content, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+		sessionID, role, content)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE chat_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?`, sessionID)
+	return err
+}
+
+// GetChatMessages возвращает последние limit реплик разговора в хронологическом порядке.
+// limit <= 0 означает "все реплики".
+func (s *SQLiteStorage) GetChatMessages(ctx context.Context, sessionID int, limit int) ([]*ChatMessageRecord, error) {
+	query := `SELECT id, session_id, role, content, created_at FROM chat_messages WHERE session_id = ? ORDER BY id`
+	args := []interface{}{sessionID}
+	if limit > 0 {
+		// Берём последние limit строк, затем возвращаем их в прямом порядке.
+		query = `SELECT id, session_id, role, content, created_at FROM (
+			SELECT id, session_id, role, content, created_at FROM chat_messages
+			WHERE session_id = ? ORDER BY id DESC LIMIT ?
+		) ORDER BY id`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*ChatMessageRecord
+	for rows.Next() {
+		var rec ChatMessageRecord
+		var createdAt sql.NullTime
+		if err := rows.Scan(&rec.ID, &rec.SessionID, &rec.Role, &rec.Content, &createdAt); err != nil {
+			return nil, err
+		}
+		if createdAt.Valid {
+			rec.CreatedAt = createdAt.Time
+		}
+		items = append(items, &rec)
+	}
+	return items, rows.Err()
+}
+
+// TrimChatMessages оставляет в истории только keepLast последних реплик.
+func (s *SQLiteStorage) TrimChatMessages(ctx context.Context, sessionID int, keepLast int) error {
+	if keepLast <= 0 {
+		return nil
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM chat_messages WHERE session_id = ? AND id NOT IN (
+			SELECT id FROM chat_messages WHERE session_id = ? ORDER BY id DESC LIMIT ?
+		)`, sessionID, sessionID, keepLast)
+	return err
+}
+
+// rowScanner объединяет *sql.Row и *sql.Rows для переиспользования разбора строки сессии.
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanChatSessionRow(row rowScanner) (*ChatSessionRecord, error) {
+	var rec ChatSessionRecord
+	var createdAt, updatedAt sql.NullTime
+	if err := row.Scan(&rec.ID, &rec.Project, &rec.Model, &rec.Active, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	if createdAt.Valid {
+		rec.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		rec.UpdatedAt = updatedAt.Time
+	}
+	rec.Conversations = make(map[string]string)
+	return &rec, nil
+}
+
+// loadChatConversations подгружает идентификаторы сессий агентов для разговорной сессии.
+func (s *SQLiteStorage) loadChatConversations(ctx context.Context, rec *ChatSessionRecord) error {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT agent, mode, conversation_id FROM chat_conversations WHERE session_id = ?`, rec.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	if rec.Conversations == nil {
+		rec.Conversations = make(map[string]string)
+	}
+	for rows.Next() {
+		var agent, mode, convID string
+		if err := rows.Scan(&agent, &mode, &convID); err != nil {
+			return err
+		}
+		if convID != "" {
+			rec.Conversations[agent+"/"+mode] = convID
+		}
+	}
+	return rows.Err()
+}
+
 // GetSetting возвращает значение параметра бота.
 func (s *SQLiteStorage) GetSetting(ctx context.Context, key string) (string, error) {
 	var val string

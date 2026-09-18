@@ -130,3 +130,16 @@ func TestClaudeAdapter_GetCredits(t *testing.T) {
 	}
 }
 
+
+// История диалога в CLI-режиме не влияет на аргументы: claude восстанавливает контекст по --resume.
+func TestBuildClaudeArgs_IgnoresHistory(t *testing.T) {
+	args := buildClaudeArgs("sess-1", "sonnet", "вопрос")
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, "--resume sess-1") {
+		t.Errorf("ожидали флаг --resume: %v", args)
+	}
+	if strings.Contains(joined, "history") || strings.Contains(joined, "system") {
+		t.Errorf("история и преамбула не должны попадать в аргументы CLI: %v", args)
+	}
+}

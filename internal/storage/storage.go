@@ -64,6 +64,27 @@ type AggregateMetrics struct {
 	TotalDuration   float64
 }
 
+// ChatSessionRecord представляет разговорную сессию проекта.
+type ChatSessionRecord struct {
+	ID        int
+	Project   string
+	Model     string
+	Active    bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	// Conversations — идентификаторы сессий агентов по ключу "агент/режим" (например "agy/cli").
+	Conversations map[string]string
+}
+
+// ChatMessageRecord представляет одну реплику разговора.
+type ChatMessageRecord struct {
+	ID        int
+	SessionID int
+	Role      string
+	Content   string
+	CreatedAt time.Time
+}
+
 // Storage определяет интерфейс персистентного хранилища данных бота.
 type Storage interface {
 	// Tasks
@@ -95,6 +116,16 @@ type Storage interface {
 	RegisterMessageTask(ctx context.Context, chatID, messageID string, taskID int) error
 	GetTaskIDByMessage(ctx context.Context, messageID string) (int, error)
 	ListAllMessageTasks(ctx context.Context) (map[string]int, error)
+
+	// Chat
+	CreateChatSession(ctx context.Context, project, model string) (int, error)
+	GetActiveChatSession(ctx context.Context, project string) (*ChatSessionRecord, error)
+	ListActiveChatSessions(ctx context.Context) ([]*ChatSessionRecord, error)
+	DeactivateChatSessions(ctx context.Context, project string) error
+	SetChatConversationID(ctx context.Context, sessionID int, agent, mode, conversationID string) error
+	AppendChatMessage(ctx context.Context, sessionID int, role, content string) error
+	GetChatMessages(ctx context.Context, sessionID int, limit int) ([]*ChatMessageRecord, error)
+	TrimChatMessages(ctx context.Context, sessionID int, keepLast int) error
 
 	// Settings
 	GetSetting(ctx context.Context, key string) (string, error)

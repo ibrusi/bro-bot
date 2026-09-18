@@ -20,7 +20,26 @@ type ModelInfo struct {
 	Description string `json:"description"`
 }
 
-var Agent ports.AgentFramework
+// agentMu защищает ссылку на активный агент: её меняют команды /agent и /mode,
+// а читает фоновое обновление списка моделей.
+var (
+	agentMu sync.RWMutex
+	agent   ports.AgentFramework
+)
+
+// SetAgent задаёт агента, у которого реестр запрашивает список моделей.
+func SetAgent(a ports.AgentFramework) {
+	agentMu.Lock()
+	defer agentMu.Unlock()
+	agent = a
+}
+
+// CurrentAgent возвращает текущего агента реестра моделей.
+func CurrentAgent() ports.AgentFramework {
+	agentMu.RLock()
+	defer agentMu.RUnlock()
+	return agent
+}
 
 type ModelRegistry struct {
 	sync.RWMutex
@@ -275,8 +294,8 @@ func (m *ModelRegistry) RefreshModels(force bool) ([]ModelInfo, error) {
 
 	var out []byte
 	var err error
-	if Agent != nil {
-		out, err = Agent.GetModels(ctx)
+	if currentAgent := CurrentAgent(); currentAgent != nil {
+		out, err = currentAgent.GetModels(ctx)
 	} else {
 		err = fmt.Errorf("Agent is not configured")
 	}

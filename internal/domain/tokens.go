@@ -68,17 +68,17 @@ func ParseStreamEvent(line string) (*StreamEvent, error) {
 
 // claudeRawEvent описывает NDJSON-событие Claude Code CLI при --output-format stream-json.
 type claudeRawEvent struct {
-	Type          string          `json:"type"`
-	Subtype       string          `json:"subtype"`
-	SessionID     string          `json:"session_id"`
-	Message       *claudeMessage  `json:"message"`
-	Result        string          `json:"result"`
-	IsError       bool            `json:"is_error"`
-	Errors        []string        `json:"errors"`
-	NumTurns      int             `json:"num_turns"`
-	DurationMs    float64         `json:"duration_ms"`
-	DurationAPIMs float64         `json:"duration_api_ms"`
-	Usage         *claudeUsage    `json:"usage"`
+	Type          string         `json:"type"`
+	Subtype       string         `json:"subtype"`
+	SessionID     string         `json:"session_id"`
+	Message       *claudeMessage `json:"message"`
+	Result        string         `json:"result"`
+	IsError       bool           `json:"is_error"`
+	Errors        []string       `json:"errors"`
+	NumTurns      int            `json:"num_turns"`
+	DurationMs    float64        `json:"duration_ms"`
+	DurationAPIMs float64        `json:"duration_api_ms"`
+	Usage         *claudeUsage   `json:"usage"`
 }
 
 type claudeMessage struct {
@@ -380,6 +380,13 @@ type TokenTracker struct {
 	totalTasksRun     int
 	sessionUsage      UsageStats
 	totalDuration     float64
+
+	// Метрики диалогового режима учитываются отдельно, чтобы не портить статистику задач.
+	chatUsage     UsageStats
+	chatTurns     int
+	chatDuration  float64
+	lastChatModel string
+	lastChatAt    time.Time
 }
 
 var GlobalTokenTracker = NewTokenTracker()
@@ -676,6 +683,59 @@ func (t *TokenTracker) GetLastTaskStatusBlock() string {
 	)
 }
 
+// RecordChatUsage учитывает расход токенов одного хода диалога.
+// Ходы диалога не трогают слот текущей задачи: иначе параллельно идущая задача
+// показала бы чужие цифры в /tokens и /context.
+func (t *TokenTracker) RecordChatUsage(model string, usage UsageStats, durationSeconds float64) {
+	t.Lock()
+	defer t.Unlock()
+
+	t.chatUsage.InputTokens += usage.InputTokens
+	t.chatUsage.OutputTokens += usage.OutputTokens
+	t.chatUsage.ThinkingTokens += usage.ThinkingTokens
+	t.chatUsage.CacheReadTokens += usage.CacheReadTokens
+	t.chatUsage.TotalTokens += usage.TotalTokens
+	t.chatTurns++
+	if durationSeconds > 0 {
+		t.chatDuration += durationSeconds
+	}
+	if model != "" {
+		t.lastChatModel = model
+	}
+	t.lastChatAt = time.Now()
+}
+
+// ChatSummary возвращает блок статистики диалогового режима для /tokens (пусто, если диалогов не было).
+func (t *TokenTracker) ChatSummary() string {
+	t.RLock()
+	defer t.RUnlock()
+	return t.chatSummaryLocked()
+}
+
+func (t *TokenTracker) chatSummaryLocked() string {
+	if t.chatTurns == 0 {
+		return ""
+	}
+
+	var bldr strings.Builder
+	bldr.WriteString("💬 <b>Диалоговый режим</b>\n")
+	bldr.WriteString(fmt.Sprintf("• Ответов в чате: <code>%d</code>\n", t.chatTurns))
+	if t.lastChatModel != "" {
+		bldr.WriteString(fmt.Sprintf("• Модель: <code>%s</code>\n", html.EscapeString(t.lastChatModel)))
+	}
+	if t.chatUsage.TotalTokens > 0 {
+		bldr.WriteString(fmt.Sprintf("• Токенов: <code>%s</code> (📥 %s | 📤 %s)\n",
+			formatThousands(t.chatUsage.TotalTokens),
+			formatCompact(t.chatUsage.InputTokens),
+			formatCompact(t.chatUsage.OutputTokens)))
+	}
+	if t.chatDuration > 0 {
+		bldr.WriteString(fmt.Sprintf("• Время ответов: <code>%s</code>\n",
+			FormatDurationHuman(time.Duration(t.chatDuration*float64(time.Second)))))
+	}
+	return bldr.String()
+}
+
 // GetTokensCommandMessage формирует полное сообщение для команды /tokens.
 func (t *TokenTracker) GetTokensCommandMessage() string {
 	t.RLock()
@@ -792,6 +852,11 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 		bldr.WriteString("📊 <b>Статистика использования токенов</b>\n\n")
 		bldr.WriteString("💤 Задачи ещё не запускались в этой сессии.\n")
 		bldr.WriteString("Отправьте задачу боту сообщением в чат, чтобы начать работу!")
+	}
+
+	if chatBlock := t.chatSummaryLocked(); chatBlock != "" {
+		bldr.WriteString("\n\n")
+		bldr.WriteString(chatBlock)
 	}
 
 	bldr.WriteString("\n\n💡 <i>Детализация контекстного окна модели: /context</i>")

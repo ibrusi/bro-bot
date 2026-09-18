@@ -52,7 +52,7 @@ func (a *AgyAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 		sessionID: sessionID,
 	}
 
-	go proc.runStreaming(ctx, apiKey, args.ModelName, args.Prompt)
+	go proc.runStreaming(ctx, apiKey, args)
 
 	return proc, nil
 }
@@ -153,7 +153,7 @@ func (p *AgyAPIProcess) GetCmd() *exec.Cmd {
 	return nil
 }
 
-func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, requestedModel string, prompt string) {
+func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, args ports.ExecuteArgs) {
 	defer func() {
 		_ = p.wPipe.Close()
 		close(p.doneChan)
@@ -175,16 +175,16 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, request
 		return
 	}
 
-	modelName := resolveGeminiModelWithClient(ctx, client, requestedModel)
+	modelName := resolveGeminiModelWithClient(ctx, client, args.ModelName)
 
-	text, err := p.streamOnce(ctx, client, modelName, prompt)
+	text, usage, err := p.streamOnce(ctx, client, modelName, args)
 	if err != nil && isModelUnavailableError(err) && text == "" {
 		// Кэш моделей мог устареть (модель отключили): обновляем список и
 		// повторяем запрос на актуальной модели по умолчанию.
 		if fallback, ok := fallbackModelAfterFailure(ctx, client, modelName); ok {
 			log.Printf("agy-api: модель %q недоступна (%v), повторяем на %q", modelName, err, fallback)
 			modelName = fallback
-			text, err = p.streamOnce(ctx, client, modelName, prompt)
+			text, usage, err = p.streamOnce(ctx, client, modelName, args)
 		}
 	}
 	if err != nil {
@@ -201,20 +201,70 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, request
 		"is_error":   false,
 		"result":     text,
 	}
+	if usage != nil {
+		resEvt["usage"] = usage
+	}
 	resBytes, _ := json.Marshal(resEvt)
 	_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(resBytes))
+}
+
+// geminiHistoryContents переводит историю диалога в формат Gemini.
+// У Gemini роль ответа модели называется "model", а не "assistant".
+func geminiHistoryContents(history []ports.ChatMessage) []*genai.Content {
+	if len(history) == 0 {
+		return nil
+	}
+	contents := make([]*genai.Content, 0, len(history))
+	for _, msg := range history {
+		text := strings.TrimSpace(msg.Content)
+		if text == "" {
+			continue
+		}
+		role := "user"
+		if strings.EqualFold(msg.Role, "assistant") || strings.EqualFold(msg.Role, "model") {
+			role = "model"
+		}
+		contents = append(contents, &genai.Content{
+			Role:  role,
+			Parts: []genai.Part{genai.Text(text)},
+		})
+	}
+	if len(contents) == 0 {
+		return nil
+	}
+	return contents
+}
+
+// usageFromMetadata переводит счётчики токенов Gemini в формат события result.
+func usageFromMetadata(meta *genai.UsageMetadata) map[string]interface{} {
+	if meta == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"input_tokens":            int64(meta.PromptTokenCount),
+		"output_tokens":           int64(meta.CandidatesTokenCount),
+		"cache_read_input_tokens": int64(meta.CachedContentTokenCount),
+	}
 }
 
 // errStreamOutputClosed означает, что читатель закрыл канал вывода — ошибку
 // показывать не нужно, достаточно тихо завершиться.
 var errStreamOutputClosed = errors.New("поток вывода закрыт")
 
-// streamOnce выполняет один проход генерации и возвращает накопленный текст.
-func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, modelName string, prompt string) (string, error) {
+// streamOnce выполняет один проход генерации и возвращает накопленный текст и счётчики токенов.
+func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, modelName string, args ports.ExecuteArgs) (string, map[string]interface{}, error) {
 	model := client.GenerativeModel(modelName)
-	stream := model.GenerateContentStream(ctx, genai.Text(prompt))
+	if systemPrompt := strings.TrimSpace(args.SystemPrompt); systemPrompt != "" {
+		model.SystemInstruction = genai.NewUserContent(genai.Text(systemPrompt))
+	}
+
+	// История диалога проигрывается на нашей стороне: Gemini API не хранит сессии.
+	chat := model.StartChat()
+	chat.History = geminiHistoryContents(args.History)
+	stream := chat.SendMessageStream(ctx, genai.Text(args.Prompt))
 
 	var textAccumulator strings.Builder
+	var usage map[string]interface{}
 
 	for {
 		resp, err := stream.Next()
@@ -222,7 +272,10 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 			break
 		}
 		if err != nil {
-			return textAccumulator.String(), err
+			return textAccumulator.String(), usage, err
+		}
+		if resp.UsageMetadata != nil {
+			usage = usageFromMetadata(resp.UsageMetadata)
 		}
 
 		for _, cand := range resp.Candidates {
@@ -255,13 +308,13 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 				}
 				msgBytes, _ := json.Marshal(msgEvt)
 				if _, err := fmt.Fprintf(p.wPipe, "%s\n", string(msgBytes)); err != nil {
-					return textAccumulator.String(), errStreamOutputClosed
+					return textAccumulator.String(), usage, errStreamOutputClosed
 				}
 			}
 		}
 	}
 
-	return textAccumulator.String(), nil
+	return textAccumulator.String(), usage, nil
 }
 
 func (p *AgyAPIProcess) handleError(err error) {
