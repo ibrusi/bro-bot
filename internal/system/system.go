@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -555,16 +554,14 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 		), true
 	}
 
-	// 5. Если передан флаг Force — останавливаем все задачи
+	// 5. Если передан флаг Force — останавливаем все задачи. CancelTask сам гасит
+	// процесс шага (сигналом группе у CLI, отменой контекста у API).
 	if flags.Force {
 		for _, t := range activeTasks {
 			_, _ = domain.GlobalTaskManager.CancelTask(t.ID)
 		}
 
 		config.Session.Lock()
-		if config.Session.Cmd != nil && config.Session.Cmd.Process != nil {
-			_ = syscall.Kill(-config.Session.Cmd.Process.Pid, syscall.SIGKILL)
-		}
 		config.Session.IsRunning = false
 		config.Session.Waiting = false
 		config.Session.PendingFollowups = nil

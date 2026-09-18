@@ -5,7 +5,9 @@ import (
 	"bro-bot/internal/storage"
 	"context"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -969,3 +971,192 @@ func TestTaskAgentAndSessionFormatting(t *testing.T) {
 	}
 }
 
+// fakeProcess — процесс агента для проверки, что домен останавливает шаг через
+// интерфейс, а не через *exec.Cmd: считает вызовы Kill и закрытия stdin.
+type fakeProcess struct {
+	mu          sync.Mutex
+	killed      int
+	stdinClosed int
+	pid         int
+}
+
+type fakeStdin struct{ p *fakeProcess }
+
+func (s fakeStdin) Write(b []byte) (int, error) { return len(b), nil }
+func (s fakeStdin) Close() error {
+	s.p.mu.Lock()
+	defer s.p.mu.Unlock()
+	s.p.stdinClosed++
+	return nil
+}
+
+func (p *fakeProcess) Stdout() io.Reader     { return strings.NewReader("") }
+func (p *fakeProcess) Stdin() io.WriteCloser { return fakeStdin{p: p} }
+func (p *fakeProcess) Wait() error           { return nil }
+func (p *fakeProcess) Close() error          { return nil }
+func (p *fakeProcess) PID() int              { return p.pid }
+func (p *fakeProcess) Kill() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.killed++
+	return nil
+}
+
+func (p *fakeProcess) killCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.killed
+}
+
+// attachFake привязывает фейковый процесс с отменой контекста и возвращает признак,
+// что отмена была вызвана.
+func attachFake(t *testing.T, task *TaskSession, proc *fakeProcess) func() bool {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	if !task.AttachProcess(proc, cancel) {
+		t.Fatal("AttachProcess вернул false для живой задачи")
+	}
+	return func() bool { return ctx.Err() != nil }
+}
+
+// TestCancelTaskStopsProcessThroughInterface — /cancel обязан и отменить контекст
+// шага (обрывает API-стрим), и вызвать Kill (группа процессов у CLI, pipe у API).
+func TestCancelTaskStopsProcessThroughInterface(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj", "m", "остановить", testChatID)
+	task.Lock()
+	task.Status = TaskStatusRunning
+	task.Unlock()
+
+	proc := &fakeProcess{}
+	cancelled := attachFake(t, task, proc)
+	if !task.HasLiveProcess() {
+		t.Fatal("после AttachProcess у задачи должен быть живой процесс")
+	}
+
+	if _, err := tm.CancelTask(task.ID); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+
+	if !cancelled() {
+		t.Error("контекст шага не отменён")
+	}
+	if proc.killCount() != 1 {
+		t.Errorf("Kill вызван %d раз, ожидали 1", proc.killCount())
+	}
+	if task.HasLiveProcess() {
+		t.Error("после отмены у задачи не должно оставаться живого процесса")
+	}
+}
+
+func TestPauseTaskStopsProcessThroughInterface(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj", "m", "пауза", testChatID)
+	task.Lock()
+	task.Status = TaskStatusWaitingInput
+	task.Unlock()
+
+	proc := &fakeProcess{}
+	cancelled := attachFake(t, task, proc)
+
+	if !task.PauseTask() {
+		t.Fatal("PauseTask должен перевести ожидающую ввода задачу на паузу")
+	}
+	if !cancelled() || proc.killCount() != 1 {
+		t.Errorf("пауза должна остановить процесс: cancelled=%v, kills=%d", cancelled(), proc.killCount())
+	}
+	if task.HasLiveProcess() {
+		t.Error("после паузы у задачи не должно быть живого процесса")
+	}
+}
+
+func TestResumeTaskStopsRunningProcess(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj", "m", "перезапуск", testChatID)
+	task.Lock()
+	task.Status = TaskStatusRunning
+	task.Unlock()
+
+	proc := &fakeProcess{}
+	cancelled := attachFake(t, task, proc)
+
+	if _, err := tm.ResumeTask(task.ID, "новые указания"); err != nil {
+		t.Fatalf("ResumeTask: %v", err)
+	}
+	if !cancelled() || proc.killCount() != 1 {
+		t.Errorf("перезапуск должен остановить старый процесс: cancelled=%v, kills=%d", cancelled(), proc.killCount())
+	}
+}
+
+func TestAttachProcessRefusesCancelledTask(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj", "m", "гонка", testChatID)
+	task.Lock()
+	task.Status = TaskStatusRunning
+	task.Unlock()
+	if _, err := tm.CancelTask(task.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if task.AttachProcess(&fakeProcess{}, func() {}) {
+		t.Error("AttachProcess на отменённой задаче должен вернуть false")
+	}
+	if task.HasLiveProcess() {
+		t.Error("у отменённой задачи не должно быть живого процесса")
+	}
+}
+
+func TestDetachProcessClosesStdin(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj", "m", "детач", testChatID)
+
+	proc := &fakeProcess{pid: 4242}
+	attachFake(t, task, proc)
+	if got := task.WorkerPID(); got != 4242 {
+		t.Errorf("WorkerPID = %d, ожидали 4242", got)
+	}
+
+	task.DetachProcess()
+
+	proc.mu.Lock()
+	closed := proc.stdinClosed
+	proc.mu.Unlock()
+	if closed != 1 {
+		t.Errorf("stdin закрыт %d раз, ожидали 1", closed)
+	}
+	if task.HasLiveProcess() || task.WorkerPID() != 0 {
+		t.Error("после DetachProcess процесса и PID быть не должно")
+	}
+	// Повторный DetachProcess и Cancel без процесса не должны паниковать.
+	task.DetachProcess()
+	task.Lock()
+	task.Status = TaskStatusRunning
+	task.Unlock()
+	if _, err := tm.CancelTask(task.ID); err != nil {
+		t.Errorf("CancelTask без процесса: %v", err)
+	}
+}
+
+// TestGetRunningWorkerPidsIgnoresProcessesWithoutPID — в api-режиме PID нет, и
+// отчёт о ресурсах не должен показывать нулевые воркеры.
+func TestGetRunningWorkerPidsIgnoresProcessesWithoutPID(t *testing.T) {
+	tm := NewTaskManager()
+	cli := tm.CreateTask("proj-a", "m", "cli", testChatID)
+	api := tm.CreateTask("proj-b", "m", "api", testChatID)
+	for _, task := range []*TaskSession{cli, api} {
+		task.Lock()
+		task.Status = TaskStatusRunning
+		task.Unlock()
+	}
+	attachFake(t, cli, &fakeProcess{pid: 100})
+	attachFake(t, api, &fakeProcess{pid: 0})
+	_, _ = tm.SetActiveTask(cli.ID)
+
+	active, others := tm.GetRunningWorkerPids()
+	if active != 100 {
+		t.Errorf("активный PID = %d, ожидали 100", active)
+	}
+	if len(others) != 0 {
+		t.Errorf("процесс без PID не должен попадать в список: %v", others)
+	}
+}

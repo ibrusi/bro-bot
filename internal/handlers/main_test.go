@@ -874,9 +874,9 @@ func TestTaskWaitingInputResumeAndDeliver(t *testing.T) {
 
 	// 1. DeliverAnswer with active Stdin
 	pr, pw := io.Pipe()
-	task.Lock()
-	task.Stdin = pw
-	task.Unlock()
+	if !task.AttachProcess(&stdinProcess{stdin: pw}, nil) {
+		t.Fatal("AttachProcess вернул false для живой задачи")
+	}
 
 	readDone := make(chan string, 1)
 	go func() {
@@ -901,9 +901,9 @@ func TestTaskWaitingInputResumeAndDeliver(t *testing.T) {
 		t.Errorf("expected answer on AnswerChan")
 	}
 
-	// 2. ResumeTask when Cmd is nil
+	// 2. ResumeTask, когда живого процесса больше нет
+	task.DetachProcess()
 	task.Lock()
-	task.Cmd = nil
 	task.Status = domain.TaskStatusWaitingInput
 	task.Unlock()
 
@@ -1172,6 +1172,19 @@ func TestStepTimeoutSimulation(t *testing.T) {
 		t.Fatalf("expected realTimedOut to be TRUE when terminal output contains [agy] print timeout banner")
 	}
 }
+
+// stdinProcess — фейковый процесс агента, у которого только stdin имеет значение:
+// нужен тестам DeliverAnswer, где важно, что ответ дошёл до агента.
+type stdinProcess struct {
+	stdin io.WriteCloser
+}
+
+func (p *stdinProcess) Stdout() io.Reader     { return strings.NewReader("") }
+func (p *stdinProcess) Stdin() io.WriteCloser { return p.stdin }
+func (p *stdinProcess) Wait() error           { return nil }
+func (p *stdinProcess) Kill() error           { return nil }
+func (p *stdinProcess) Close() error          { return nil }
+func (p *stdinProcess) PID() int              { return 0 }
 
 type mockTransport struct {
 	*mock.Messenger

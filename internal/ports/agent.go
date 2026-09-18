@@ -3,7 +3,6 @@ package ports
 import (
 	"context"
 	"io"
-	"os/exec"
 )
 
 // AgentFramework определяет контракт для работы с любым CLI агентов
@@ -40,12 +39,18 @@ type ExecuteArgs struct {
 	SystemPrompt string
 }
 
-// AgentProcess инкапсулирует запущенный процесс агента
+// AgentProcess инкапсулирует запущенный процесс агента.
+//
+// Домен работает только с этим интерфейсом: как именно останавливается агент — сигналом
+// группе процессов у CLI или закрытием pipe и отменой контекста у API — решает адаптер.
 type AgentProcess interface {
 	Stdout() io.Reader
 	Stdin() io.WriteCloser
 	Wait() error
+	// Kill останавливает агента вместе с его дочерними процессами.
 	Kill() error
 	Close() error
-	GetCmd() *exec.Cmd // Нужен для совместимости с текущим TaskSession.Cmd
+	// PID возвращает идентификатор процесса в ОС или 0, если процесса нет (api-режим).
+	// Нужен только для отчёта о ресурсах.
+	PID() int
 }

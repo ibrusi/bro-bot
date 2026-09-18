@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -100,8 +98,6 @@ type TaskSession struct {
 	PendingFollowups []string
 	LastPRURL        string
 	FullOutput       strings.Builder
-	Cmd              *exec.Cmd
-	Stdin            io.WriteCloser
 	LiveMsg          *ports.MessageRef
 	Chat             ports.ChatID
 	LastModelUsed    string
@@ -114,6 +110,86 @@ type TaskSession struct {
 	PauseChan        chan struct{}
 	TokenMetrics     *TaskTokenMetrics
 	storage          storage.Storage
+
+	// process — живой процесс текущего шага, nil между шагами. Домен видит только
+	// интерфейс: как остановить агента (сигнал группе у CLI, закрытие pipe у API),
+	// решает адаптер. cancel отменяет контекст шага и тем самым обрывает API-стрим.
+	// Тот же приём, что у ChatSession.
+	process ports.AgentProcess
+	cancel  context.CancelFunc
+}
+
+// AttachProcess привязывает к задаче процесс шага и отмену его контекста.
+// Возвращает false, если задача уже отменена: /cancel мог прийти между запуском
+// процесса и привязкой, и тогда вызывающий код должен остановить процесс сам.
+func (t *TaskSession) AttachProcess(p ports.AgentProcess, cancel context.CancelFunc) bool {
+	t.Lock()
+	defer t.Unlock()
+	if t.Status == TaskStatusCancelled {
+		return false
+	}
+	t.process = p
+	t.cancel = cancel
+	return true
+}
+
+// DetachProcess снимает привязку по завершении шага и закрывает stdin.
+func (t *TaskSession) DetachProcess() {
+	t.Lock()
+	defer t.Unlock()
+	if t.process != nil {
+		_ = t.process.Stdin().Close()
+	}
+	t.process = nil
+	t.cancel = nil
+}
+
+// HasLiveProcess сообщает, выполняется ли сейчас шаг задачи.
+func (t *TaskSession) HasLiveProcess() bool {
+	t.Lock()
+	defer t.Unlock()
+	return t.hasLiveProcessLocked()
+}
+
+// hasLiveProcessLocked — то же без захвата мьютекса.
+func (t *TaskSession) hasLiveProcessLocked() bool {
+	return t.process != nil
+}
+
+// terminateLocked останавливает процесс шага: отмена контекста обрывает API-стрим и
+// убивает CLI-процесс через CommandContext, Kill добивает группу процессов у CLI и
+// закрывает pipe у API. Все вызовы неблокирующие, держать мьютекс безопасно.
+func (t *TaskSession) terminateLocked() {
+	if t.cancel != nil {
+		t.cancel()
+	}
+	if t.process != nil {
+		_ = t.process.Kill()
+	}
+	t.process = nil
+	t.cancel = nil
+}
+
+// writeStdinLocked передаёт строку в stdin агента, если процесс запущен.
+func (t *TaskSession) writeStdinLocked(text string) {
+	if t.process == nil {
+		return
+	}
+	_, _ = io.WriteString(t.process.Stdin(), text+"\n")
+}
+
+// WorkerPID возвращает PID процесса шага или 0, если процесса в ОС нет (api-режим).
+func (t *TaskSession) WorkerPID() int {
+	t.Lock()
+	defer t.Unlock()
+	return t.workerPIDLocked()
+}
+
+func (t *TaskSession) workerPIDLocked() int {
+	if t.process == nil {
+		return 0
+	}
+	return t.process.PID()
 }
 
 // durationLocked возвращает время работы задачи без захвата мьютекса (мьютекс должен быть уже захвачен вызывающим кодом).
@@ -184,9 +260,7 @@ func (t *TaskSession) DeliverAnswer(answer string) bool {
 	t.Lock()
 	defer t.Unlock()
 
-	if t.Stdin != nil {
-		_, _ = io.WriteString(t.Stdin, answer+"\n")
-	}
+	t.writeStdinLocked(answer)
 
 	if t.AnswerChan == nil {
 		t.AnswerChan = make(chan string, 1)
@@ -212,13 +286,7 @@ func (t *TaskSession) PauseTask() bool {
 
 	if t.Status == TaskStatusWaitingInput {
 		t.Status = TaskStatusPaused
-		if t.Cmd != nil && t.Cmd.Process != nil {
-			_ = syscall.Kill(-t.Cmd.Process.Pid, syscall.SIGKILL)
-		}
-		if t.Stdin != nil {
-			_ = t.Stdin.Close()
-			t.Stdin = nil
-		}
+		t.terminateLocked()
 		if t.PauseChan != nil {
 			select {
 			case t.PauseChan <- struct{}{}:
@@ -597,13 +665,7 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 		return task, fmt.Errorf("задача #%d уже %s", id, statusTitle)
 	}
 
-	if task.Cmd != nil && task.Cmd.Process != nil {
-		_ = syscall.Kill(-task.Cmd.Process.Pid, syscall.SIGKILL)
-	}
-	if task.Stdin != nil {
-		_ = task.Stdin.Close()
-		task.Stdin = nil
-	}
+	task.terminateLocked()
 
 	task.Status = TaskStatusCancelled
 	task.FinishedAt = time.Now()
@@ -631,7 +693,7 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 
 // ResumeTask возобновляет задачу из любого статуса.
 // Для задач с активным процессом (Running, Planning, WaitingApproval, Queued, Completed)
-// автоматически убивает текущий процесс и ресетит Cmd/Stdin перед перезапуском.
+// автоматически останавливает текущий процесс перед перезапуском.
 func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 	tm.Lock()
 
@@ -643,28 +705,18 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 
 	task.Lock()
 
-	// Для задач с активным процессом — убиваем текущий процесс и ресетим Cmd/Stdin
+	// Для задач с активным процессом — останавливаем текущий процесс
 	if task.Status == TaskStatusRunning || task.Status == TaskStatusPlanning ||
 		task.Status == TaskStatusWaitingApproval || task.Status == TaskStatusQueued ||
 		task.Status == TaskStatusCompleted {
-		if task.Cmd != nil && task.Cmd.Process != nil {
-			_ = syscall.Kill(-task.Cmd.Process.Pid, syscall.SIGKILL)
-			task.Cmd = nil
-		}
-		if task.Stdin != nil {
-			_ = task.Stdin.Close()
-			task.Stdin = nil
-		}
+		task.terminateLocked()
 	}
 
 	// Если задача всё ещё ждёт ввода в живом пайплайне
 	if task.Status == TaskStatusWaitingInput {
-		cmdIsNil := (task.Cmd == nil || task.Cmd.Process == nil)
-		if !cmdIsNil {
+		if task.hasLiveProcessLocked() {
 			if answer != "" {
-				if task.Stdin != nil {
-					_, _ = io.WriteString(task.Stdin, answer+"\n")
-				}
+				task.writeStdinLocked(answer)
 				if task.AnswerChan == nil {
 					task.AnswerChan = make(chan string, 1)
 				}
@@ -838,11 +890,8 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 		return resumedTask, 0, true, err
 	}
 
-	// Если задача ждёт ответа на вопрос (ask_question)
+	// Если задача ждёт ответа на вопрос (ask_question): DeliverAnswer сам пишет в stdin.
 	if task.Status == TaskStatusWaitingInput {
-		if task.Stdin != nil {
-			_, _ = io.WriteString(task.Stdin, text+"\n")
-		}
 		task.Unlock()
 		task.DeliverAnswer(text)
 		return task, 0, true, nil
@@ -976,10 +1025,7 @@ func (tm *TaskManager) GetRunningWorkerPids() (int, []int) {
 
 	for id, task := range tm.tasks {
 		task.Lock()
-		pid := 0
-		if task.Cmd != nil && task.Cmd.Process != nil {
-			pid = task.Cmd.Process.Pid
-		}
+		pid := task.workerPIDLocked()
 		isRunning := task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput || task.Status == TaskStatusPlanning
 		task.Unlock()
 

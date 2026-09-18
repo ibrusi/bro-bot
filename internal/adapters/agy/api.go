@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -209,8 +208,9 @@ func (p *AgyAPIProcess) Close() error {
 	return p.Kill()
 }
 
-func (p *AgyAPIProcess) GetCmd() *exec.Cmd {
-	return nil
+// PID — у API-запроса нет процесса в ОС.
+func (p *AgyAPIProcess) PID() int {
+	return 0
 }
 
 func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, args ports.ExecuteArgs) {

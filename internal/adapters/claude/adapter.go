@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/ports"
 
 	"github.com/creack/pty"
@@ -114,17 +115,15 @@ func (p *ClaudeProcess) Wait() error {
 	return p.cmd.Wait()
 }
 
+// Kill останавливает агента вместе с дочерними процессами (git, node и т. п.).
 func (p *ClaudeProcess) Kill() error {
-	if p.cmd.Process != nil {
-		return p.cmd.Process.Kill()
-	}
-	return nil
+	return cliproc.KillGroup(p.cmd)
 }
 
 func (p *ClaudeProcess) Close() error {
 	return p.ptmx.Close()
 }
 
-func (p *ClaudeProcess) GetCmd() *exec.Cmd {
-	return p.cmd
+func (p *ClaudeProcess) PID() int {
+	return cliproc.PID(p.cmd)
 }
