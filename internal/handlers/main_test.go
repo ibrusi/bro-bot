@@ -1198,8 +1198,8 @@ func (m *mockTransport) OnCallback(action string, h ports.Handler) {
 	m.callbacks[action] = h
 }
 func (m *mockTransport) Use(mw func(ports.Handler) ports.Handler) {}
-func (m *mockTransport) Start(ctx context.Context) error         { return nil }
-func (m *mockTransport) Stop()                                   {}
+func (m *mockTransport) Start(ctx context.Context) error          { return nil }
+func (m *mockTransport) Stop()                                    {}
 
 func TestHasAgentConflict(t *testing.T) {
 	// 1. nil task -> false
@@ -1256,8 +1256,8 @@ func TestSwitchActiveAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error switching to claude: %v", err)
 	}
-	if ActiveAgentName != "claude" {
-		t.Fatalf("expected ActiveAgentName to be claude, got %s", ActiveAgentName)
+	if ActiveAgentName() != "claude" {
+		t.Fatalf("expected ActiveAgentName to be claude, got %s", ActiveAgentName())
 	}
 	if !strings.Contains(msg, "claude") {
 		t.Errorf("expected message to mention claude: %s", msg)
@@ -1278,8 +1278,8 @@ func TestSwitchActiveAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error switching to agy: %v", err)
 	}
-	if ActiveAgentName != "agy" {
-		t.Fatalf("expected ActiveAgentName to be agy, got %s", ActiveAgentName)
+	if ActiveAgentName() != "agy" {
+		t.Fatalf("expected ActiveAgentName to be agy, got %s", ActiveAgentName())
 	}
 	savedAgent, _ = st.GetSetting(context.Background(), "current_agent")
 	if savedAgent != "agy" {
@@ -1321,7 +1321,7 @@ func TestSendAgentConflictDialog(t *testing.T) {
 		ChatID: testChatID,
 	}
 
-	ActiveAgentName = "agy"
+	setActiveAgentNameForTest(t, "agy")
 	err := sendAgentConflictDialog(sess, task)
 	if err != nil {
 		t.Fatalf("sendAgentConflictDialog failed: %v", err)
@@ -1353,7 +1353,7 @@ func TestSendAgentConflictDialogWithMessenger(t *testing.T) {
 	}
 
 	m := mock.New()
-	ActiveAgentName = "claude"
+	setActiveAgentNameForTest(t, "claude")
 	err := sendAgentConflictDialogWithMessenger(m, testChatID, task)
 	if err != nil {
 		t.Fatalf("sendAgentConflictDialogWithMessenger failed: %v", err)
@@ -1390,6 +1390,18 @@ func setupTestApp(t *testing.T) *mockTransport {
 	mt := newMockTransport()
 	Start(mt)
 	return mt
+}
+
+// setActiveAgentNameForTest меняет имя активного агента, сохраняя его адаптер,
+// и возвращает прежнее состояние после теста.
+func setActiveAgentNameForTest(t *testing.T, name string) {
+	t.Helper()
+
+	prevFramework, prevName := ActiveAgent()
+	SetActiveAgent(prevFramework, name)
+	t.Cleanup(func() {
+		SetActiveAgent(prevFramework, prevName)
+	})
 }
 
 func TestResumeAgentConflictDialog(t *testing.T) {
@@ -1524,8 +1536,8 @@ func TestTaskAgentSwitchCallback(t *testing.T) {
 		t.Fatalf("task_agent_switch failed: %v", err)
 	}
 
-	if ActiveAgentName != "claude" {
-		t.Errorf("expected ActiveAgentName to be claude after switch, got: %s", ActiveAgentName)
+	if ActiveAgentName() != "claude" {
+		t.Errorf("expected ActiveAgentName to be claude after switch, got: %s", ActiveAgentName())
 	}
 	if len(sess.Edits) == 0 || !strings.Contains(sess.Edits[0], "Переключиться на claude") {
 		t.Errorf("expected callback message to be edited with choice, got: %v", sess.Edits)
@@ -1736,8 +1748,8 @@ func TestNewCommandWithAgent(t *testing.T) {
 	if err := newHandler(sessWithProjAndAgent); err != nil {
 		t.Fatalf("newHandler failed on proj and agent: %v", err)
 	}
-	if ActiveAgentName != "claude" {
-		t.Errorf("expected ActiveAgentName to be claude, got %s", ActiveAgentName)
+	if ActiveAgentName() != "claude" {
+		t.Errorf("expected ActiveAgentName to be claude, got %s", ActiveAgentName())
 	}
 	task1 := domain.GlobalTaskManager.GetTask(1)
 	if task1 == nil {
@@ -1791,8 +1803,8 @@ func TestNewCommandWithAgent(t *testing.T) {
 	if err := newHandler(sessWithAgy); err != nil {
 		t.Fatalf("newHandler failed on agy: %v", err)
 	}
-	if ActiveAgentName != "agy" {
-		t.Errorf("expected ActiveAgentName to be agy, got %s", ActiveAgentName)
+	if ActiveAgentName() != "agy" {
+		t.Errorf("expected ActiveAgentName to be agy, got %s", ActiveAgentName())
 	}
 	task3 := domain.GlobalTaskManager.GetTask(3)
 	if task3 == nil {
@@ -1927,4 +1939,3 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 		t.Errorf("expected agy back models message to contain gemini or sync error, got: %s", lastAgy2.Text)
 	}
 }
-

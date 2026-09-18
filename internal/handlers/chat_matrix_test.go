@@ -19,7 +19,7 @@ func setupMatrixApp(t *testing.T, agentName, mode, convID, response string) (*mo
 	agent.Name = agentName
 	agent.ConversationID = convID
 
-	ActiveAgentName = agentName
+	SetActiveAgent(agent, agentName)
 	config.ProjectState.SetCurrentAgent(agentName)
 	config.ProjectState.SetExecutionMode(mode)
 
@@ -131,8 +131,7 @@ func TestChatSurvivesAgentSwitch(t *testing.T) {
 
 	// Пользователь переключился на другого агента.
 	claudeAgent := &mock.AgentFramework{Name: "claude", Response: "Отвечает claude.", ConversationID: "claude-conv"}
-	Agent = claudeAgent
-	ActiveAgentName = "claude"
+	SetActiveAgent(claudeAgent, "claude")
 	config.ProjectState.SetCurrentAgent("claude")
 
 	sendText(t, mt, "а что по памяти диалога?")
@@ -204,11 +203,11 @@ func TestChatSurvivesModeSwitch(t *testing.T) {
 func TestAgentFrameworkForRespectsExecutionMode(t *testing.T) {
 	setupTestApp(t)
 
-	prevAgent, prevName := Agent, ActiveAgentName
-	Agent = nil
-	ActiveAgentName = "agy"
+	prevFramework, prevName := ActiveAgent()
+	// Пустой адаптер заставляет agentFrameworkFor собирать его заново — это и проверяем.
+	SetActiveAgent(nil, "agy")
 	t.Cleanup(func() {
-		Agent, ActiveAgentName = prevAgent, prevName
+		SetActiveAgent(prevFramework, prevName)
 		config.ProjectState.SetExecutionMode("cli")
 	})
 
@@ -239,11 +238,10 @@ func TestAgentFrameworkForRespectsExecutionMode(t *testing.T) {
 func TestAgentFrameworkForRequiresAPIKey(t *testing.T) {
 	setupTestApp(t)
 
-	prevAgent, prevName := Agent, ActiveAgentName
-	Agent = nil
-	ActiveAgentName = "agy"
+	prevFramework, prevName := ActiveAgent()
+	SetActiveAgent(nil, "agy")
 	t.Cleanup(func() {
-		Agent, ActiveAgentName = prevAgent, prevName
+		SetActiveAgent(prevFramework, prevName)
 		config.ProjectState.SetExecutionMode("cli")
 	})
 
