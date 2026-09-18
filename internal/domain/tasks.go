@@ -295,7 +295,15 @@ func (tm *TaskManager) InitWithStorage(s storage.Storage) {
 	tm.Lock()
 	defer tm.Unlock()
 
+	// Переинициализация полностью перестраивает состояние по данным хранилища,
+	// а не накапливает его поверх предыдущего.
 	tm.storage = s
+	tm.tasks = make(map[int]*TaskSession)
+	tm.taskOrder = nil
+	tm.msgToTask = make(map[string]int)
+	tm.activeTaskID = 0
+	tm.nextID = 1
+
 	if s == nil {
 		return
 	}
