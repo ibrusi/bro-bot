@@ -6,14 +6,11 @@ import (
 	"fmt"
 	"html"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"bro-bot/internal/adapters/agy"
-	"bro-bot/internal/adapters/claude"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
 	"bro-bot/internal/ports"
@@ -32,62 +29,6 @@ const (
 	chatBootstrapTurns = 12
 	chatBootstrapChars = 6000
 )
-
-// agentFrameworkFor возвращает адаптер для указанного агента с учётом текущего режима выполнения.
-// Это единая точка выбора адаптера: она одинаково работает для agy и claude, для cli и api.
-func agentFrameworkFor(agentName string) (ports.AgentFramework, error) {
-	// Адаптер и имя берём одной парой: иначе можно сравнить имя с новым агентом,
-	// а вернуть адаптер от предыдущего.
-	activeFramework, activeName := ActiveAgent()
-
-	name := normalizeAgentName(agentName)
-
-	// Активный агент уже собран при переключении /agent и /mode — переиспользуем его.
-	if activeFramework != nil && strings.EqualFold(name, activeName) {
-		return activeFramework, nil
-	}
-	return buildAgentFramework(name, config.ProjectState.GetExecutionMode())
-}
-
-// buildAgentFramework создаёт адаптер для пары «агент + режим выполнения».
-func buildAgentFramework(agentName, mode string) (ports.AgentFramework, error) {
-	name := normalizeAgentName(agentName)
-	isAPI := strings.EqualFold(strings.TrimSpace(mode), "api")
-
-	if name == "claude" {
-		if isAPI {
-			apiKey := os.Getenv("ANTHROPIC_API_KEY")
-			if apiKey == "" {
-				apiKey = os.Getenv("CLAUDE_API_KEY")
-			}
-			if apiKey == "" {
-				return nil, fmt.Errorf("для работы <b>claude</b> в режиме <code>api</code> необходимо задать <code>ANTHROPIC_API_KEY</code> или <code>CLAUDE_API_KEY</code> в .env")
-			}
-			return claude.NewClaudeAPIAdapter(), nil
-		}
-		return claude.NewClaudeAdapter(), nil
-	}
-
-	if isAPI {
-		if os.Getenv("GEMINI_API_KEY") == "" {
-			return nil, fmt.Errorf("для работы <b>agy</b> в режиме <code>api</code> необходимо задать <code>GEMINI_API_KEY</code> в .env")
-		}
-		return agy.NewAgyAPIAdapter(), nil
-	}
-	return agy.NewAgyAdapter(), nil
-}
-
-// normalizeAgentName приводит имя агента к каноническому виду (по умолчанию agy).
-func normalizeAgentName(agentName string) string {
-	name := strings.ToLower(strings.TrimSpace(agentName))
-	if name == "" {
-		name = strings.ToLower(strings.TrimSpace(ActiveAgentName()))
-	}
-	if name != "claude" {
-		name = "agy"
-	}
-	return name
-}
 
 // chatSystemPreamble — инструкция диалогового режима: агент изучает код и отвечает, но не меняет его.
 func chatSystemPreamble() string {

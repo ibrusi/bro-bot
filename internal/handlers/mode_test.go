@@ -6,7 +6,6 @@ import (
 	"bro-bot/internal/storage"
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -41,23 +40,23 @@ func TestModeCommandAndAgentSwitchWithMode(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key-123")
 
 	config.ProjectState.SetExecutionMode("api")
-	msg, err := SwitchActiveAgent("claude")
+	res, err := SwitchActiveAgent("claude")
 	if err != nil {
 		t.Fatalf("unexpected error switching agent: %v", err)
 	}
 
-	if !strings.Contains(msg, "[api]") {
-		t.Errorf("expected message to mention [api] mode, got: %s", msg)
+	if res.Mode != "api" {
+		t.Errorf("expected result to carry api mode, got: %+v", res)
 	}
 
 	config.ProjectState.SetExecutionMode("cli")
-	msg, err = SwitchActiveAgent("claude")
+	res, err = SwitchActiveAgent("claude")
 	if err != nil {
 		t.Fatalf("unexpected error switching agent: %v", err)
 	}
 
-	if !strings.Contains(msg, "[cli]") {
-		t.Errorf("expected message to mention [cli] mode, got: %s", msg)
+	if res.Mode != "cli" {
+		t.Errorf("expected result to carry cli mode, got: %+v", res)
 	}
 
 	savedMode, err := st.GetSetting(context.Background(), "execution_mode")
