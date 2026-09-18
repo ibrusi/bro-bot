@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // TaskStatus определяет текущий жизненный цикл задачи.
@@ -117,6 +120,54 @@ type TaskSession struct {
 	// Тот же приём, что у ChatSession.
 	process ports.AgentProcess
 	cancel  context.CancelFunc
+
+	// outputTruncated — FullOutput упёрся в потолок; дальше вывод не копится.
+	outputTruncated bool
+	// logSink принимает строки лога для записи в хранилище пачками; nil — писать
+	// синхронно в storage (менеджер без писателя).
+	logSink func(taskID int, line string)
+}
+
+// Потолок накопленного вывода шага. Длинный шаг с многословным агентом копил бы
+// сотни мегабайт: для плана и отчёта хватает первого мегабайта.
+const (
+	maxFullOutputBytes    = 1 << 20
+	outputTruncatedMarker = "\n… (вывод обрезан: превышен лимит хранения)\n"
+)
+
+// AppendOutputLocked дописывает текст в FullOutput с учётом потолка (мьютекс должен
+// быть уже захвачен). Обрезка проходит по границе руны.
+func (t *TaskSession) AppendOutputLocked(text string) {
+	if t.outputTruncated || text == "" {
+		return
+	}
+	room := maxFullOutputBytes - t.FullOutput.Len()
+	if len(text) <= room {
+		t.FullOutput.WriteString(text)
+		return
+	}
+	if room > 0 {
+		cut := room
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		t.FullOutput.WriteString(text[:cut])
+	}
+	t.FullOutput.WriteString(outputTruncatedMarker)
+	t.outputTruncated = true
+}
+
+// ResetOutputLocked очищает накопленный вывод шага (мьютекс должен быть уже захвачен).
+func (t *TaskSession) ResetOutputLocked() {
+	t.FullOutput.Reset()
+	t.outputTruncated = false
+}
+
+// OutputTruncated сообщает, был ли вывод шага обрезан по потолку.
+func (t *TaskSession) OutputTruncated() bool {
+	t.Lock()
+	defer t.Unlock()
+	return t.outputTruncated
 }
 
 // AttachProcess привязывает к задаче процесс шага и отмену его контекста.
@@ -233,12 +284,21 @@ func (t *TaskSession) AppendLog(line string) {
 	if len(t.RecentLogs) > 20 {
 		t.RecentLogs = t.RecentLogs[1:]
 	}
+	sink := t.logSink
 	s := t.storage
 	id := t.ID
 	t.Unlock()
 
+	// Запись в хранилище уходит в писатель логов: пайплайн зовёт AppendLog на каждое
+	// событие агента, и синхронный INSERT на каждую строку тормозил бы чтение потока.
+	if sink != nil {
+		sink(id, line)
+		return
+	}
 	if s != nil {
-		_ = s.AppendLog(context.Background(), id, line)
+		if err := s.AppendLog(context.Background(), id, line); err != nil {
+			log.Printf("Предупреждение: не удалось записать лог задачи #%d: %v", id, err)
+		}
 	}
 }
 
@@ -307,6 +367,7 @@ type TaskManager struct {
 	nextID       int
 	msgToTask    map[string]int // messageID -> taskID
 	storage      storage.Storage
+	logs         *logWriter
 }
 
 var GlobalTaskManager = NewTaskManager()
@@ -372,9 +433,14 @@ func (tm *TaskManager) InitWithStorage(s storage.Storage) {
 	tm.activeTaskID = 0
 	tm.nextID = 1
 
+	if tm.logs != nil {
+		tm.logs.close()
+		tm.logs = nil
+	}
 	if s == nil {
 		return
 	}
+	tm.logs = newLogWriter(s)
 
 	ctx := context.Background()
 	_, _ = s.RecoverInterruptedTasks(ctx)
@@ -384,6 +450,7 @@ func (tm *TaskManager) InitWithStorage(s storage.Storage) {
 		maxID := 0
 		for _, rec := range records {
 			sess := taskRecordToSession(rec, s)
+			sess.logSink = tm.logSinkLocked()
 			if fws, err := s.GetFollowups(ctx, rec.ID); err == nil {
 				sess.PendingFollowups = fws
 			}
@@ -487,6 +554,7 @@ func (tm *TaskManager) CreateTaskWithPlanAndAgent(project, model, agent, prompt 
 		AnswerChan:    make(chan string, 1),
 		PauseChan:     make(chan struct{}, 1),
 		storage:       tm.storage,
+		logSink:       tm.logSinkLocked(),
 	}
 
 	if tm.storage != nil {
@@ -1346,4 +1414,140 @@ func BuildTaskPlanMarkup(taskID int) *ports.Keyboard {
 	return &ports.Keyboard{Rows: [][]ports.Button{
 		{{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: strconv.Itoa(taskID)}},
 	}}
+}
+
+// logSinkLocked возвращает приёмник логов текущего писателя (tm должен быть захвачен).
+func (tm *TaskManager) logSinkLocked() func(int, string) {
+	if tm.logs == nil {
+		return nil
+	}
+	return tm.logs.enqueue
+}
+
+// FlushLogs дожидается записи всех поставленных в очередь строк лога. Нужен тестам
+// и перед перезапуском: чтение из хранилища должно видеть всё, что успели записать.
+func (tm *TaskManager) FlushLogs() {
+	tm.RLock()
+	w := tm.logs
+	tm.RUnlock()
+	if w != nil {
+		w.flush()
+	}
+}
+
+// Параметры писателя логов: очередь на 1024 строки, пачки до 100 строк или 50 мс ожидания.
+const (
+	logQueueSize  = 1024
+	logBatchMax   = 100
+	logBatchDelay = 50 * time.Millisecond
+	logFlushWait  = 5 * time.Second
+)
+
+type logEntry struct {
+	taskID int
+	line   string
+}
+
+// logWriter пишет строки логов в хранилище пачками из отдельной горутины.
+// Порядок строк одной задачи сохраняется; ошибки записи попадают в лог процесса,
+// а не глотаются.
+type logWriter struct {
+	storage storage.Storage
+	queue   chan logEntry
+	stop    chan struct{}
+	done    chan struct{}
+	pending atomic.Int64
+}
+
+func newLogWriter(s storage.Storage) *logWriter {
+	w := &logWriter{
+		storage: s,
+		queue:   make(chan logEntry, logQueueSize),
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	go w.run()
+	return w
+}
+
+// enqueue ставит строку в очередь. Полная очередь притормаживает вызывающего:
+// терять строки или ломать порядок хуже, чем подождать писателя.
+func (w *logWriter) enqueue(taskID int, line string) {
+	w.pending.Add(1)
+	select {
+	case w.queue <- logEntry{taskID: taskID, line: line}:
+	case <-w.stop:
+		w.pending.Add(-1)
+	}
+}
+
+func (w *logWriter) run() {
+	defer close(w.done)
+	for {
+		select {
+		case <-w.stop:
+			w.drain()
+			return
+		case first := <-w.queue:
+			batch := []logEntry{first}
+			timer := time.NewTimer(logBatchDelay)
+		collect:
+			for len(batch) < logBatchMax {
+				select {
+				case e := <-w.queue:
+					batch = append(batch, e)
+				case <-timer.C:
+					break collect
+				}
+			}
+			timer.Stop()
+			w.write(batch)
+		}
+	}
+}
+
+// drain дописывает всё, что осталось в очереди на момент остановки.
+func (w *logWriter) drain() {
+	for {
+		select {
+		case e := <-w.queue:
+			w.write([]logEntry{e})
+		default:
+			return
+		}
+	}
+}
+
+// write группирует подряд идущие строки одной задачи и пишет каждую группу одной транзакцией.
+func (w *logWriter) write(batch []logEntry) {
+	defer w.pending.Add(-int64(len(batch)))
+
+	ctx := context.Background()
+	for i := 0; i < len(batch); {
+		taskID := batch[i].taskID
+		j := i
+		var lines []string
+		for j < len(batch) && batch[j].taskID == taskID {
+			lines = append(lines, batch[j].line)
+			j++
+		}
+		if err := w.storage.AppendLogs(ctx, taskID, lines); err != nil {
+			log.Printf("Предупреждение: не удалось записать %d строк лога задачи #%d: %v", len(lines), taskID, err)
+		}
+		i = j
+	}
+}
+
+// flush ждёт, пока очередь опустеет, но не дольше logFlushWait.
+func (w *logWriter) flush() {
+	deadline := time.Now().Add(logFlushWait)
+	for w.pending.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// close останавливает писателя, дописав очередь.
+func (w *logWriter) close() {
+	close(w.stop)
+	<-w.done
 }

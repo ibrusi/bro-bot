@@ -432,6 +432,35 @@ func (s *SQLiteStorage) AppendLog(ctx context.Context, taskID int, line string) 
 	return err
 }
 
+// AppendLogs добавляет строки лога одной транзакцией: пайплайн пишет по строке
+// на каждое событие агента, и отдельный INSERT на каждую съедал бы writeMu.
+func (s *SQLiteStorage) AppendLogs(ctx context.Context, taskID int, lines []string) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO task_logs (task_id, log_line) VALUES (?, ?)`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+
+	for _, line := range lines {
+		if _, err := stmt.ExecContext(ctx, taskID, line); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // GetRecentLogs возвращает последние N строк лога задачи.
 func (s *SQLiteStorage) GetRecentLogs(ctx context.Context, taskID int, limit int) ([]string, error) {
 	if limit <= 0 {

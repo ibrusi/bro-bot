@@ -179,7 +179,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		task.Lock()
 		task.Plan = planText
 		task.Status = domain.TaskStatusWaitingApproval
-		task.FullOutput.Reset()
+		task.ResetOutputLocked()
 		task.RecentLogs = nil
 		task.Unlock()
 
@@ -609,7 +609,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 						queueInfo,
 					))
 					if lastLine != "" {
-						bldr.WriteString(fmt.Sprintf("📍 <b>Действие:</b>\n<code>%s</code>\n\n", html.EscapeString(truncateString(lastLine, 80))))
+						bldr.WriteString(fmt.Sprintf("📍 <b>Действие:</b>\n<code>%s</code>\n\n", html.EscapeString(utils.TruncateString(lastLine, 80))))
 					} else {
 						bldr.WriteString("📍 <b>Действие:</b>\n<code>Инициализация сессии агента...</code>\n\n")
 					}
@@ -667,7 +667,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 						task.AppendLog(desc)
 					} else if u.StepType == "agent_response" && u.TextDelta != "" {
 						task.Lock()
-						task.FullOutput.WriteString(u.TextDelta)
+						task.AppendOutputLocked(u.TextDelta)
 						if matches := prUrlRegexp.FindStringSubmatch(u.TextDelta); len(matches) > 1 {
 							task.LastPRURL = matches[1]
 						}
@@ -706,7 +706,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 					if res.Response != "" {
 						task.Lock()
 						if task.FullOutput.Len() == 0 {
-							task.FullOutput.WriteString(res.Response)
+							task.AppendOutputLocked(res.Response)
 						}
 						if matches := prUrlRegexp.FindStringSubmatch(res.Response); len(matches) > 1 {
 							task.LastPRURL = matches[1]
@@ -725,7 +725,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 			// Fallback для текстового вывода или не-JSON строк
 			task.AppendLog(cleanLine)
 			task.Lock()
-			task.FullOutput.WriteString(cleanLine + "\n")
+			task.AppendOutputLocked(cleanLine + "\n")
 			if matches := prUrlRegexp.FindStringSubmatch(cleanLine); len(matches) > 1 {
 				task.LastPRURL = matches[1]
 			}

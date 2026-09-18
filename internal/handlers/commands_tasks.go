@@ -305,7 +305,7 @@ func onQuestionChoice(s ports.Session) error {
 		return s.Respond("Вариант не найден")
 	}
 
-	_ = s.Respond(fmt.Sprintf("Выбрано: %s", truncateString(chosenText, 25)))
+	_ = s.Respond(fmt.Sprintf("Выбрано: %s", utils.TruncateString(chosenText, 25)))
 
 	if cb := s.Callback(); cb != nil && cb.MessageText != "" {
 		_ = s.Edit(fmt.Sprintf("%s\n\n✅ <b>Выбран вариант %d:</b> <i>«%s»</i>",
@@ -512,7 +512,7 @@ func onTaskAgentRestart(s ports.Session) error {
 	task.QuestionOptions = nil
 	task.StartedAt = time.Now()
 	task.RecentLogs = nil
-	task.FullOutput.Reset()
+	task.ResetOutputLocked()
 	task.Unlock()
 
 	syncLegacySession(task)
@@ -790,7 +790,7 @@ func handleRetry(s ports.Session) error {
 	task.QuestionOptions = nil
 	task.StartedAt = time.Now()
 	task.RecentLogs = nil
-	task.FullOutput.Reset()
+	task.ResetOutputLocked()
 	task.Unlock()
 
 	domain.GlobalTaskManager.ClearTaskConversationID(targetID)
@@ -1169,7 +1169,7 @@ func buildQuestionMarkup(task *domain.TaskSession) *ports.Keyboard {
 		var optButtons []ports.Button
 		for i, opt := range options {
 			cleanOpt := strings.TrimSpace(opt)
-			btnText := fmt.Sprintf("%d. %s", i+1, truncateString(cleanOpt, 30))
+			btnText := fmt.Sprintf("%d. %s", i+1, utils.TruncateString(cleanOpt, 30))
 			optButtons = append(optButtons, ports.Button{Text: btnText, Action: "q_choice", Payload: fmt.Sprintf("%d:%d", taskID, i)})
 		}
 
@@ -1245,10 +1245,10 @@ func checkAndStartQueuedTask(m ports.Messenger, project, root string) {
 
 	if isPlanning {
 		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("📝 <b>Запуск планирования задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",
-			nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), ports.Rich())
+			nextID, html.EscapeString(project), html.EscapeString(utils.TruncateString(prompt, 80))), ports.Rich())
 	} else {
 		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("🚀 <b>Запуск задачи #%d из очереди:</b> <code>%s</code>\n<i>«%s»</i>",
-			nextID, html.EscapeString(project), html.EscapeString(truncateString(prompt, 80))), ports.Rich())
+			nextID, html.EscapeString(project), html.EscapeString(utils.TruncateString(prompt, 80))), ports.Rich())
 	}
 
 	domain.GlobalTokenTracker.StartTaskWithAgent(project, model, prompt, tAgent)
@@ -1311,13 +1311,6 @@ func sendLongMarkdown(m ports.Messenger, chat ports.ChatID, text string) {
 		htmlContent := utils.MarkdownToTelegramHTML(chunk)
 		_, _ = m.Send(context.Background(), chat, htmlContent, ports.Rich())
 	}
-}
-
-func truncateString(s string, maxLen int) string {
-	if len(s) > maxLen {
-		return s[:maxLen] + "..."
-	}
-	return s
 }
 
 // HasAgentConflict проверяет, есть ли несовместимость между активным агентом и агентом задачи.

@@ -224,7 +224,7 @@ func onPlanApproveVariant(s ports.Session) error {
 	if varIdx >= 0 && varIdx < len(variants) {
 		chosenVar = variants[varIdx]
 	}
-	_ = s.Respond(fmt.Sprintf("Утверждён вариант: %s", truncateString(chosenVar, 20)))
+	_ = s.Respond(fmt.Sprintf("Утверждён вариант: %s", utils.TruncateString(chosenVar, 20)))
 	return handleApprovePlanWithVariant(s.Messenger(), s.Chat(), id, chosenVar)
 }
 
@@ -343,7 +343,7 @@ func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback
 		return sendAgentConflictDialogWithMessenger(m, chat, task)
 	}
 
-	_, _ = m.Send(context.Background(), chat, fmt.Sprintf("📝 <b>Задача #%d: Обновляю план с учётом замечаний...</b>\n<i>«%s»</i>", taskID, html.EscapeString(truncateString(feedback, 100))), ports.Rich())
+	_, _ = m.Send(context.Background(), chat, fmt.Sprintf("📝 <b>Задача #%d: Обновляю план с учётом замечаний...</b>\n<i>«%s»</i>", taskID, html.EscapeString(utils.TruncateString(feedback, 100))), ports.Rich())
 
 	workDir := filepath.Join(config.ProjectsRoot, projectName)
 	go runAgentTaskPipeline(m, chat, task, workDir)
@@ -390,7 +390,7 @@ func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.Task
 	variants := utils.ExtractPlanVariantOptions(planText)
 	if len(variants) > 0 {
 		for i, v := range variants {
-			btnText := fmt.Sprintf("Утвердить: %s", truncateString(v, 24))
+			btnText := fmt.Sprintf("Утвердить: %s", utils.TruncateString(v, 24))
 			rows = append(rows, []ports.Button{{Text: btnText, Action: "plan_appr_var", Payload: fmt.Sprintf("%d:%d", taskID, i)}})
 		}
 	}

@@ -105,6 +105,8 @@ type Storage interface {
 
 	// Logs
 	AppendLog(ctx context.Context, taskID int, line string) error
+	// AppendLogs добавляет несколько строк лога одной транзакцией.
+	AppendLogs(ctx context.Context, taskID int, lines []string) error
 	GetRecentLogs(ctx context.Context, taskID int, limit int) ([]string, error)
 
 	// Metrics

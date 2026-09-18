@@ -67,6 +67,12 @@ func handleUsage(s ports.Session) error {
 		if len(quotaResp.Command.Data.Groups) > 0 {
 			return
 		}
+		// Конверт CLI уже содержит текст для человека: второй запуск процесса
+		// ради GetQuotaText не нужен.
+		if text := strings.TrimSpace(quotaResp.Result); text != "" {
+			quotaText = text
+			return
+		}
 		textOut, textErr := framework.GetQuotaText(ctx)
 		if textErr != nil {
 			return
@@ -145,7 +151,7 @@ func handleUsage(s ports.Session) error {
 	} else if quotaParsed {
 		// Ответ разобран, но данных в нём нет — показываем пояснение, если оно есть,
 		// и ни при каких условиях не печатаем служебный конверт.
-		if descr := strings.TrimSpace(firstNonEmpty(quotaResp.Command.Data.Description, quotaResp.Response)); descr != "" {
+		if descr := strings.TrimSpace(firstNonEmpty(quotaResp.Command.Data.Description, quotaResp.Response, quotaResp.Result)); descr != "" {
 			bldr.WriteString(fmt.Sprintf("<i>%s</i>\n\n", html.EscapeString(descr)))
 		}
 	} else if quotaRaw != "" {
@@ -271,7 +277,10 @@ func formatResetDuration(resetTimeStr string) string {
 type AgyQuotaResponse struct {
 	Status   string `json:"status"`
 	Response string `json:"response"`
-	Command  struct {
+	// Result — человекочитаемый текст из конверта CLI Claude Code
+	// ({"type":"result","result":"…"}): его достаточно, чтобы не запускать второй процесс.
+	Result  string `json:"result"`
+	Command struct {
 		Name string `json:"name"`
 		Data struct {
 			Description string          `json:"description"`
