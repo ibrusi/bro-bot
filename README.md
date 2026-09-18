@@ -42,6 +42,12 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 - **Project and Repository Management**:
   - Instant switching between active project workspaces (`/projects`, `/use <name>`).
   - On-the-fly Git cloning over SSH or HTTPS (`/clone <url> [name]`) with automatic provisioning of the `AGENT.md` rules template.
+- **Conversational Mode (default)**:
+  - A plain message is a conversation with the agent about the active project: context is preserved between messages, so `/resume` is no longer needed.
+  - When a message looks like a code-change request, the bot does not run it silently — it offers buttons: answer in chat, draft a plan, or create a task.
+  - Works for every agent (`agy`, `claude`) and every execution mode (`cli`, `api`); switching `/agent` or `/mode` mid-conversation keeps the thread.
+  - In chat the agent only reads the code and answers: file edits, branches, commits and PRs go through a task.
+  - Controls: `/chat` (status), `/chat <question>`, `/chat new`, `/chat stop`, `/chatmode [on|off]`.
 - **Intelligent Task Pipeline**:
   - Independent, per-project task queues.
   - Pre-planning mode (`/plan <task>`, `/planmode [on|off]`): the agent inspects the repository, composes and justifies an architectural plan, awaits user confirmation via interactive inline buttons (`/approve`, `/confirm`), and only then starts writing code.
@@ -197,6 +203,7 @@ nano .env
 | `GEMINI_API_MODEL` | No | Auto-selected | Explicit Gemini API model name for `api` mode (e.g. `gemini-2.5-flash`). When unset, the model is picked from the models the API actually exposes: the junior family among the senior ones (flash) at its highest available version. |
 | `QUESTION_TIMEOUT` | **Yes** | — | Timeout waiting for user response to agent questions (`ask_question`). Formats: `15m`, `300s`, `1h`, or seconds. When elapsed, the task pauses. |
 | `STEP_TIMEOUT` | No | `30m` | Execution timeout for a single agent step (`--print-timeout`). Formats: `30m`, `1h`, `1800s`, or seconds. When exceeded, the task is paused while preserving the session. |
+| `CHAT_TIMEOUT` | No | `5m` | Timeout for a single answer in conversational mode (`/chat`). Formats: `5m`, `300s`, or seconds. |
 | `BOT_DIR` | No | Auto-detected | Path to the bot's source code for `/rebuild` and storing restart markers. |
 | `BOT_SERVICE_NAME` | **Yes** | — | Name of the systemd service unit for `/restart` and `/rebuild`. |
 | `SQLITE_DB_PATH` | No | `data/bot.db` | Path to the SQLite database file for persistent tasks, plans, logs, and settings. |
@@ -211,6 +218,7 @@ DEFAULT_PROJECT=bro-bot
 DEFAULT_MODEL=gemini-3.1-flash-high
 QUESTION_TIMEOUT=15m
 STEP_TIMEOUT=30m
+CHAT_TIMEOUT=5m
 BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
@@ -292,11 +300,29 @@ journalctl -u bro-bot.service -f
 
 The bot is operated via text messages and slash commands in Telegram.
 
+### 💬 Conversation Memory per Agent and Mode
+
+The conversation transcript lives in the bot's database and is independent of agent and mode,
+while the agent session id is kept separately for each "agent + mode" pair:
+
+| | `cli` | `api` |
+|---|---|---|
+| **agy** | the agent's own session (`--conversation`) | transcript replayed from the bot's database |
+| **claude** | the agent's own session (`--resume`) | transcript replayed from the bot's database |
+
+When you switch `/agent` or `/mode`, the new agent receives a short context of previous turns,
+so the conversation continues. Reset it with `/chat new`.
+
+> ⚠️ The read-only stance in conversational mode is a prompt instruction, not a sandbox.
+> If you need a guarantee that nothing changes on disk, use a separate branch or a task.
+
 ### 📌 Task Management & Planning
 
 | Command | Description | Example |
 |---|---|---|
-| `<message>` | Direct text creates and starts a task in the active project. | `Add request logging middleware` |
+| `<message>` | In conversational mode (default) — a question to the agent with preserved context; a code-change request is offered as a plan or a task. With `/chatmode off` — creates a task right away. | `How does the task pipeline work?` |
+| `/chat [question\|new\|stop]` | With no arguments — conversation status (project, agent, mode, memory kind). With text — a one-off question bypassing the classifier. `new` starts a fresh conversation, `stop` aborts the current answer. | `/chat show where commands are registered` |
+| `/chatmode [on\|off]` | Answer plain messages in chat (`on`, default) or create a task immediately (`off`). | `/chatmode off` |
 | `/plan [project] <task>` | Start a task in pre-planning mode (agent inspects repo, drafts a plan, and awaits approval). | `/plan Design distributed caching architecture` |
 | `/planmode [on\|off]` | Toggle mandatory planning mode for all incoming tasks. | `/planmode on` |
 | `/approve [id]` (or `/confirm`) | Approve the agent's proposed architectural plan and trigger implementation. | `/approve 3` |
