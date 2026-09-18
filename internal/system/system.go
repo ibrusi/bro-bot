@@ -242,6 +242,11 @@ func parseSystemFlags(args []string) SystemFlags {
 }
 
 func performGitCheckout(ctx context.Context, dir, branch string, force bool) (string, error) {
+	// Сначала выполняем git fetch origin, чтобы подтянуть метаданные веток с сервера,
+	// если ветка существует только на origin и мы хотим переключиться на нее локально
+	fetchCmd := exec.CommandContext(ctx, "git", "-C", dir, "fetch", "origin")
+	_, _ = fetchCmd.CombinedOutput()
+
 	args := []string{"-C", dir, "checkout"}
 	if force {
 		args = append(args, "-f")

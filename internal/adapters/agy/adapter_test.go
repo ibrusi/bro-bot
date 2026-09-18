@@ -71,6 +71,7 @@ func TestBuildAgyArgs_ResumeSession(t *testing.T) {
 }
 
 func TestAgyAdapter_GetModels_Real(t *testing.T) {
+	t.Skip("needs auth or agy executable in CI")
 	adapter := NewAgyAdapter()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
