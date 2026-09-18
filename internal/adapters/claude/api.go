@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -78,33 +79,14 @@ func (a *ClaudeAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 		return nil, fmt.Errorf("API ключ не найден. Задайте ANTHROPIC_API_KEY или CLAUDE_API_KEY в .env для работы в режиме API")
 	}
 
-	modelName := resolveClaudeModel(args.ModelName)
-	if modelName == "sonnet" {
-		modelName = "claude-3-7-sonnet-20250219"
-	} else if modelName == "opus" {
-		modelName = "claude-3-opus-20240229"
-	} else if modelName == "haiku" {
-		modelName = "claude-3-5-haiku-20241022"
-	}
+	// Имя модели подбирается по живому списку /v1/models: захардкоженные идентификаторы
+	// устаревают вместе с моделями и дают 404 not_found_error.
+	modelName := resolveClaudeModelForAPI(ctx, a.HTTPClient, a.BaseURL, apiKey, args.ModelName)
 
 	sessionID := args.ConversationID
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("claude-api-%d", time.Now().UnixNano())
 	}
-
-	bodyBytes, err := json.Marshal(buildClaudeMessagesBody(modelName, args))
-	if err != nil {
-		return nil, fmt.Errorf("ошибка маршалинга запроса Claude API: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", a.BaseURL+"/messages", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("ошибка создания HTTP запроса к Claude API: %w", err)
-	}
-
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("content-type", "application/json")
 
 	rPipe, wPipe := io.Pipe()
 
@@ -116,17 +98,107 @@ func (a *ClaudeAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 		sessionID: sessionID,
 	}
 
-	go proc.runStreaming(req, a.HTTPClient)
+	stream := claudeStreamRequest{
+		client:  a.HTTPClient,
+		baseURL: a.BaseURL,
+		apiKey:  apiKey,
+		args:    args,
+		model:   modelName,
+	}
+
+	go proc.runStreaming(ctx, stream)
 
 	return proc, nil
 }
 
+// openClaudeStream открывает поток ответа Messages API.
+//
+// Если модель за это время отключили (404 not_found_error), список моделей обновляется
+// принудительно и запрос повторяется один раз на актуальной модели по умолчанию.
+func openClaudeStream(ctx context.Context, stream claudeStreamRequest) (*http.Response, error) {
+	resp, err := doClaudeRequest(ctx, stream, stream.model)
+	if err == nil {
+		return resp, nil
+	}
+	if !isClaudeModelUnavailableError(err) {
+		return nil, err
+	}
+
+	fallback, ok := fallbackClaudeModelAfterFailure(ctx, stream.client, stream.baseURL, stream.apiKey, stream.model)
+	if !ok {
+		return nil, err
+	}
+
+	log.Printf("claude-api: модель %q недоступна (%v), повторяем на %q", stream.model, err, fallback)
+	return doClaudeRequest(ctx, stream, fallback)
+}
+
+// doClaudeRequest выполняет один запрос к Messages API и проверяет статус ответа.
+func doClaudeRequest(ctx context.Context, stream claudeStreamRequest, model string) (*http.Response, error) {
+	req, err := stream.build(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	client := stream.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("API HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return resp, nil
+}
+
+// claudeStreamRequest — всё необходимое, чтобы собрать (и при нужде пересобрать) запрос к API.
+type claudeStreamRequest struct {
+	client  *http.Client
+	baseURL string
+	apiKey  string
+	args    ports.ExecuteArgs
+	model   string
+}
+
+// build собирает HTTP-запрос к Messages API для указанной модели.
+func (r claudeStreamRequest) build(ctx context.Context, model string) (*http.Request, error) {
+	bodyBytes, err := json.Marshal(buildClaudeMessagesBody(model, r.args))
+	if err != nil {
+		return nil, fmt.Errorf("ошибка маршалинга запроса Claude API: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(r.baseURL, "/")+"/messages", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("ошибка создания HTTP запроса к Claude API: %w", err)
+	}
+
+	req.Header.Set("x-api-key", r.apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("content-type", "application/json")
+	return req, nil
+}
+
 func (a *ClaudeAPIAdapter) GetModels(ctx context.Context) ([]byte, error) {
-	modelsText := "claude-3-7-sonnet-20250219 Claude 3.7 Sonnet (Hybrid Reasoning)\n" +
-		"claude-3-5-sonnet-20241022 Claude 3.5 Sonnet\n" +
-		"claude-3-opus-20240229 Claude 3 Opus\n" +
-		"claude-3-5-haiku-20241022 Claude 3.5 Haiku\n"
-	return []byte(modelsText), nil
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("CLAUDE_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("API ключ не найден. Задайте ANTHROPIC_API_KEY или CLAUDE_API_KEY в .env для работы в режиме API")
+	}
+
+	available, err := listClaudeModels(ctx, a.HTTPClient, a.BaseURL, apiKey, false)
+	if err != nil {
+		return nil, err
+	}
+
+	return []byte(formatClaudeModelsList(available)), nil
 }
 
 func (a *ClaudeAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
@@ -180,7 +252,23 @@ func (p *ClaudeAPIProcess) GetCmd() *exec.Cmd {
 	return nil
 }
 
-func (p *ClaudeAPIProcess) runStreaming(req *http.Request, client *http.Client) {
+// handleError сохраняет ошибку и отдаёт её в поток событий как результат с признаком ошибки.
+func (p *ClaudeAPIProcess) handleError(err error) {
+	p.mu.Lock()
+	p.err = err
+	p.mu.Unlock()
+
+	errEvt := map[string]interface{}{
+		"type":       "result",
+		"session_id": p.sessionID,
+		"is_error":   true,
+		"errors":     []string{err.Error()},
+	}
+	errBytes, _ := json.Marshal(errEvt)
+	_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(errBytes))
+}
+
+func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStreamRequest) {
 	defer func() {
 		_ = p.wPipe.Close()
 		close(p.doneChan)
@@ -194,41 +282,12 @@ func (p *ClaudeAPIProcess) runStreaming(req *http.Request, client *http.Client) 
 	initBytes, _ := json.Marshal(initEvt)
 	_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(initBytes))
 
-	resp, err := client.Do(req)
+	resp, err := openClaudeStream(ctx, stream)
 	if err != nil {
-		p.mu.Lock()
-		p.err = err
-		p.mu.Unlock()
-
-		errEvt := map[string]interface{}{
-			"type":       "result",
-			"session_id": p.sessionID,
-			"is_error":   true,
-			"errors":     []string{err.Error()},
-		}
-		errBytes, _ := json.Marshal(errEvt)
-		_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(errBytes))
+		p.handleError(err)
 		return
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		errMsg := fmt.Sprintf("API HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-		p.mu.Lock()
-		p.err = fmt.Errorf("%s", errMsg)
-		p.mu.Unlock()
-
-		errEvt := map[string]interface{}{
-			"type":       "result",
-			"session_id": p.sessionID,
-			"is_error":   true,
-			"errors":     []string{errMsg},
-		}
-		errBytes, _ := json.Marshal(errEvt)
-		_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(errBytes))
-		return
-	}
 
 	buf := new(bytes.Buffer)
 	scanner := io.Reader(resp.Body)
