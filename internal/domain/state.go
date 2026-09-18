@@ -32,6 +32,9 @@ type ProjectState struct {
 	CurrentAgent   string
 	ExecutionMode  string // "cli" или "api"
 	PlanMode       bool
+	// InteractionMode задаёт, что делать с обычным сообщением без активной задачи:
+	// "chat" — отвечать в диалоге, "task" — сразу создавать задачу.
+	InteractionMode string
 }
 
 // GetCurrentAgent возвращает имя активного агента (по умолчанию agy).
@@ -69,5 +72,32 @@ func (ps *ProjectState) SetExecutionMode(mode string) {
 		ps.ExecutionMode = "api"
 	} else {
 		ps.ExecutionMode = "cli"
+	}
+}
+
+// Режимы взаимодействия с обычным текстовым сообщением.
+const (
+	InteractionModeChat = "chat"
+	InteractionModeTask = "task"
+)
+
+// GetInteractionMode возвращает текущий режим взаимодействия (по умолчанию "chat").
+func (ps *ProjectState) GetInteractionMode() string {
+	ps.RLock()
+	defer ps.RUnlock()
+	if ps.InteractionMode == "" {
+		return InteractionModeChat
+	}
+	return ps.InteractionMode
+}
+
+// SetInteractionMode обновляет режим взаимодействия.
+func (ps *ProjectState) SetInteractionMode(mode string) {
+	ps.Lock()
+	defer ps.Unlock()
+	if strings.ToLower(strings.TrimSpace(mode)) == InteractionModeTask {
+		ps.InteractionMode = InteractionModeTask
+	} else {
+		ps.InteractionMode = InteractionModeChat
 	}
 }
