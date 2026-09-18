@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bro-bot/internal/adapters/transcript"
+	"bro-bot/internal/agents"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
 	"bro-bot/internal/models"
@@ -59,10 +60,12 @@ func ActiveAgentName() string {
 }
 
 // SetActiveAgent атомарно задаёт активного агента и его имя.
+// Пустое имя означает агента по умолчанию из реестра. Реестр читаем до захвата
+// activeAgentMu: он остаётся листовым мьютексом и не берётся внутри чужих блокировок.
 func SetActiveAgent(framework ports.AgentFramework, name string) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" {
-		name = "agy"
+		name = registry().Default()
 	}
 
 	activeAgentMu.Lock()
@@ -114,7 +117,11 @@ var (
 	modelRegexp  = regexp.MustCompile(`(?i)model:\s*([a-zA-Z0-9.\-_]+)`)
 )
 
-func Start(t ports.Transport) {
+// Start настраивает бота и регистрирует обработчики. Реестр агентов приходит из корня
+// композиции: обработчики не зависят от конкретных адаптеров.
+func Start(t ports.Transport, reg *agents.Registry) {
+	setAgentRegistry(reg)
+
 	adminIDStr := os.Getenv("TELEGRAM_ADMIN_ID")
 	adminIDNum, err := strconv.ParseInt(adminIDStr, 10, 64)
 	if err != nil || adminIDNum == 0 {
@@ -233,13 +240,8 @@ func Start(t ports.Transport) {
 		log.Printf("Восстановлен режим взаимодействия из SQLite: %s", savedInteraction)
 	}
 
-	if savedAgent, err := sqliteStorage.GetSetting(ctx, "current_agent"); err == nil && savedAgent != "" {
-		if _, err := SwitchActiveAgent(savedAgent); err == nil {
-			log.Printf("Восстановлен активный агент из SQLite: %s", savedAgent)
-		}
-	} else {
-		config.ProjectState.SetCurrentAgent(ActiveAgentName())
-	}
+	savedAgent, _ := sqliteStorage.GetSetting(ctx, "current_agent")
+	initActiveAgent(savedAgent)
 
 	if err := t.SetCommands(context.Background(), getDefaultCommands()); err != nil {
 		log.Printf("Предупреждение: не удалось зарегистрировать команды: %v", err)
@@ -489,15 +491,15 @@ func Start(t ports.Transport) {
 		args := s.Args()
 		if len(args) == 0 {
 			mode := config.ProjectState.GetExecutionMode()
-			return s.Send(fmt.Sprintf("🤖 Текущий агент: <code>%s</code> (режим: <code>%s</code>)\nДоступны: <b>agy</b>, <b>claude</b>", html.EscapeString(ActiveAgentName()), html.EscapeString(mode)), ports.Rich())
+			return s.Send(fmt.Sprintf("🤖 Текущий агент: <code>%s</code> (режим: <code>%s</code>)\nДоступны: %s",
+				html.EscapeString(ActiveAgentName()), html.EscapeString(mode), formatAgentNames()), ports.Rich())
 		}
 
-		name := strings.ToLower(strings.TrimSpace(args[0]))
-		msg, err := SwitchActiveAgent(name)
+		res, err := SwitchActiveAgent(args[0])
 		if err != nil {
-			return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
+			return s.Send(fmt.Sprintf("❌ %s", html.EscapeString(err.Error())), ports.Rich())
 		}
-		return s.Send(msg, ports.Rich())
+		return s.Send(formatAgentSwitch(res), ports.Rich())
 	})
 
 	t.OnCommand("mode", func(s ports.Session) error {
@@ -512,22 +514,11 @@ func Start(t ports.Transport) {
 			return s.Send("❌ Неизвестный режим. Доступны: <code>cli</code>, <code>api</code>", ports.Rich())
 		}
 
-		if targetMode == "api" {
-			if ActiveAgentName() == "agy" {
-				apiKey := os.Getenv("GEMINI_API_KEY")
-				if apiKey == "" {
-					return s.Send("⚠️ Для работы агента <b>agy</b> в режиме <code>api</code> необходимо задать параметр <code>GEMINI_API_KEY</code> в файле <code>.env</code>.", ports.Rich())
-				}
-			}
-			if ActiveAgentName() == "claude" {
-				apiKey := os.Getenv("ANTHROPIC_API_KEY")
-				if apiKey == "" {
-					apiKey = os.Getenv("CLAUDE_API_KEY")
-				}
-				if apiKey == "" {
-					return s.Send("⚠️ Для работы агента <b>claude</b> в режиме <code>api</code> необходимо задать параметр <code>ANTHROPIC_API_KEY</code> или <code>CLAUDE_API_KEY</code> в файле <code>.env</code>.", ports.Rich())
-				}
-			}
+		// Сначала собираем адаптер для нового режима (в api — с проверкой ключа),
+		// и только если это удалось, переключаем и сохраняем режим.
+		res, err := switchActiveAgent(ActiveAgentName(), targetMode)
+		if err != nil {
+			return s.Send(fmt.Sprintf("⚠️ %s", html.EscapeString(err.Error())), ports.Rich())
 		}
 
 		config.ProjectState.SetExecutionMode(targetMode)
@@ -535,13 +526,7 @@ func Start(t ports.Transport) {
 			_ = st.SetSetting(context.Background(), "execution_mode", targetMode)
 		}
 
-		// Обновляем текущий адаптер с учётом выбранного агента и нового режима
-		msg, err := SwitchActiveAgent(ActiveAgentName())
-		if err != nil {
-			return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
-		}
-
-		return s.Send(fmt.Sprintf("%s\n✅ Режим выполнения переключен на: <code>%s</code>", msg, html.EscapeString(targetMode)), ports.Rich())
+		return s.Send(fmt.Sprintf("%s\n✅ Режим выполнения переключен на: <code>%s</code>", formatAgentSwitch(res), html.EscapeString(targetMode)), ports.Rich())
 	})
 
 	handleUsage := func(s ports.Session) error {
@@ -2853,16 +2838,6 @@ func handleCreatePlanTask(s ports.Session, text string) error {
 	return handleCreateNewTaskWithOptions(s, text, true)
 }
 
-// isKnownAgent проверяет, является ли переданная строка именем поддерживаемого CLI агента.
-func isKnownAgent(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "agy", "claude":
-		return true
-	default:
-		return false
-	}
-}
-
 // isProjectDir проверяет, существует ли директория проекта с таким именем в ProjectsRoot.
 func isProjectDir(name string) bool {
 	if strings.HasPrefix(strings.TrimSpace(name), ".") {
@@ -3645,30 +3620,6 @@ func quotaStatusEmoji(fraction float64) string {
 	}
 }
 
-// usageSourceTitle называет источник лимитов в шапке /usage. В cli-режиме это
-// названия CLI-продуктов, в api-режиме работа идёт по ключу API — и подписывать
-// её как «Claude Code» или «Google Antigravity» было бы неверно.
-func usageSourceTitle(agentName, execMode string) string {
-	api := strings.EqualFold(execMode, "api")
-	switch strings.ToLower(strings.TrimSpace(agentName)) {
-	case "claude":
-		if api {
-			return "Claude API"
-		}
-		return "Claude Code"
-	case "agy":
-		if api {
-			return "Gemini API"
-		}
-		return "Google Antigravity"
-	default:
-		if api {
-			return "API агента"
-		}
-		return "CLI агента"
-	}
-}
-
 // usageFooter подбирает подпись под режим: окна 5 часов и недели — это семантика
 // подписки CLI, к ключу API она не относится.
 func usageFooter(execMode string) string {
@@ -3760,7 +3711,7 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "usage", Description: "Остаток квот и лимиты аккаунта"},
 		{Name: "models", Description: "Список доступных моделей"},
 		{Name: "model", Description: "[имя] Переключить активную модель"},
-		{Name: "agent", Description: "[agy|claude] Переключить активный агент"},
+		{Name: "agent", Description: "[" + strings.Join(registry().Names(), "|") + "] Переключить активный агент"},
 		{Name: "mode", Description: "[cli|api] Переключить режим (CLI или API)"},
 		{Name: "projects", Description: "Список доступных проектов"},
 		{Name: "use", Description: "<имя> Переключить активный проект"},
@@ -3768,77 +3719,6 @@ func getDefaultCommands() []ports.BotCommand {
 		{Name: "restart", Description: "Перезапустить бота"},
 		{Name: "rebuild", Description: "[branch=имя] [pull] [force] Собрать и перезапустить бота"},
 		{Name: "start", Description: "Перезапуск и приветственное сообщение"},
-	}
-}
-
-// SwitchActiveAgent переключает глобального активного агента CLI (agy или claude) и сохраняет выбор в базе данных.
-func SwitchActiveAgent(name string) (string, error) {
-	name = strings.ToLower(strings.TrimSpace(name))
-	switch name {
-	case "agy":
-		mode := config.ProjectState.GetExecutionMode()
-		adapter, err := buildAgentFramework("agy", mode)
-		if err != nil {
-			return "", err
-		}
-		SetActiveAgent(adapter, "agy")
-		models.SetAgent(adapter)
-		config.ProjectState.SetCurrentAgent("agy")
-		config.ProjectState.Lock()
-		curModel := config.ProjectState.CurrentModel
-		suggested := ""
-		if strings.Contains(strings.ToLower(curModel), "claude") || strings.Contains(strings.ToLower(curModel), "sonnet") || strings.Contains(strings.ToLower(curModel), "opus") || strings.Contains(strings.ToLower(curModel), "haiku") {
-			defaultModel := os.Getenv("DEFAULT_MODEL")
-			if defaultModel == "" {
-				defaultModel = "gemini-3.1-pro-high"
-			}
-			config.ProjectState.CurrentModel = defaultModel
-			suggested = fmt.Sprintf("\nМодель автоматически переключена на <b>%s</b>.", html.EscapeString(defaultModel))
-			if st := domain.GlobalTaskManager.Storage(); st != nil {
-				_ = st.SetSetting(context.Background(), "current_model", defaultModel)
-			}
-		}
-		config.ProjectState.Unlock()
-		if st := domain.GlobalTaskManager.Storage(); st != nil {
-			_ = st.SetSetting(context.Background(), "current_agent", "agy")
-		}
-		go func() {
-			if models.GlobalModelRegistry != nil {
-				_, _ = models.GlobalModelRegistry.RefreshModels(true)
-			}
-		}()
-		return fmt.Sprintf("✅ Агент переключен на: <b>agy</b> [%s]", html.EscapeString(mode)) + suggested, nil
-	case "claude":
-		mode := config.ProjectState.GetExecutionMode()
-		adapter, err := buildAgentFramework("claude", mode)
-		if err != nil {
-			return "", err
-		}
-		SetActiveAgent(adapter, "claude")
-		models.SetAgent(adapter)
-		config.ProjectState.SetCurrentAgent("claude")
-		config.ProjectState.Lock()
-		curModel := config.ProjectState.CurrentModel
-		suggested := ""
-		if strings.Contains(strings.ToLower(curModel), "gemini") || strings.Contains(strings.ToLower(curModel), "gpt") {
-			config.ProjectState.CurrentModel = "sonnet"
-			suggested = "\nМодель автоматически переключена на <b>sonnet</b> (Claude Sonnet 4.6)."
-			if st := domain.GlobalTaskManager.Storage(); st != nil {
-				_ = st.SetSetting(context.Background(), "current_model", "sonnet")
-			}
-		}
-		config.ProjectState.Unlock()
-		if st := domain.GlobalTaskManager.Storage(); st != nil {
-			_ = st.SetSetting(context.Background(), "current_agent", "claude")
-		}
-		go func() {
-			if models.GlobalModelRegistry != nil {
-				_, _ = models.GlobalModelRegistry.RefreshModels(true)
-			}
-		}()
-		return fmt.Sprintf("✅ Агент переключен на: <b>claude</b> [%s]", html.EscapeString(mode)) + suggested, nil
-	default:
-		return "", fmt.Errorf("неизвестный агент: <code>%s</code>. Доступны: <b>agy</b>, <b>claude</b>", html.EscapeString(name))
 	}
 }
 
@@ -3873,23 +3753,7 @@ func buildAgentConflictMarkup(taskID int, taskAgent string) *ports.Keyboard {
 }
 
 func sendAgentConflictDialog(s ports.Session, task *domain.TaskSession) error {
-	task.Lock()
-	id := task.ID
-	agent := task.Agent
-	if agent == "" {
-		agent = "agy"
-	}
-	convID := task.ConversationID
-	task.Unlock()
-
-	markup := buildAgentConflictMarkup(id, agent)
-	msg := fmt.Sprintf(
-		"⚠️ <b>Задача #%d была начата агентом %s</b> (сессия: <code>%s</code>).\n"+
-			"Текущий активный агент бота: <b>%s</b>.\n\n"+
-			"Сессии разных агентов несовместимы. Выберите действие:",
-		id, html.EscapeString(agent), html.EscapeString(convID), html.EscapeString(ActiveAgentName()),
-	)
-	return s.Send(msg, ports.RichWith(markup))
+	return sendAgentConflictDialogWithMessenger(s.Messenger(), s.Chat(), task)
 }
 
 func sendAgentConflictDialogWithMessenger(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession) error {

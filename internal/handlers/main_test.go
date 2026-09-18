@@ -1298,15 +1298,15 @@ func TestSwitchActiveAgent(t *testing.T) {
 	config.ProjectState.Unlock()
 
 	// Switch to claude
-	msg, err := SwitchActiveAgent("claude")
+	res, err := SwitchActiveAgent("claude")
 	if err != nil {
 		t.Fatalf("unexpected error switching to claude: %v", err)
 	}
 	if ActiveAgentName() != "claude" {
 		t.Fatalf("expected ActiveAgentName to be claude, got %s", ActiveAgentName())
 	}
-	if !strings.Contains(msg, "claude") {
-		t.Errorf("expected message to mention claude: %s", msg)
+	if res.Agent != "claude" {
+		t.Errorf("expected result to name claude: %+v", res)
 	}
 	config.ProjectState.RLock()
 	curModel := config.ProjectState.CurrentModel
@@ -1320,7 +1320,7 @@ func TestSwitchActiveAgent(t *testing.T) {
 	}
 
 	// Switch to agy
-	msg, err = SwitchActiveAgent("agy")
+	_, err = SwitchActiveAgent("agy")
 	if err != nil {
 		t.Fatalf("unexpected error switching to agy: %v", err)
 	}
@@ -1435,7 +1435,7 @@ func setupTestApp(t *testing.T) *mockTransport {
 	t.Setenv("DEFAULT_MODEL", "gemini-3.1-pro-high")
 
 	mt := newMockTransport()
-	Start(mt)
+	Start(mt, testAgentRegistry())
 	return mt
 }
 

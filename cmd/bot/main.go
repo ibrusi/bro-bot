@@ -6,9 +6,10 @@ import (
 	"time"
 
 	"bro-bot/internal/adapters/agy"
+	"bro-bot/internal/adapters/claude"
 	"bro-bot/internal/adapters/telegram"
+	"bro-bot/internal/agents"
 	"bro-bot/internal/handlers"
-	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
 )
 
@@ -36,10 +37,16 @@ func buildTransport() ports.Transport {
 	}
 }
 
-func main() {
-	adapter := agy.NewAgyAdapter()
-	handlers.SetActiveAgent(adapter, "agy")
-	models.SetAgent(adapter)
+// buildAgentRegistry собирает реестр агентов. Это единственное место, где бот знает
+// о конкретных адаптерах: первый зарегистрированный агент становится агентом по
+// умолчанию, новый агент подключается одной строкой.
+func buildAgentRegistry() *agents.Registry {
+	reg := agents.NewRegistry()
+	reg.Register(agy.Spec())
+	reg.Register(claude.Spec())
+	return reg
+}
 
-	handlers.Start(buildTransport())
+func main() {
+	handlers.Start(buildTransport(), buildAgentRegistry())
 }
