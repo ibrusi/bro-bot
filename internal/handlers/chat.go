@@ -1,6 +1,10 @@
 package handlers
 
 import (
+	"bro-bot/internal/config"
+	"bro-bot/internal/domain"
+	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 	"bufio"
 	"context"
 	"fmt"
@@ -10,11 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"bro-bot/internal/config"
-	"bro-bot/internal/domain"
-	"bro-bot/internal/ports"
-	"bro-bot/internal/utils"
 )
 
 const (
@@ -662,4 +661,114 @@ func formatChatStatus(project string) string {
 		bldr.WriteString("\n🔄 Начать разговор заново: <code>/chat new</code>")
 	}
 	return bldr.String()
+}
+
+// handleChat — обработчик команды /chat.
+func handleChat(s ports.Session) error {
+	args := s.Args()
+	config.ProjectState.RLock()
+	curProj := config.ProjectState.CurrentProject
+	curModel := config.ProjectState.CurrentModel
+	config.ProjectState.RUnlock()
+
+	if len(args) == 0 {
+		if curProj == "" {
+			return s.Send("❌ Сначала выберите проект: /projects", nil)
+		}
+		return s.Send(formatChatStatus(curProj), ports.RichWith(buildChatModeMarkup()))
+	}
+
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "new", "reset", "новый", "сброс":
+		if curProj == "" {
+			return s.Send("❌ Сначала выберите проект: /projects", nil)
+		}
+		if session := domain.GlobalChatManager.Get(curProj); session != nil {
+			session.Cancel()
+		}
+		domain.GlobalChatManager.Reset(curProj, curModel)
+		return s.Send(fmt.Sprintf("🔄 <b>Начат новый разговор</b> в проекте <code>%s</code>. Прошлый контекст больше не используется.", html.EscapeString(curProj)), ports.Rich())
+
+	case "stop", "стоп", "отмена":
+		if curProj == "" {
+			return s.Send("❌ Сначала выберите проект: /projects", nil)
+		}
+		session := domain.GlobalChatManager.Get(curProj)
+		if session == nil || !session.Cancel() {
+			return s.Send("ℹ️ Сейчас нет активного ответа в диалоге.", ports.Rich())
+		}
+		return s.Send("🛑 <b>Ответ агента остановлен.</b>", ports.Rich())
+	}
+
+	return handleChatMessage(s, strings.TrimSpace(strings.Join(args, " ")))
+}
+
+// handleChatMode — обработчик команды /chatmode.
+func handleChatMode(s ports.Session) error {
+	args := s.Args()
+	current := config.ProjectState.GetInteractionMode()
+	target := domain.InteractionModeChat
+
+	if len(args) == 0 {
+		if current == domain.InteractionModeChat {
+			target = domain.InteractionModeTask
+		}
+	} else {
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "on", "enable", "true", "1", "вкл", "да", "chat":
+			target = domain.InteractionModeChat
+		case "off", "disable", "false", "0", "выкл", "нет", "task":
+			target = domain.InteractionModeTask
+		case "toggle":
+			if current == domain.InteractionModeChat {
+				target = domain.InteractionModeTask
+			}
+		default:
+			return s.Send("Использование: <code>/chatmode [on|off|toggle]</code>", ports.Rich())
+		}
+	}
+
+	return applyInteractionMode(s, target, false)
+}
+
+// onChatModeToggle — обработчик кнопки chat_mode_toggle.
+func onChatModeToggle(s ports.Session) error {
+	target := domain.InteractionModeTask
+	if config.ProjectState.GetInteractionMode() == domain.InteractionModeTask {
+		target = domain.InteractionModeChat
+	}
+	return applyInteractionMode(s, target, true)
+}
+
+// onChatAnswer — обработчик кнопки chat_answer.
+func onChatAnswer(s ports.Session) error {
+	sug, ok := takeChatSuggestion(s)
+	if !ok {
+		_ = s.Respond("Карточка устарела")
+		return s.Send("ℹ️ Карточка устарела — отправьте сообщение ещё раз.", ports.Rich())
+	}
+	_ = s.Respond("Отвечаю в чате")
+	return startChatTurn(s.Messenger(), s.Chat(), sug.Project, sug.Agent, sug.Text, "")
+}
+
+// onChatPlan — обработчик кнопки chat_plan.
+func onChatPlan(s ports.Session) error {
+	sug, ok := takeChatSuggestion(s)
+	if !ok {
+		_ = s.Respond("Карточка устарела")
+		return s.Send("ℹ️ Карточка устарела — отправьте сообщение ещё раз.", ports.Rich())
+	}
+	_ = s.Respond("Составляю план")
+	return handleCreateNewTaskWithOptions(s, sug.Text, true)
+}
+
+// onChatTask — обработчик кнопки chat_task.
+func onChatTask(s ports.Session) error {
+	sug, ok := takeChatSuggestion(s)
+	if !ok {
+		_ = s.Respond("Карточка устарела")
+		return s.Send("ℹ️ Карточка устарела — отправьте сообщение ещё раз.", ports.Rich())
+	}
+	_ = s.Respond("Создаю задачу")
+	return handleCreateNewTaskWithOptions(s, sug.Text, false)
 }
