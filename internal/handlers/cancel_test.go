@@ -57,9 +57,8 @@ func TestCancelStopsAgentForEveryAgentAndMode(t *testing.T) {
 			}
 			waitFor(t, "завершение пайплайна", func() bool { return !task.HasLiveProcess() })
 
-			task.Lock()
-			status := task.Status
-			task.Unlock()
+			view := task.Snapshot()
+			status := view.Status
 			if status != domain.TaskStatusCancelled {
 				t.Errorf("статус задачи = %q, ожидали %q", status, domain.TaskStatusCancelled)
 			}
@@ -73,11 +72,11 @@ func TestCancelBeforeProcessAttached(t *testing.T) {
 	tm := domain.NewTaskManager()
 	task := tm.CreateTask("test-proj", "flash", "гонка с отменой", testChatID)
 
-	task.Lock()
-	task.Status = domain.TaskStatusRunning
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusRunning
+	})
 
-	if _, err := tm.CancelTask(task.ID); err != nil {
+	if _, err := tm.CancelTask(task.Snapshot().ID); err != nil {
 		t.Fatalf("CancelTask: %v", err)
 	}
 

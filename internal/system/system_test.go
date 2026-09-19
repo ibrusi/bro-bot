@@ -329,7 +329,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 
 	// 2. Активная задача на проекте бота при /rebuild pull
 	task := testTM.CreateTask("bro-bot", "gemini", "Делаем рефакторинг", ports.ChatID("123"))
-	task.Status = domain.TaskStatusRunning
+	task.Update(func(t *domain.TaskSession) { t.Status = domain.TaskStatusRunning })
 
 	warn, blocked = checkActiveTasksForSystemAction("/rebuild pull", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects")
 	if !blocked {
@@ -346,7 +346,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	testTM2 := domain.NewTaskManager()
 	domain.GlobalTaskManager = testTM2
 	task2 := testTM2.CreateTask("some-other-project", "gemini", "Фича для сайта", ports.ChatID("123"))
-	task2.Status = domain.TaskStatusRunning
+	task2.Update(func(t *domain.TaskSession) { t.Status = domain.TaskStatusRunning })
 
 	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects")
 	if !blocked {
@@ -361,8 +361,8 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	if blocked || warn != "" {
 		t.Errorf("expected Force to allow operation, got blocked=%v, warn=%s", blocked, warn)
 	}
-	if task2.Status != domain.TaskStatusCancelled {
-		t.Errorf("expected task2 to be cancelled by Force, got status %s", task2.Status)
+	if st := task2.Snapshot().Status; st != domain.TaskStatusCancelled {
+		t.Errorf("expected task2 to be cancelled by Force, got status %s", st)
 	}
 }
 

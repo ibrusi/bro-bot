@@ -651,25 +651,24 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 
 	activeTask := domain.GlobalTaskManager.GetActiveTask()
 	if activeTask != nil {
-		activeTask.Lock()
-		if activeTask.Status == domain.TaskStatusRunning || activeTask.Status == domain.TaskStatusWaitingInput || activeTask.Status == domain.TaskStatusPlanning {
+		activeView := activeTask.Snapshot()
+		if activeView.Status == domain.TaskStatusRunning || activeView.Status == domain.TaskStatusWaitingInput || activeView.Status == domain.TaskStatusPlanning {
 			hasActive = true
-			if activeTask.Project != "" {
-				projName = activeTask.Project
+			if activeView.Project != "" {
+				projName = activeView.Project
 			}
-			if activeTask.CurrentPrompt != "" {
-				prompt = activeTask.CurrentPrompt
-			} else if activeTask.InitialPrompt != "" {
-				prompt = activeTask.InitialPrompt
+			if activeView.CurrentPrompt != "" {
+				prompt = activeView.CurrentPrompt
+			} else if activeView.InitialPrompt != "" {
+				prompt = activeView.InitialPrompt
 			}
-			if !activeTask.StartedAt.IsZero() {
-				startedAt = activeTask.StartedAt
+			if !activeView.StartedAt.IsZero() {
+				startedAt = activeView.StartedAt
 			}
-			if activeTask.Agent != "" {
-				activeWorkerAgent = activeTask.Agent
+			if activeView.Agent != "" {
+				activeWorkerAgent = activeView.Agent
 			}
 		}
-		activeTask.Unlock()
 	}
 
 	// PID воркера берём только у менеджера задач: он единственный, кто знает про

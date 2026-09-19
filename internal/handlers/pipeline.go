@@ -26,52 +26,60 @@ func runAgentPipeline(m ports.Messenger, chat ports.ChatID, workDir, projectName
 	config.ProjectState.RUnlock()
 
 	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent(projectName, modelName, ActiveAgentName(), initialPrompt, chat, false)
-	task.Lock()
-	task.Status = domain.TaskStatusRunning
-	task.StartedAt = time.Now()
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusRunning
+		t.StartedAt = time.Now()
+	})
 
 	syncLegacySession(task)
 	runAgentTaskPipeline(m, chat, task, workDir)
 }
 
 func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir string) {
-	projectName := task.Project
-	taskID := task.ID
-
-	// Имя активного агента читаем до захвата блокировки задачи: activeAgentMu остаётся
-	// листовым мьютексом и никогда не берётся внутри чужих блокировок.
+	// Имя активного агента читаем до снимка задачи: activeAgentMu остаётся листовым
+	// мьютексом и никогда не берётся внутри чужих блокировок.
 	fallbackAgent := ActiveAgentName()
 
-	task.Lock()
-	trackModel := task.Model
-	trackPrompt := task.CurrentPrompt
+	view := task.Snapshot()
+	projectName := view.Project
+	taskID := view.ID
+	trackModel := view.Model
+	trackPrompt := view.CurrentPrompt
 	if trackPrompt == "" {
-		trackPrompt = task.InitialPrompt
+		trackPrompt = view.InitialPrompt
 	}
-	taskAgent := task.Agent
+	taskAgent := view.Agent
 	if taskAgent == "" {
 		taskAgent = fallbackAgent
 	}
-	task.Unlock()
 	domain.GlobalTokenTracker.StartTaskIfNotActiveWithAgent(projectName, trackModel, trackPrompt, taskAgent)
 
 	// ЭТАП 1: Планирование (если требуется и ещё не утверждён)
-	task.Lock()
-	needsPlanning := task.RequiresPlan && !task.PlanApproved
-	task.Unlock()
+	view2 := task.Snapshot()
+	needsPlanning := view2.RequiresPlan && !view2.PlanApproved
 
 	if needsPlanning {
-		task.Lock()
-		if task.Status == domain.TaskStatusCancelled {
-			task.Unlock()
+		// Проверка отмены и перевод в планирование — одним куском: иначе задачу можно
+		// отменить между ними и запустить уже отменённый шаг.
+		var (
+			cancelled        bool
+			existingPlan     string
+			curPrompt        string
+			pendingFollowups []string
+		)
+		task.Update(func(t *domain.TaskSession) {
+			if t.Status == domain.TaskStatusCancelled {
+				cancelled = true
+				return
+			}
+			t.Status = domain.TaskStatusPlanning
+			existingPlan = t.Plan
+			curPrompt = t.CurrentPrompt
+			pendingFollowups = append([]string(nil), t.PendingFollowups...)
+		})
+		if cancelled {
 			return
 		}
-		task.Status = domain.TaskStatusPlanning
-		existingPlan := task.Plan
-		curPrompt := task.CurrentPrompt
-		pendingFollowups := append([]string(nil), task.PendingFollowups...)
-		task.Unlock()
 
 		syncLegacySession(task)
 
@@ -88,7 +96,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 
 		var planningPrompt string
 		if existingPlan == "" {
-			if task.ConversationID != "" && curPrompt != "" && curPrompt != task.InitialPrompt {
+			if view.ConversationID != "" && curPrompt != "" && curPrompt != view.InitialPrompt {
 				planningPrompt = curPrompt
 			} else {
 				planningPrompt = fmt.Sprintf(
@@ -104,13 +112,13 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 						"   - План тестирования и проверки работоспособности.\n"+
 						"   - Возможные риски, краевые случаи и пути их решения.\n"+
 						"4. Выведи итоговый план в понятном и структурированном виде для пользователя.",
-					task.InitialPrompt, pendingSection,
+					view.InitialPrompt, pendingSection,
 				)
 			}
 		} else {
 			feedback := curPrompt
 			if feedback == "" {
-				feedback = task.InitialPrompt
+				feedback = view.InitialPrompt
 			}
 			planningPrompt = fmt.Sprintf(
 				"Задача пользователя: %s\n\n"+
@@ -118,33 +126,38 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 					"ЗАМЕЧАНИЯ И ДОПОЛНЕНИЯ ПОЛЬЗОВАТЕЛЯ К ПЛАНУ:\n%s%s\n\n"+
 					"ВНИМАНИЕ: Это этап планирования. НЕ вноси изменения в файлы проекта, НЕ делай commit и НЕ создавай PR.\n"+
 					"Обнови и скорректируй план реализации с учётом всех замечаний пользователя и выведи обновлённый план.",
-				task.InitialPrompt, existingPlan, feedback, pendingSection,
+				view.InitialPrompt, existingPlan, feedback, pendingSection,
 			)
 		}
 
 		for {
-			task.Lock()
-			if task.Status == domain.TaskStatusCancelled {
-				task.Unlock()
+			var (
+				cancelled   bool
+				activeModel string
+			)
+			task.Update(func(t *domain.TaskSession) {
+				if t.Status == domain.TaskStatusCancelled {
+					cancelled = true
+					return
+				}
+				t.Status = domain.TaskStatusPlanning
+				activeModel = t.Model
+			})
+			if cancelled {
 				checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 				return
 			}
-			task.Status = domain.TaskStatusPlanning
-			activeModel := task.Model
-			task.Unlock()
 
 			syncLegacySession(task)
 
 			res := executeStepForTask(m, chat, task, workDir, planningPrompt, activeModel)
 
-			task.Lock()
-			if task.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
-				task.Unlock()
+			stepView := task.Snapshot()
+			if stepView.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
 				checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 				return
 			}
-			st := task.Status
-			task.Unlock()
+			st := stepView.Status
 
 			if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
 				answer, ok := waitForTaskInput(m, chat, task, projectName, taskID)
@@ -168,7 +181,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			break
 		}
 
-		planText := strings.TrimSpace(task.FullOutput.String())
+		planText := strings.TrimSpace(task.Snapshot().Output)
 		if isLikelyErrorMessage(planText) {
 			handleTaskStepError(m, chat, task, projectName, taskID, errors.New(planText))
 			return
@@ -176,12 +189,12 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		if planText == "" {
 			planText = "Агент не сформировал подробный план. Вы можете дополнить задачу замечаниями или утвердить её."
 		}
-		task.Lock()
-		task.Plan = planText
-		task.Status = domain.TaskStatusWaitingApproval
-		task.ResetOutputLocked()
-		task.RecentLogs = nil
-		task.Unlock()
+		task.Update(func(t *domain.TaskSession) {
+			t.Plan = planText
+			t.Status = domain.TaskStatusWaitingApproval
+			t.ResetOutputLocked()
+			t.RecentLogs = nil
+		})
 
 		syncLegacySession(task)
 
@@ -189,35 +202,39 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		return
 	}
 
-	task.Lock()
-	currentPrompt := task.InitialPrompt
-	if task.CurrentPrompt != "" {
-		currentPrompt = task.CurrentPrompt
+	view3 := task.Snapshot()
+	currentPrompt := view3.InitialPrompt
+	if view3.CurrentPrompt != "" {
+		currentPrompt = view3.CurrentPrompt
 	}
-	task.Unlock()
 
 	for {
-		task.Lock()
-		if task.Status == domain.TaskStatusCancelled {
-			task.Unlock()
+		var (
+			cancelled   bool
+			activeModel string
+		)
+		task.Update(func(t *domain.TaskSession) {
+			if t.Status == domain.TaskStatusCancelled {
+				cancelled = true
+				return
+			}
+			activeModel = t.Model
+			t.CurrentPrompt = currentPrompt
+		})
+		if cancelled {
 			return
 		}
-		activeModel := task.Model
-		task.CurrentPrompt = currentPrompt
-		task.Unlock()
 
 		syncLegacySession(task)
 
 		res := executeStepForTask(m, chat, task, workDir, currentPrompt, activeModel)
 
-		task.Lock()
-		if task.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
-			task.Unlock()
+		stepView := task.Snapshot()
+		if stepView.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
 			checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
 			return
 		}
-		st := task.Status
-		task.Unlock()
+		st := stepView.Status
 
 		if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
 			answer, ok := waitForTaskInput(m, chat, task, projectName, taskID)
@@ -238,22 +255,39 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			return
 		}
 
-		task.Lock()
-		if len(task.PendingFollowups) == 0 {
-			prURL := task.LastPRURL
-			finalReport := task.FullOutput.String()
-			initialPrompt := task.InitialPrompt
-			hasPlan := task.Plan != ""
-			task.Status = domain.TaskStatusCompleted
-			task.FinishedAt = time.Now()
-			task.Unlock()
+		// Раньше этот блок держал лок задачи от проверки очереди дополнений до конца
+		// ветки с дополнениями и вызывал ClearPendingFollowups, который берёт тот же
+		// мьютекс — задача с непустой очередью намертво вешала пайплайн. Снимок и
+		// Update разводят захваты: наружу лок больше не торчит.
+		var (
+			completed     bool
+			prURL         string
+			finalReport   string
+			initialPrompt string
+			hasPlan       bool
+			followups     []string
+		)
+		task.Update(func(t *domain.TaskSession) {
+			if len(t.PendingFollowups) > 0 {
+				followups = append([]string(nil), t.PendingFollowups...)
+				return
+			}
+			completed = true
+			prURL = t.LastPRURL
+			finalReport = t.FullOutput.String()
+			initialPrompt = t.InitialPrompt
+			hasPlan = t.Plan != ""
+			t.Status = domain.TaskStatusCompleted
+			t.FinishedAt = time.Now()
+		})
 
+		if completed {
 			syncLegacySession(task)
 
 			metrics := domain.GlobalTokenTracker.FinishTask(prURL)
-			task.Lock()
-			task.TokenMetrics = &metrics
-			task.Unlock()
+			task.Update(func(t *domain.TaskSession) {
+				t.TokenMetrics = &metrics
+			})
 			domain.GlobalTaskManager.SaveTaskMetrics(taskID, &metrics)
 			domain.GlobalTaskManager.SaveTask(task)
 			statsSummary := metrics.FormatCompletionSummary()
@@ -324,7 +358,6 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			return
 		}
 
-		followups := task.PendingFollowups
 		task.ClearPendingFollowups()
 
 		var bldr strings.Builder
@@ -336,10 +369,11 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		bldr.WriteString("Внеси необходимые изменения, запусти тесты/линтеры, закоммить изменения и запушь в текущую ветку. Если PR уже открыт, обнови его.")
 
 		currentPrompt = bldr.String()
-		task.CurrentPrompt = strings.Join(followups, "; ")
-		task.StartedAt = time.Now()
-		task.RecentLogs = nil
-		task.Unlock()
+		task.Update(func(t *domain.TaskSession) {
+			t.CurrentPrompt = strings.Join(followups, "; ")
+			t.StartedAt = time.Now()
+			t.RecentLogs = nil
+		})
 
 		domain.GlobalTokenTracker.StartNextStep(activeModel)
 
@@ -373,10 +407,9 @@ func extractStepErrorMessage(task *domain.TaskSession, resultError string, waitE
 	}
 
 	if task != nil {
-		task.Lock()
-		recentLogs := append([]string(nil), task.RecentLogs...)
-		fullOutput := task.FullOutput.String()
-		task.Unlock()
+		view4 := task.Snapshot()
+		recentLogs := append([]string(nil), view4.RecentLogs...)
+		fullOutput := view4.Output
 
 		// 1. Поиск смысловой строки ошибки в RecentLogs с конца
 		for i := len(recentLogs) - 1; i >= 0; i-- {
@@ -462,16 +495,14 @@ func evaluateStepCompletion(
 }
 
 func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir, prompt, modelName string) StepResult {
-	projectName := task.Project
-	taskID := task.ID
+	view := task.Snapshot()
+	projectName := view.Project
+	taskID := view.ID
 
-	task.Lock()
-	if task.Status == domain.TaskStatusCancelled {
-		task.Unlock()
+	if view.Status == domain.TaskStatusCancelled {
 		return StepResult{Outcome: StepOutcomeCancelled}
 	}
-	isPlanning := task.Status == domain.TaskStatusPlanning
-	task.Unlock()
+	isPlanning := view.Status == domain.TaskStatusPlanning
 
 	var statusMsgText string
 	if isPlanning {
@@ -485,20 +516,19 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		domain.GlobalTaskManager.RegisterMessageTask(statusRef, taskID)
 	}
 
-	task.Lock()
-	task.LastModelUsed = modelName
-	task.LiveMsg = &statusRef
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.LastModelUsed = modelName
+		t.LiveMsg = &statusRef
+	})
 
 	syncLegacySession(task)
 
-	task.Lock()
-	convID := task.ConversationID
-	taskAgent := task.Agent
+	view5 := task.Snapshot()
+	convID := view5.ConversationID
+	taskAgent := view5.Agent
 	if taskAgent == "" {
 		taskAgent = "agy"
 	}
-	task.Unlock()
 
 	// Имя активного агента читаем один раз: проверка конфликта и выбор адаптера ниже
 	// должны видеть одно и то же состояние, даже если пользователь переключает агента.
@@ -507,9 +537,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	if convID != "" && !strings.EqualFold(taskAgent, currentAgentName) {
 		err := fmt.Errorf("конфликт агентов: сессия задачи принадлежит %s, а текущий агент %s", taskAgent, currentAgentName)
 		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, err), nil)
-		task.Lock()
-		task.Status = domain.TaskStatusPaused
-		task.Unlock()
+		task.Update(func(t *domain.TaskSession) {
+			t.Status = domain.TaskStatusPaused
+		})
 		syncLegacySession(task)
 		_ = sendAgentConflictDialogWithMessenger(m, chat, task)
 		return StepResult{Outcome: StepOutcomeError, Error: err}
@@ -532,18 +562,18 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	framework, frameworkErr := agentFrameworkFor(taskAgent)
 	if frameworkErr != nil {
 		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, frameworkErr), ports.Rich())
-		task.Lock()
-		task.Status = domain.TaskStatusFailed
-		task.Unlock()
+		task.Update(func(t *domain.TaskSession) {
+			t.Status = domain.TaskStatusFailed
+		})
 		syncLegacySession(task)
 		return StepResult{Outcome: StepOutcomeError, Error: frameworkErr}
 	}
 	agentProcess, err := framework.ExecuteTask(stepCtx, args)
 	if err != nil {
 		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, err), nil)
-		task.Lock()
-		task.Status = domain.TaskStatusFailed
-		task.Unlock()
+		task.Update(func(t *domain.TaskSession) {
+			t.Status = domain.TaskStatusFailed
+		})
 		syncLegacySession(task)
 		return StepResult{Outcome: StepOutcomeError, Error: err}
 	}
@@ -573,19 +603,17 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 			case <-stopLiveUpdate:
 				return
 			case <-ticker.C:
-				task.Lock()
-				if task.Status != domain.TaskStatusRunning && task.Status != domain.TaskStatusWaitingInput && task.Status != domain.TaskStatusPlanning {
-					task.Unlock()
+				liveView := task.Snapshot()
+				if liveView.Status != domain.TaskStatusRunning && liveView.Status != domain.TaskStatusWaitingInput && liveView.Status != domain.TaskStatusPlanning {
 					return
 				}
 				var lastLine string
-				if len(task.RecentLogs) > 0 {
-					lastLine = task.RecentLogs[len(task.RecentLogs)-1]
+				if len(liveView.RecentLogs) > 0 {
+					lastLine = liveView.RecentLogs[len(liveView.RecentLogs)-1]
 				}
-				followupsCount := len(task.PendingFollowups)
-				taskStatus := task.Status
-				task.Unlock()
-				dur := task.Duration()
+				followupsCount := len(liveView.PendingFollowups)
+				taskStatus := liveView.Status
+				dur := liveView.Duration
 
 				tokenSnippet := domain.GlobalTokenTracker.GetLiveStatusSnippet()
 
@@ -666,12 +694,12 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 						desc := domain.FormatToolAction(u.ToolName, u.ToolInfo)
 						task.AppendLog(desc)
 					} else if u.StepType == "agent_response" && u.TextDelta != "" {
-						task.Lock()
-						task.AppendOutputLocked(u.TextDelta)
-						if matches := prUrlRegexp.FindStringSubmatch(u.TextDelta); len(matches) > 1 {
-							task.LastPRURL = matches[1]
-						}
-						task.Unlock()
+						task.Update(func(t *domain.TaskSession) {
+							t.AppendOutputLocked(u.TextDelta)
+							if matches := prUrlRegexp.FindStringSubmatch(u.TextDelta); len(matches) > 1 {
+								t.LastPRURL = matches[1]
+							}
+						})
 					}
 
 					// Фиксация вызова инструмента ask_question (без преждевременного прерывания процесса)
@@ -704,14 +732,14 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 						domain.GlobalTokenTracker.RecordResultUsage(*res.Usage, res.DurationSeconds, res.NumTurns)
 					}
 					if res.Response != "" {
-						task.Lock()
-						if task.FullOutput.Len() == 0 {
-							task.AppendOutputLocked(res.Response)
-						}
-						if matches := prUrlRegexp.FindStringSubmatch(res.Response); len(matches) > 1 {
-							task.LastPRURL = matches[1]
-						}
-						task.Unlock()
+						task.Update(func(t *domain.TaskSession) {
+							if t.FullOutput.Len() == 0 {
+								t.AppendOutputLocked(res.Response)
+							}
+							if matches := prUrlRegexp.FindStringSubmatch(res.Response); len(matches) > 1 {
+								t.LastPRURL = matches[1]
+							}
+						})
 					}
 				}
 				continue
@@ -724,18 +752,18 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 
 			// Fallback для текстового вывода или не-JSON строк
 			task.AppendLog(cleanLine)
-			task.Lock()
-			task.AppendOutputLocked(cleanLine + "\n")
-			if matches := prUrlRegexp.FindStringSubmatch(cleanLine); len(matches) > 1 {
-				task.LastPRURL = matches[1]
-			}
-			if m := modelRegexp.FindStringSubmatch(cleanLine); len(m) > 1 {
-				task.LastModelUsed = strings.TrimSpace(m[1])
-			}
-			if t := tokensRegexp.FindStringSubmatch(cleanLine); len(t) > 1 {
-				task.LastTokensUsed = strings.TrimSpace(t[1])
-			}
-			task.Unlock()
+			task.Update(func(t *domain.TaskSession) {
+				t.AppendOutputLocked(cleanLine + "\n")
+				if matches := prUrlRegexp.FindStringSubmatch(cleanLine); len(matches) > 1 {
+					t.LastPRURL = matches[1]
+				}
+				if m := modelRegexp.FindStringSubmatch(cleanLine); len(m) > 1 {
+					t.LastModelUsed = strings.TrimSpace(m[1])
+				}
+				if tokens := tokensRegexp.FindStringSubmatch(cleanLine); len(tokens) > 1 {
+					t.LastTokensUsed = strings.TrimSpace(tokens[1])
+				}
+			})
 		}
 		if scanErr := scanner.Err(); scanErr != nil {
 			log.Printf("Предупреждение: ошибка сканера вывода agy для задачи #%d: %v", taskID, scanErr)
@@ -748,11 +776,10 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	waitErr := agentProcess.Wait()
 	task.DetachProcess()
 
-	task.Lock()
-	isCancelled := (task.Status == domain.TaskStatusCancelled)
-	lastPR := task.LastPRURL
-	fullResp := strings.TrimSpace(task.FullOutput.String())
-	task.Unlock()
+	view6 := task.Snapshot()
+	isCancelled := (view6.Status == domain.TaskStatusCancelled)
+	lastPR := view6.LastPRURL
+	fullResp := strings.TrimSpace(view6.Output)
 	syncLegacySession(task)
 
 	if isCancelled {
@@ -789,12 +816,12 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	)
 
 	if isQuestion {
-		task.Lock()
-		task.Status = domain.TaskStatusWaitingInput
-		task.LastQuestion = qText
-		task.QuestionOptions = qOpts
-		task.QuestionAskedAt = time.Now()
-		task.Unlock()
+		task.Update(func(t *domain.TaskSession) {
+			t.Status = domain.TaskStatusWaitingInput
+			t.LastQuestion = qText
+			t.QuestionOptions = qOpts
+			t.QuestionAskedAt = time.Now()
+		})
 		syncLegacySession(task)
 
 		menu := buildQuestionMarkup(task)
@@ -826,14 +853,16 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 }
 
 func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName string, taskID int, isPlanning bool) {
-	task.Lock()
-	task.Status = domain.TaskStatusPaused
-	convID := task.ConversationID
-	tAgent := task.Agent
-	if tAgent == "" {
-		tAgent = "agy"
-	}
-	task.Unlock()
+	var convID string
+	var tAgent string
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusPaused
+		convID = t.ConversationID
+		tAgent = t.Agent
+		if tAgent == "" {
+			tAgent = "agy"
+		}
+	})
 
 	syncLegacySession(task)
 
@@ -871,11 +900,12 @@ func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.Ta
 }
 
 func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName string, taskID int, err error) {
-	task.Lock()
-	task.Status = domain.TaskStatusFailed
-	task.FinishedAt = time.Now()
-	convID := task.ConversationID
-	task.Unlock()
+	var convID string
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusFailed
+		t.FinishedAt = time.Now()
+		convID = t.ConversationID
+	})
 
 	syncLegacySession(task)
 
@@ -914,30 +944,31 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 	timeout := config.QuestionTimeout
 
 	select {
-	case answer := <-task.AnswerChan:
-		task.Lock()
-		if task.RequiresPlan && !task.PlanApproved {
-			task.Status = domain.TaskStatusPlanning
-		} else {
-			task.Status = domain.TaskStatusRunning
-		}
-		task.CurrentPrompt = answer
-		task.LastQuestion = ""
-		task.QuestionOptions = nil
-		task.StartedAt = time.Now()
-		task.Unlock()
+	case answer := <-task.AnswerChannel():
+		task.Update(func(t *domain.TaskSession) {
+			if t.RequiresPlan && !t.PlanApproved {
+				t.Status = domain.TaskStatusPlanning
+			} else {
+				t.Status = domain.TaskStatusRunning
+			}
+			t.CurrentPrompt = answer
+			t.LastQuestion = ""
+			t.QuestionOptions = nil
+			t.StartedAt = time.Now()
+		})
 		syncLegacySession(task)
 
 		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("▶️ <b>Задача #%d: Ответ получен, продолжаю выполнение...</b>", taskID), ports.Rich())
 		return answer, true
 
-	case <-task.PauseChan:
-		task.Lock()
-		isCancelled := (task.Status == domain.TaskStatusCancelled)
-		if !isCancelled {
-			task.Status = domain.TaskStatusPaused
-		}
-		task.Unlock()
+	case <-task.PauseChannel():
+		var isCancelled bool
+		task.Update(func(t *domain.TaskSession) {
+			isCancelled = (t.Status == domain.TaskStatusCancelled)
+			if !isCancelled {
+				t.Status = domain.TaskStatusPaused
+			}
+		})
 		syncLegacySession(task)
 
 		if !isCancelled {
@@ -946,11 +977,11 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 		return "", false
 
 	case <-time.After(timeout):
-		task.Lock()
-		if task.Status == domain.TaskStatusWaitingInput {
-			task.Status = domain.TaskStatusPaused
-		}
-		task.Unlock()
+		task.Update(func(t *domain.TaskSession) {
+			if t.Status == domain.TaskStatusWaitingInput {
+				t.Status = domain.TaskStatusPaused
+			}
+		})
 		syncLegacySession(task)
 
 		resumeMenu := buildResumeMarkup(taskID)

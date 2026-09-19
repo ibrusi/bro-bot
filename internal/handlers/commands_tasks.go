@@ -46,12 +46,11 @@ func onTaskSel(s ports.Session) error {
 	markup := domain.BuildTaskDetailsMarkup(task)
 	conflictNote := ""
 	if HasAgentConflict(task, ActiveAgentName()) {
-		task.Lock()
-		tAgent := task.Agent
+		view := task.Snapshot()
+		tAgent := view.Agent
 		if tAgent == "" {
 			tAgent = "agy"
 		}
-		task.Unlock()
 		conflictNote = fmt.Sprintf("\n\n⚠️ <i>Внимание: задача использует сессию агента <b>%s</b>, а активен <b>%s</b>.</i>", html.EscapeString(tAgent), html.EscapeString(ActiveAgentName()))
 	}
 	return s.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s%s", id, details, conflictNote), ports.RichWith(markup))
@@ -90,8 +89,9 @@ func handleStatus(s ports.Session) error {
 		return s.Send(idleMsg, ports.Rich())
 	}
 
+	targetID := target.Snapshot().ID
 	activeTask := domain.GlobalTaskManager.GetActiveTask()
-	isActiveFocus := (activeTask != nil && activeTask.ID == target.ID)
+	isActiveFocus := (activeTask != nil && activeTask.Snapshot().ID == targetID)
 	msg := domain.FormatTaskDetails(target, isActiveFocus)
 
 	tokenBlock := domain.GlobalTokenTracker.GetCurrentTaskStatusBlock()
@@ -108,10 +108,9 @@ func handleStatus(s ports.Session) error {
 	if len(otherTasks) > 1 {
 		var otherParts []string
 		for _, ot := range otherTasks {
-			if ot.ID != target.ID {
-				ot.Lock()
-				otherParts = append(otherParts, fmt.Sprintf("<b>#%d</b> (%s <code>%s</code>)", ot.ID, ot.Status.Emoji(), html.EscapeString(ot.Project)))
-				ot.Unlock()
+			if ot.ID != targetID {
+				otView := ot.Snapshot()
+				otherParts = append(otherParts, fmt.Sprintf("<b>#%d</b> (%s <code>%s</code>)", otView.ID, otView.Status.Emoji(), html.EscapeString(otView.Project)))
 			}
 		}
 		if len(otherParts) > 0 {
@@ -135,12 +134,11 @@ func handleTask(s ports.Session) error {
 		markup := domain.BuildTaskDetailsMarkup(active)
 		conflictNote := ""
 		if HasAgentConflict(active, ActiveAgentName()) {
-			active.Lock()
-			tAgent := active.Agent
+			activeView := active.Snapshot()
+			tAgent := activeView.Agent
 			if tAgent == "" {
 				tAgent = "agy"
 			}
-			active.Unlock()
 			conflictNote = fmt.Sprintf("\n\n⚠️ <i>Внимание: задача использует сессию агента <b>%s</b>, а активен <b>%s</b>.</i>", html.EscapeString(tAgent), html.EscapeString(ActiveAgentName()))
 		}
 		return s.Send(details+conflictNote, ports.RichWith(markup))
@@ -176,12 +174,11 @@ func handleTask(s ports.Session) error {
 	markup := domain.BuildTaskDetailsMarkup(task)
 	conflictNote := ""
 	if HasAgentConflict(task, ActiveAgentName()) {
-		task.Lock()
-		tAgent := task.Agent
+		view2 := task.Snapshot()
+		tAgent := view2.Agent
 		if tAgent == "" {
 			tAgent = "agy"
 		}
-		task.Unlock()
 		conflictNote = fmt.Sprintf("\n\n⚠️ <i>Внимание: задача использует сессию агента <b>%s</b>, а активен <b>%s</b>.</i>", html.EscapeString(tAgent), html.EscapeString(ActiveAgentName()))
 	}
 	return s.Send(fmt.Sprintf("🎯 <b>Фокус переключен на задачу #%d!</b>\n\n%s%s", id, details, conflictNote), ports.RichWith(markup))
@@ -205,7 +202,7 @@ func handleAdd(s ports.Session) error {
 		return s.Send("❌ Нет активной задачи. Укажите ID: <code>/add &lt;id&gt; &lt;текст&gt;</code>", ports.Rich())
 	}
 	followupText := strings.TrimSpace(strings.Join(args, " "))
-	return handleAddFollowupToTask(s, active.ID, followupText)
+	return handleAddFollowupToTask(s, active.Snapshot().ID, followupText)
 }
 
 // handleNew — обработчик команды /new.
@@ -259,7 +256,7 @@ func handleCancel(s ports.Session) error {
 		if active == nil || !active.IsActive() {
 			return s.Send("Сейчас нет активных задач.", nil)
 		}
-		targetID = active.ID
+		targetID = active.Snapshot().ID
 	}
 
 	task, err := domain.GlobalTaskManager.CancelTask(targetID)
@@ -270,9 +267,10 @@ func handleCancel(s ports.Session) error {
 	syncLegacySession(domain.GlobalTaskManager.GetActiveTask())
 	domain.GlobalTokenTracker.CancelTask()
 
-	checkAndStartQueuedTask(s.Messenger(), task.Project, config.ProjectsRoot)
+	view := task.Snapshot()
+	checkAndStartQueuedTask(s.Messenger(), view.Project, config.ProjectsRoot)
 
-	return s.Send(fmt.Sprintf("🛑 Задача <b>#%d</b> (<code>%s</code>) остановлена.", task.ID, html.EscapeString(task.Project)), ports.Rich())
+	return s.Send(fmt.Sprintf("🛑 Задача <b>#%d</b> (<code>%s</code>) остановлена.", view.ID, html.EscapeString(view.Project)), ports.Rich())
 }
 
 // onQuestionChoice — обработчик кнопки q_choice.
@@ -292,13 +290,12 @@ func onQuestionChoice(s ports.Session) error {
 		return s.Respond("Задача не найдена")
 	}
 
-	task.Lock()
-	status := task.Status
+	view3 := task.Snapshot()
+	status := view3.Status
 	var chosenText string
-	if optIdx >= 0 && optIdx < len(task.QuestionOptions) {
-		chosenText = task.QuestionOptions[optIdx]
+	if optIdx >= 0 && optIdx < len(view3.QuestionOptions) {
+		chosenText = view3.QuestionOptions[optIdx]
 	}
-	task.Unlock()
 	cmdIsNil := !task.HasLiveProcess()
 
 	if chosenText == "" {
@@ -318,9 +315,9 @@ func onQuestionChoice(s ports.Session) error {
 			return s.Send(fmt.Sprintf("💬 <b>Выбран вариант %d для задачи #%d:</b>\n<i>«%s»</i>", optIdx+1, taskID, html.EscapeString(chosenText)), ports.Rich())
 		}
 		if HasAgentConflict(task, ActiveAgentName()) {
-			task.Lock()
-			task.CurrentPrompt = chosenText
-			task.Unlock()
+			task.Update(func(t *domain.TaskSession) {
+				t.CurrentPrompt = chosenText
+			})
 			domain.GlobalTaskManager.SaveTask(task)
 			return sendAgentConflictDialog(s, task)
 		}
@@ -329,10 +326,9 @@ func onQuestionChoice(s ports.Session) error {
 			return s.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", taskID, err.Error()), ports.Rich())
 		}
 		syncLegacySession(resumedTask)
-		resumedTask.Lock()
-		resumedStatus := resumedTask.Status
-		projectName := resumedTask.Project
-		resumedTask.Unlock()
+		resumedView := resumedTask.Snapshot()
+		resumedStatus := resumedView.Status
+		projectName := resumedView.Project
 
 		if resumedStatus == domain.TaskStatusQueued {
 			return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
@@ -344,9 +340,9 @@ func onQuestionChoice(s ports.Session) error {
 			taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 	} else if status == domain.TaskStatusPaused {
 		if HasAgentConflict(task, ActiveAgentName()) {
-			task.Lock()
-			task.CurrentPrompt = chosenText
-			task.Unlock()
+			task.Update(func(t *domain.TaskSession) {
+				t.CurrentPrompt = chosenText
+			})
 			domain.GlobalTaskManager.SaveTask(task)
 			return sendAgentConflictDialog(s, task)
 		}
@@ -355,10 +351,9 @@ func onQuestionChoice(s ports.Session) error {
 			return s.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", taskID, err.Error()), ports.Rich())
 		}
 		syncLegacySession(resumedTask)
-		resumedTask.Lock()
-		resumedStatus := resumedTask.Status
-		projectName := resumedTask.Project
-		resumedTask.Unlock()
+		resumedView2 := resumedTask.Snapshot()
+		resumedStatus := resumedView2.Status
+		projectName := resumedView2.Project
 
 		if resumedStatus == domain.TaskStatusQueued {
 			return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>",
@@ -397,9 +392,8 @@ func onQuestionPause(s ports.Session) error {
 		_ = s.Edit(fmt.Sprintf("%s\n\n⏸ <i>Задача приостановлена пользователем.</i>", cb.MessageText), ports.Rich())
 	}
 
-	task.Lock()
-	projectName := task.Project
-	task.Unlock()
+	view4 := task.Snapshot()
+	projectName := view4.Project
 
 	checkAndStartQueuedTask(s.Messenger(), projectName, config.ProjectsRoot)
 
@@ -421,12 +415,11 @@ func onQuestionResume(s ports.Session) error {
 		return s.Respond("Задача не найдена")
 	}
 
-	task.Lock()
-	status := task.Status
-	lastQ := task.LastQuestion
-	opts := append([]string(nil), task.QuestionOptions...)
-	proj := task.Project
-	task.Unlock()
+	view5 := task.Snapshot()
+	status := view5.Status
+	lastQ := view5.LastQuestion
+	opts := append([]string(nil), view5.QuestionOptions...)
+	proj := view5.Project
 
 	_ = s.Respond("")
 
@@ -457,20 +450,18 @@ func onQuestionResume(s ports.Session) error {
 	}
 	syncLegacySession(resumedTask)
 
-	resumedTask.Lock()
-	resStatus := resumedTask.Status
-	resumedTask.Unlock()
+	resumedView3 := resumedTask.Snapshot()
+	resStatus := resumedView3.Status
 
 	if resStatus == domain.TaskStatusQueued {
 		return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.\nОна запустится автоматически, как только проект освободится.", taskID, html.EscapeString(proj)), ports.Rich())
 	}
 
-	task.Lock()
-	tAgent := task.Agent
+	view6 := task.Snapshot()
+	tAgent := view6.Agent
 	if tAgent == "" {
 		tAgent = "agy"
 	}
-	task.Unlock()
 
 	workDir := filepath.Join(config.ProjectsRoot, proj)
 	go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
@@ -495,25 +486,26 @@ func onTaskAgentRestart(s ports.Session) error {
 	domain.GlobalTaskManager.ClearTaskConversationID(taskID)
 	domain.GlobalTaskManager.SetTaskAgent(taskID, ActiveAgentName())
 
-	task.Lock()
-	proj := task.Project
-	task.ConversationID = ""
-	task.Agent = ActiveAgentName()
-	if task.RequiresPlan && !task.PlanApproved {
-		task.Status = domain.TaskStatusPlanning
-	} else {
-		task.Status = domain.TaskStatusRunning
-	}
-	if task.CurrentPrompt == "" {
-		task.CurrentPrompt = task.InitialPrompt
-	}
-	task.LastPRURL = ""
-	task.LastQuestion = ""
-	task.QuestionOptions = nil
-	task.StartedAt = time.Now()
-	task.RecentLogs = nil
-	task.ResetOutputLocked()
-	task.Unlock()
+	var proj string
+	task.Update(func(t *domain.TaskSession) {
+		proj = t.Project
+		t.ConversationID = ""
+		t.Agent = ActiveAgentName()
+		if t.RequiresPlan && !t.PlanApproved {
+			t.Status = domain.TaskStatusPlanning
+		} else {
+			t.Status = domain.TaskStatusRunning
+		}
+		if t.CurrentPrompt == "" {
+			t.CurrentPrompt = t.InitialPrompt
+		}
+		t.LastPRURL = ""
+		t.LastQuestion = ""
+		t.QuestionOptions = nil
+		t.StartedAt = time.Now()
+		t.RecentLogs = nil
+		t.ResetOutputLocked()
+	})
 
 	syncLegacySession(task)
 	domain.GlobalTaskManager.SaveTask(task)
@@ -540,14 +532,13 @@ func onTaskAgentSwitch(s ports.Session) error {
 		return s.Respond("Задача не найдена")
 	}
 
-	task.Lock()
-	targetAgent := task.Agent
+	view7 := task.Snapshot()
+	targetAgent := view7.Agent
 	if targetAgent == "" {
 		targetAgent = "agy"
 	}
-	prompt := task.CurrentPrompt
-	proj := task.Project
-	task.Unlock()
+	prompt := view7.CurrentPrompt
+	proj := view7.Project
 
 	_ = s.Respond(fmt.Sprintf("Переключение на %s...", targetAgent))
 
@@ -566,9 +557,8 @@ func onTaskAgentSwitch(s ports.Session) error {
 		_ = s.Edit(fmt.Sprintf("%s\n\n🔀 <b>Выбрано: Переключиться на %s.</b>", cb.MessageText, html.EscapeString(targetAgent)), ports.Rich())
 	}
 
-	resumedTask.Lock()
-	resStatus := resumedTask.Status
-	resumedTask.Unlock()
+	resumedView4 := resumedTask.Snapshot()
+	resStatus := resumedView4.Status
 
 	if resStatus == domain.TaskStatusQueued {
 		return s.Send(fmt.Sprintf("%s\n\n⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.", switchMsg, taskID, html.EscapeString(proj)), ports.Rich())
@@ -595,7 +585,7 @@ func handlePause(s ports.Session) error {
 		if active == nil {
 			return s.Send("Сейчас нет активных задач.", nil)
 		}
-		targetID = active.ID
+		targetID = active.Snapshot().ID
 	}
 
 	task := domain.GlobalTaskManager.GetTask(targetID)
@@ -604,16 +594,14 @@ func handlePause(s ports.Session) error {
 	}
 
 	if !task.PauseTask() {
-		task.Lock()
-		st := task.Status
-		task.Unlock()
+		view8 := task.Snapshot()
+		st := view8.Status
 		return s.Send(fmt.Sprintf("ℹ️ Задачу #%d нельзя приостановить (текущий статус: %s). Пауза доступна при ожидании ответа.", targetID, st.RussianTitle()), ports.Rich())
 	}
 
 	syncLegacySession(task)
-	task.Lock()
-	projectName := task.Project
-	task.Unlock()
+	view9 := task.Snapshot()
+	projectName := view9.Project
 
 	checkAndStartQueuedTask(s.Messenger(), projectName, config.ProjectsRoot)
 
@@ -643,9 +631,7 @@ func handleResume(s ports.Session) error {
 		all := domain.GlobalTaskManager.ListTasks()
 		for i := len(all) - 1; i >= 0; i-- {
 			t := all[i]
-			t.Lock()
-			st := t.Status
-			t.Unlock()
+			st := t.Snapshot().Status
 			if st == domain.TaskStatusPaused || st == domain.TaskStatusWaitingInput || st == domain.TaskStatusFailed || st == domain.TaskStatusCancelled {
 				targetID = t.ID
 				break
@@ -656,7 +642,7 @@ func handleResume(s ports.Session) error {
 	if targetID == 0 {
 		active := domain.GlobalTaskManager.GetActiveTask()
 		if active != nil {
-			targetID = active.ID
+			targetID = active.Snapshot().ID
 		}
 	}
 
@@ -671,23 +657,21 @@ func handleResume(s ports.Session) error {
 
 	if HasAgentConflict(task, ActiveAgentName()) {
 		if answer != "" {
-			task.Lock()
-			task.CurrentPrompt = answer
-			task.Unlock()
+			task.Update(func(t *domain.TaskSession) {
+				t.CurrentPrompt = answer
+			})
 			domain.GlobalTaskManager.SaveTask(task)
 		}
 		return sendAgentConflictDialog(s, task)
 	}
 
-	task.Lock()
-	status := task.Status
-	task.Unlock()
+	view10 := task.Snapshot()
+	status := view10.Status
 
 	if status == domain.TaskStatusWaitingInput {
 		if answer != "" {
-			task.Lock()
-			proj := task.Project
-			task.Unlock()
+			view11 := task.Snapshot()
+			proj := view11.Project
 			cmdIsNil := !task.HasLiveProcess()
 
 			if !cmdIsNil {
@@ -700,9 +684,8 @@ func handleResume(s ports.Session) error {
 				return s.Send(fmt.Sprintf("❌ Ошибка возобновления задачи #%d: %s", targetID, err.Error()), ports.Rich())
 			}
 			syncLegacySession(resumedTask)
-			resumedTask.Lock()
-			resStatus := resumedTask.Status
-			resumedTask.Unlock()
+			resumedView5 := resumedTask.Snapshot()
+			resStatus := resumedView5.Status
 
 			if resStatus == domain.TaskStatusQueued {
 				return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code> с ответом:\n<i>«%s»</i>", targetID, html.EscapeString(proj), html.EscapeString(answer)), ports.Rich())
@@ -722,10 +705,9 @@ func handleResume(s ports.Session) error {
 	}
 	syncLegacySession(resumedTask)
 
-	resumedTask.Lock()
-	resStatus := resumedTask.Status
-	proj := resumedTask.Project
-	resumedTask.Unlock()
+	resumedView6 := resumedTask.Snapshot()
+	resStatus := resumedView6.Status
+	proj := resumedView6.Project
 
 	if resStatus == domain.TaskStatusQueued {
 		return s.Send(fmt.Sprintf("⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>.\nОна запустится автоматически, как только текущая задача завершится.", targetID, html.EscapeString(proj)), ports.Rich())
@@ -747,16 +729,14 @@ func handleRetry(s ports.Session) error {
 	if targetID == 0 {
 		active := domain.GlobalTaskManager.GetActiveTask()
 		if active != nil {
-			targetID = active.ID
+			targetID = active.Snapshot().ID
 		}
 	}
 	if targetID == 0 {
 		all := domain.GlobalTaskManager.ListTasks()
 		for i := len(all) - 1; i >= 0; i-- {
 			t := all[i]
-			t.Lock()
-			st := t.Status
-			t.Unlock()
+			st := t.Snapshot().Status
 			if st == domain.TaskStatusPaused || st == domain.TaskStatusFailed {
 				targetID = t.ID
 				break
@@ -772,26 +752,36 @@ func handleRetry(s ports.Session) error {
 		return s.Send(fmt.Sprintf("❌ Задача #%d не найдена.", targetID), ports.Rich())
 	}
 
-	task.Lock()
-	if task.Status == domain.TaskStatusRunning || task.Status == domain.TaskStatusPlanning {
-		task.Unlock()
+	// Проверка статуса и сброс задачи — одним куском: между ними задачу нельзя
+	// успеть запустить заново.
+	var (
+		running  bool
+		proj     string
+		newAgent = ActiveAgentName()
+	)
+	task.Update(func(t *domain.TaskSession) {
+		if t.Status == domain.TaskStatusRunning || t.Status == domain.TaskStatusPlanning {
+			running = true
+			return
+		}
+		proj = t.Project
+		t.ConversationID = ""
+		t.Agent = newAgent
+		t.Status = domain.TaskStatusRunning
+		if t.RequiresPlan && !t.PlanApproved {
+			t.Status = domain.TaskStatusPlanning
+		}
+		t.CurrentPrompt = t.InitialPrompt
+		t.LastPRURL = ""
+		t.LastQuestion = ""
+		t.QuestionOptions = nil
+		t.StartedAt = time.Now()
+		t.RecentLogs = nil
+		t.ResetOutputLocked()
+	})
+	if running {
 		return s.Send(fmt.Sprintf("ℹ️ Задача #%d сейчас выполняется. Сначала остановите её: <code>/cancel %d</code>", targetID, targetID), ports.Rich())
 	}
-	proj := task.Project
-	task.ConversationID = ""
-	task.Agent = ActiveAgentName()
-	task.Status = domain.TaskStatusRunning
-	if task.RequiresPlan && !task.PlanApproved {
-		task.Status = domain.TaskStatusPlanning
-	}
-	task.CurrentPrompt = task.InitialPrompt
-	task.LastPRURL = ""
-	task.LastQuestion = ""
-	task.QuestionOptions = nil
-	task.StartedAt = time.Now()
-	task.RecentLogs = nil
-	task.ResetOutputLocked()
-	task.Unlock()
 
 	domain.GlobalTaskManager.ClearTaskConversationID(targetID)
 	domain.GlobalTaskManager.SetTaskAgent(targetID, ActiveAgentName())
@@ -919,6 +909,7 @@ func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan b
 	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent(targetProj, curMod, targetAgent, prompt, s.Chat(), requiresPlan)
 	syncLegacySession(task)
 
+	taskID := task.Snapshot().ID
 	if domain.GlobalTaskManager.HasRunningTaskInProject(targetProj) {
 		planNote := ""
 		if requiresPlan {
@@ -928,21 +919,21 @@ func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan b
 			"⏳ <b>Задача #%d поставлена в очередь проекта</b> <code>%s</code>:\n\n"+
 				"<i>«%s»</i>\n\n"+
 				"💡 В этом проекте уже выполняется задача. Задача #%d начнется автоматически после ее завершения.%s",
-			task.ID, html.EscapeString(targetProj), html.EscapeString(utils.TruncateString(prompt, 250)), task.ID, planNote,
+			taskID, html.EscapeString(targetProj), html.EscapeString(utils.TruncateString(prompt, 250)), taskID, planNote,
 		)
 		return s.Send(msg, ports.Rich())
 	}
 
-	task.Lock()
-	if requiresPlan {
-		task.Status = domain.TaskStatusPlanning
-	} else {
-		task.Status = domain.TaskStatusRunning
-	}
-	task.StartedAt = time.Now()
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		if requiresPlan {
+			t.Status = domain.TaskStatusPlanning
+		} else {
+			t.Status = domain.TaskStatusRunning
+		}
+		t.StartedAt = time.Now()
+	})
 	syncLegacySession(task)
-	_, _ = domain.GlobalTaskManager.SetActiveTask(task.ID)
+	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
 
 	domain.GlobalTokenTracker.StartTaskWithAgent(targetProj, curMod, prompt, targetAgent)
 	workDir := filepath.Join(config.ProjectsRoot, targetProj)
@@ -958,9 +949,8 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 		return s.Send(fmt.Sprintf("❌ Задача #%d не найдена.", taskID), ports.Rich())
 	}
 
-	task.Lock()
-	status := task.Status
-	task.Unlock()
+	view12 := task.Snapshot()
+	status := view12.Status
 	cmdIsNil := !task.HasLiveProcess()
 
 	if status == domain.TaskStatusWaitingApproval {
@@ -971,9 +961,9 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 	}
 
 	if (status == domain.TaskStatusPaused || status == domain.TaskStatusCancelled || (status == domain.TaskStatusWaitingInput && cmdIsNil)) && HasAgentConflict(task, ActiveAgentName()) {
-		task.Lock()
-		task.CurrentPrompt = text
-		task.Unlock()
+		task.Update(func(t *domain.TaskSession) {
+			t.CurrentPrompt = text
+		})
 		domain.GlobalTaskManager.SaveTask(task)
 		return sendAgentConflictDialog(s, task)
 	}
@@ -986,10 +976,9 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 	syncLegacySession(task)
 
 	if isAnswer {
-		task.Lock()
-		curStatus := task.Status
-		proj := task.Project
-		task.Unlock()
+		view13 := task.Snapshot()
+		curStatus := view13.Status
+		proj := view13.Project
 		cmdIsNil = !task.HasLiveProcess()
 
 		if curStatus == domain.TaskStatusQueued {
@@ -997,23 +986,23 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
 		} else if (curStatus == domain.TaskStatusRunning || curStatus == domain.TaskStatusWaitingInput) && cmdIsNil {
 			if HasAgentConflict(task, ActiveAgentName()) {
-				task.Lock()
-				task.CurrentPrompt = text
-				task.Unlock()
+				task.Update(func(t *domain.TaskSession) {
+					t.CurrentPrompt = text
+				})
 				domain.GlobalTaskManager.SaveTask(task)
 				return sendAgentConflictDialog(s, task)
 			}
-			task.Lock()
-			if task.RequiresPlan && !task.PlanApproved {
-				task.Status = domain.TaskStatusPlanning
-			} else {
-				task.Status = domain.TaskStatusRunning
-			}
-			task.StartedAt = time.Now()
-			task.CurrentPrompt = text
-			task.LastQuestion = ""
-			task.QuestionOptions = nil
-			task.Unlock()
+			task.Update(func(t *domain.TaskSession) {
+				if t.RequiresPlan && !t.PlanApproved {
+					t.Status = domain.TaskStatusPlanning
+				} else {
+					t.Status = domain.TaskStatusRunning
+				}
+				t.StartedAt = time.Now()
+				t.CurrentPrompt = text
+				t.LastQuestion = ""
+				t.QuestionOptions = nil
+			})
 			syncLegacySession(task)
 
 			workDir := filepath.Join(config.ProjectsRoot, proj)
@@ -1022,14 +1011,14 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
 		}
 
-		return s.Send(fmt.Sprintf("💬 <b>Ответ передан задаче #%d</b> (<code>%s</code>)...", taskID, html.EscapeString(task.Project)), ports.Rich())
+		return s.Send(fmt.Sprintf("💬 <b>Ответ передан задаче #%d</b> (<code>%s</code>)...", taskID, html.EscapeString(task.Snapshot().Project)), ports.Rich())
 	}
 
 	msg := fmt.Sprintf(
 		"📥 <b>Дополнение сохранено в задачу #%d</b> (<code>%s</code>) [#%d в очереди]:\n\n"+
 			"<i>«%s»</i>\n\n"+
 			"Агент завершит текущий шаг и применит эти правки в ветку задачи #%d.",
-		taskID, html.EscapeString(task.Project), qLen, html.EscapeString(utils.TruncateString(text, 250)), taskID,
+		taskID, html.EscapeString(task.Snapshot().Project), qLen, html.EscapeString(utils.TruncateString(text, 250)), taskID,
 	)
 	return s.Send(msg, ports.Rich())
 }
@@ -1054,12 +1043,11 @@ func sendTaskHistory(s ports.Session, task *domain.TaskSession) error {
 		return s.Send("❌ Задача не найдена. Список задач: /tasks", ports.Rich())
 	}
 
-	task.Lock()
-	id := task.ID
-	proj := task.Project
-	convID := task.ConversationID
-	agentName := task.Agent
-	task.Unlock()
+	view14 := task.Snapshot()
+	id := view14.ID
+	proj := view14.Project
+	convID := view14.ConversationID
+	agentName := view14.Agent
 	if agentName == "" {
 		agentName = "agy"
 	}
@@ -1158,10 +1146,9 @@ func buildResumeMarkup(taskID int) *ports.Keyboard {
 }
 
 func buildQuestionMarkup(task *domain.TaskSession) *ports.Keyboard {
-	task.Lock()
-	taskID := task.ID
-	options := append([]string(nil), task.QuestionOptions...)
-	task.Unlock()
+	view15 := task.Snapshot()
+	taskID := view15.ID
+	options := append([]string(nil), view15.QuestionOptions...)
 
 	var rows [][]ports.Button
 
@@ -1213,32 +1200,39 @@ func checkAndStartQueuedTask(m ports.Messenger, project, root string) {
 	currentAgentName := ActiveAgentName()
 
 	if HasAgentConflict(nextTask, currentAgentName) {
-		nextTask.Lock()
-		nextTask.Status = domain.TaskStatusPaused
-		chat := nextTask.Chat
-		nextTask.Unlock()
+		var chat ports.ChatID
+		nextTask.Update(func(t *domain.TaskSession) {
+			t.Status = domain.TaskStatusPaused
+			chat = t.Chat
+		})
 		domain.GlobalTaskManager.SaveTask(nextTask)
 		_ = sendAgentConflictDialogWithMessenger(m, chat, nextTask)
 		return
 	}
 
-	nextTask.Lock()
-	isPlanning := nextTask.RequiresPlan && !nextTask.PlanApproved
-	if isPlanning {
-		nextTask.Status = domain.TaskStatusPlanning
-	} else {
-		nextTask.Status = domain.TaskStatusRunning
-	}
-	nextTask.StartedAt = time.Now()
-	chat := nextTask.Chat
-	nextID := nextTask.ID
-	prompt := nextTask.InitialPrompt
-	model := nextTask.Model
-	tAgent := nextTask.Agent
-	if tAgent == "" {
-		tAgent = currentAgentName
-	}
-	nextTask.Unlock()
+	var isPlanning bool
+	var chat ports.ChatID
+	var nextID int
+	var prompt string
+	var model string
+	var tAgent string
+	nextTask.Update(func(t *domain.TaskSession) {
+		isPlanning = t.RequiresPlan && !t.PlanApproved
+		if isPlanning {
+			t.Status = domain.TaskStatusPlanning
+		} else {
+			t.Status = domain.TaskStatusRunning
+		}
+		t.StartedAt = time.Now()
+		chat = t.Chat
+		nextID = t.ID
+		prompt = t.InitialPrompt
+		model = t.Model
+		tAgent = t.Agent
+		if tAgent == "" {
+			tAgent = currentAgentName
+		}
+	})
 
 	syncLegacySession(nextTask)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(nextID)
@@ -1265,20 +1259,19 @@ func syncLegacySession(task *domain.TaskSession) {
 		return
 	}
 
-	task.Lock()
+	view16 := task.Snapshot()
 	config.Session.Lock()
-	config.Session.IsRunning = (task.Status == domain.TaskStatusRunning || task.Status == domain.TaskStatusWaitingInput || task.Status == domain.TaskStatusPlanning)
-	config.Session.Waiting = (task.Status == domain.TaskStatusWaitingInput || task.Status == domain.TaskStatusWaitingApproval)
-	config.Session.StartedAt = task.StartedAt
-	config.Session.CurrentPrompt = task.InitialPrompt
-	config.Session.CurrentProject = task.Project
-	config.Session.RecentLogs = append([]string(nil), task.RecentLogs...)
-	config.Session.PendingFollowups = append([]string(nil), task.PendingFollowups...)
-	config.Session.LastPRURL = task.LastPRURL
-	config.Session.LastModelUsed = task.LastModelUsed
-	config.Session.LastTokensUsed = task.LastTokensUsed
+	config.Session.IsRunning = (view16.Status == domain.TaskStatusRunning || view16.Status == domain.TaskStatusWaitingInput || view16.Status == domain.TaskStatusPlanning)
+	config.Session.Waiting = (view16.Status == domain.TaskStatusWaitingInput || view16.Status == domain.TaskStatusWaitingApproval)
+	config.Session.StartedAt = view16.StartedAt
+	config.Session.CurrentPrompt = view16.InitialPrompt
+	config.Session.CurrentProject = view16.Project
+	config.Session.RecentLogs = append([]string(nil), view16.RecentLogs...)
+	config.Session.PendingFollowups = append([]string(nil), view16.PendingFollowups...)
+	config.Session.LastPRURL = view16.LastPRURL
+	config.Session.LastModelUsed = view16.LastModelUsed
+	config.Session.LastTokensUsed = view16.LastTokensUsed
 	config.Session.Unlock()
-	task.Unlock()
 
 	domain.GlobalTaskManager.SaveTask(task)
 }
@@ -1319,14 +1312,12 @@ func HasAgentConflict(task *domain.TaskSession, activeAgent string) bool {
 	if task == nil {
 		return false
 	}
-	task.Lock()
-	defer task.Unlock()
-
-	taskAgent := task.Agent
+	view := task.Snapshot()
+	taskAgent := view.Agent
 	if taskAgent == "" {
 		taskAgent = "agy"
 	}
-	return task.ConversationID != "" && !strings.EqualFold(taskAgent, activeAgent)
+	return view.ConversationID != "" && !strings.EqualFold(taskAgent, activeAgent)
 }
 
 func buildAgentConflictMarkup(taskID int, taskAgent string) *ports.Keyboard {
@@ -1348,14 +1339,13 @@ func sendAgentConflictDialog(s ports.Session, task *domain.TaskSession) error {
 }
 
 func sendAgentConflictDialogWithMessenger(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession) error {
-	task.Lock()
-	id := task.ID
-	agent := task.Agent
+	view17 := task.Snapshot()
+	id := view17.ID
+	agent := view17.Agent
 	if agent == "" {
 		agent = "agy"
 	}
-	convID := task.ConversationID
-	task.Unlock()
+	convID := view17.ConversationID
 
 	markup := buildAgentConflictMarkup(id, agent)
 	msg := fmt.Sprintf(

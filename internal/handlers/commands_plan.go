@@ -127,7 +127,7 @@ func handleApprove(s ports.Session) error {
 		if active == nil {
 			return s.Send("Нет активных задач для утверждения.", nil)
 		}
-		targetID = active.ID
+		targetID = active.Snapshot().ID
 	}
 	return handleApprovePlan(s.Messenger(), s.Chat(), targetID)
 }
@@ -148,7 +148,7 @@ func handleConfirm(s ports.Session) error {
 		if active == nil {
 			return s.Send("Нет активных задач для утверждения.", nil)
 		}
-		targetID = active.ID
+		targetID = active.Snapshot().ID
 	}
 	return handleApprovePlan(s.Messenger(), s.Chat(), targetID)
 }
@@ -178,8 +178,9 @@ func onPlanCancel(s ports.Session) error {
 	}
 	syncLegacySession(domain.GlobalTaskManager.GetActiveTask())
 	domain.GlobalTokenTracker.CancelTask()
-	checkAndStartQueuedTask(s.Messenger(), task.Project, config.ProjectsRoot)
-	return s.Send(fmt.Sprintf("🛑 <b>Задача #%d (<code>%s</code>) остановлена.</b>", id, html.EscapeString(task.Project)), ports.Rich())
+	project := task.Snapshot().Project
+	checkAndStartQueuedTask(s.Messenger(), project, config.ProjectsRoot)
+	return s.Send(fmt.Sprintf("🛑 <b>Задача #%d (<code>%s</code>) остановлена.</b>", id, html.EscapeString(project)), ports.Rich())
 }
 
 // onPlanModeToggle — обработчик кнопки plan_mode_toggle.
@@ -216,9 +217,8 @@ func onPlanApproveVariant(s ports.Session) error {
 	if task == nil {
 		return s.Respond("Задача не найдена")
 	}
-	task.Lock()
-	planText := task.Plan
-	task.Unlock()
+	view := task.Snapshot()
+	planText := view.Plan
 	variants := utils.ExtractPlanVariantOptions(planText)
 	chosenVar := ""
 	if varIdx >= 0 && varIdx < len(variants) {
@@ -239,9 +239,8 @@ func onPlanDoc(s ports.Session) error {
 	if task == nil {
 		return s.Respond("Задача не найдена")
 	}
-	task.Lock()
-	planText := strings.TrimSpace(task.Plan)
-	task.Unlock()
+	view2 := task.Snapshot()
+	planText := strings.TrimSpace(view2.Plan)
 
 	if planText == "" {
 		return s.Respond("У задачи нет сформированного плана")
@@ -255,37 +254,9 @@ func handleApprovePlan(m ports.Messenger, chat ports.ChatID, taskID int) error {
 	return handleApprovePlanWithVariant(m, chat, taskID, "")
 }
 
-func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID int, variant string) error {
-	task := domain.GlobalTaskManager.GetTask(taskID)
-	if task == nil {
-		_, err := m.Send(context.Background(), chat, fmt.Sprintf("❌ Задача #%d не найдена.", taskID), nil)
-		return err
-	}
-
-	task.Lock()
-	if task.Status != domain.TaskStatusWaitingApproval {
-		statusTitle := task.Status.RussianTitle()
-		task.Unlock()
-		_, err := m.Send(context.Background(), chat, fmt.Sprintf("ℹ️ Задача #%d не ожидает утверждения плана (текущий статус: %s).", taskID, statusTitle), nil)
-		return err
-	}
-
-	task.PlanApproved = true
-	task.Status = domain.TaskStatusRunning
-	task.StartedAt = time.Now()
-	task.RecentLogs = nil
-
-	projectName := task.Project
-	modelName := task.Model
-	initialPrompt := task.InitialPrompt
-	planText := task.Plan
-
-	variantInstruction := ""
-	if variant != "" {
-		variantInstruction = fmt.Sprintf("\n\nПОЛЬЗОВАТЕЛЬ ВЫБРАЛ И УТВЕРДИЛ ВАРИАНТ:\n%s\nРеализуй задачу строго в соответствии с этим выбранным вариантом плана.", variant)
-	}
-
-	implPrompt := fmt.Sprintf(
+// buildImplementationPrompt собирает промпт реализации по утверждённому плану.
+func buildImplementationPrompt(initialPrompt, planText, variantInstruction string) string {
+	return fmt.Sprintf(
 		"Задача пользователя: %s\n\n"+
 			"УТВЕРЖДЁННЫЙ ПЛАН РЕАЛИЗАЦИИ:\n%s%s\n\n"+
 			"Приступай к полной автономной реализации задачи в точности по утверждённому плану и инструкциям в AGENT.md:\n"+
@@ -300,9 +271,51 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 		planText,
 		variantInstruction,
 	)
+}
 
-	task.CurrentPrompt = implPrompt
-	task.Unlock()
+func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID int, variant string) error {
+	task := domain.GlobalTaskManager.GetTask(taskID)
+	if task == nil {
+		_, err := m.Send(context.Background(), chat, fmt.Sprintf("❌ Задача #%d не найдена.", taskID), nil)
+		return err
+	}
+
+	variantInstruction := ""
+	if variant != "" {
+		variantInstruction = fmt.Sprintf("\n\nПОЛЬЗОВАТЕЛЬ ВЫБРАЛ И УТВЕРДИЛ ВАРИАНТ:\n%s\nРеализуй задачу строго в соответствии с этим выбранным вариантом плана.", variant)
+	}
+
+	// Проверка статуса, утверждение плана и запись промпта — одним куском: иначе план
+	// можно утвердить дважды или запустить задачу со старым промптом.
+	var (
+		wrongStatus   bool
+		statusTitle   string
+		projectName   string
+		modelName     string
+		initialPrompt string
+	)
+	task.Update(func(t *domain.TaskSession) {
+		if t.Status != domain.TaskStatusWaitingApproval {
+			wrongStatus = true
+			statusTitle = t.Status.RussianTitle()
+			return
+		}
+
+		t.PlanApproved = true
+		t.Status = domain.TaskStatusRunning
+		t.StartedAt = time.Now()
+		t.RecentLogs = nil
+
+		projectName = t.Project
+		modelName = t.Model
+		initialPrompt = t.InitialPrompt
+		t.CurrentPrompt = buildImplementationPrompt(t.InitialPrompt, t.Plan, variantInstruction)
+	})
+
+	if wrongStatus {
+		_, err := m.Send(context.Background(), chat, fmt.Sprintf("ℹ️ Задача #%d не ожидает утверждения плана (текущий статус: %s).", taskID, statusTitle), nil)
+		return err
+	}
 
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
@@ -327,13 +340,14 @@ func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback
 		return fmt.Errorf("задача #%d не найдена", taskID)
 	}
 
-	task.Lock()
-	task.Status = domain.TaskStatusPlanning
-	task.CurrentPrompt = feedback
-	task.StartedAt = time.Now()
-	task.RecentLogs = nil
-	projectName := task.Project
-	task.Unlock()
+	var projectName string
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusPlanning
+		t.CurrentPrompt = feedback
+		t.StartedAt = time.Now()
+		t.RecentLogs = nil
+		projectName = t.Project
+	})
 
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
@@ -356,11 +370,10 @@ func sendTaskPlanDocument(s ports.Session, task *domain.TaskSession) error {
 		return s.Send("❌ Задача не найдена. Список задач: /tasks", ports.Rich())
 	}
 
-	task.Lock()
-	planText := strings.TrimSpace(task.Plan)
-	id := task.ID
-	proj := task.Project
-	task.Unlock()
+	view3 := task.Snapshot()
+	planText := strings.TrimSpace(view3.Plan)
+	id := view3.ID
+	proj := view3.Project
 
 	if planText == "" {
 		return s.Send(fmt.Sprintf("ℹ️ У задачи #%d нет сформированного плана.", id), ports.Rich())
@@ -377,12 +390,11 @@ func sendTaskPlanDocument(s ports.Session, task *domain.TaskSession) error {
 }
 
 func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession) {
-	task.Lock()
-	taskID := task.ID
-	projectName := task.Project
-	initialPrompt := task.InitialPrompt
-	planText := strings.TrimSpace(task.Plan)
-	task.Unlock()
+	view4 := task.Snapshot()
+	taskID := view4.ID
+	projectName := view4.Project
+	initialPrompt := view4.InitialPrompt
+	planText := strings.TrimSpace(view4.Plan)
 
 	var rows [][]ports.Button
 

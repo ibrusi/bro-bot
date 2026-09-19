@@ -84,7 +84,9 @@ func (s TaskStatus) Emoji() string {
 
 // TaskSession хранит полное состояние отдельной задачи.
 type TaskSession struct {
-	sync.Mutex
+	// mu приватный: снаружи домена состояние задачи читается через Snapshot и
+	// правится через Update, чтобы забытая блокировка не превращалась в гонку.
+	mu               sync.Mutex
 	ID               int
 	Project          string
 	Model            string
@@ -165,8 +167,8 @@ func (t *TaskSession) ResetOutputLocked() {
 
 // OutputTruncated сообщает, был ли вывод шага обрезан по потолку.
 func (t *TaskSession) OutputTruncated() bool {
-	t.Lock()
-	defer t.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.outputTruncated
 }
 
@@ -174,8 +176,8 @@ func (t *TaskSession) OutputTruncated() bool {
 // Возвращает false, если задача уже отменена: /cancel мог прийти между запуском
 // процесса и привязкой, и тогда вызывающий код должен остановить процесс сам.
 func (t *TaskSession) AttachProcess(p ports.AgentProcess, cancel context.CancelFunc) bool {
-	t.Lock()
-	defer t.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.Status == TaskStatusCancelled {
 		return false
 	}
@@ -186,8 +188,8 @@ func (t *TaskSession) AttachProcess(p ports.AgentProcess, cancel context.CancelF
 
 // DetachProcess снимает привязку по завершении шага и закрывает stdin.
 func (t *TaskSession) DetachProcess() {
-	t.Lock()
-	defer t.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.process != nil {
 		_ = t.process.Stdin().Close()
 	}
@@ -197,8 +199,8 @@ func (t *TaskSession) DetachProcess() {
 
 // HasLiveProcess сообщает, выполняется ли сейчас шаг задачи.
 func (t *TaskSession) HasLiveProcess() bool {
-	t.Lock()
-	defer t.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.hasLiveProcessLocked()
 }
 
@@ -231,8 +233,8 @@ func (t *TaskSession) writeStdinLocked(text string) {
 
 // WorkerPID возвращает PID процесса шага или 0, если процесса в ОС нет (api-режим).
 func (t *TaskSession) WorkerPID() int {
-	t.Lock()
-	defer t.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.workerPIDLocked()
 }
 
@@ -256,8 +258,8 @@ func (t *TaskSession) durationLocked() time.Duration {
 
 // Duration возвращает время работы задачи.
 func (t *TaskSession) Duration() time.Duration {
-	t.Lock()
-	defer t.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.durationLocked()
 }
 
@@ -272,14 +274,139 @@ func (t *TaskSession) isActiveLocked() bool {
 
 // IsActive возвращает true, если задача выполняется или находится в очереди.
 func (t *TaskSession) IsActive() bool {
-	t.Lock()
-	defer t.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.isActiveLocked()
+}
+
+// TaskView — согласованный снимок состояния задачи для чтения вне домена.
+//
+// Все поля описывают один момент времени: обработчику больше не нужно брать мьютекс
+// вручную, а значит и забыть его нельзя. Срезы в снимке — копии, править их бесполезно:
+// изменения задачи делаются через Update.
+type TaskView struct {
+	ID            int
+	Project       string
+	Model         string
+	Agent         string
+	InitialPrompt string
+	CurrentPrompt string
+	Status        TaskStatus
+	RequiresPlan  bool
+	Plan          string
+	PlanApproved  bool
+
+	StartedAt       time.Time
+	FinishedAt      time.Time
+	QuestionAskedAt time.Time
+	Duration        time.Duration
+
+	// IsActive и HasLiveProcess лежат в снимке, чтобы статус задачи и наличие живого
+	// процесса читались вместе: раздельные вызовы могли бы застать разные моменты.
+	IsActive       bool
+	HasLiveProcess bool
+
+	RecentLogs       []string
+	PendingFollowups []string
+	QuestionOptions  []string
+
+	LastPRURL      string
+	LastModelUsed  string
+	LastTokensUsed string
+	ConversationID string
+	LastQuestion   string
+
+	// Output — накопленный вывод шага (бывший FullOutput.String()).
+	Output          string
+	OutputTruncated bool
+
+	Chat         ports.ChatID
+	LiveMsg      *ports.MessageRef
+	TokenMetrics *TaskTokenMetrics
+}
+
+// Snapshot возвращает согласованный снимок состояния задачи.
+func (t *TaskSession) Snapshot() TaskView {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return TaskView{
+		ID:            t.ID,
+		Project:       t.Project,
+		Model:         t.Model,
+		Agent:         t.Agent,
+		InitialPrompt: t.InitialPrompt,
+		CurrentPrompt: t.CurrentPrompt,
+		Status:        t.Status,
+		RequiresPlan:  t.RequiresPlan,
+		Plan:          t.Plan,
+		PlanApproved:  t.PlanApproved,
+
+		StartedAt:       t.StartedAt,
+		FinishedAt:      t.FinishedAt,
+		QuestionAskedAt: t.QuestionAskedAt,
+		Duration:        t.durationLocked(),
+
+		IsActive:       t.isActiveLocked(),
+		HasLiveProcess: t.hasLiveProcessLocked(),
+
+		RecentLogs:       append([]string(nil), t.RecentLogs...),
+		PendingFollowups: append([]string(nil), t.PendingFollowups...),
+		QuestionOptions:  append([]string(nil), t.QuestionOptions...),
+
+		LastPRURL:      t.LastPRURL,
+		LastModelUsed:  t.LastModelUsed,
+		LastTokensUsed: t.LastTokensUsed,
+		ConversationID: t.ConversationID,
+		LastQuestion:   t.LastQuestion,
+
+		Output:          t.FullOutput.String(),
+		OutputTruncated: t.outputTruncated,
+
+		Chat:         t.Chat,
+		LiveMsg:      t.LiveMsg,
+		TokenMetrics: t.TokenMetrics,
+	}
+}
+
+// Update выполняет fn под мьютексом задачи: все правки внутри видны как одно изменение.
+// Значения, нужные после правки, забираются захватом переменной — тогда чтение и запись
+// остаются одним атомарным куском:
+//
+//	var proj string
+//	task.Update(func(t *domain.TaskSession) {
+//	    t.Status = domain.TaskStatusRunning
+//	    proj = t.Project
+//	})
+//
+// Внутри fn нельзя вызывать методы задачи (AppendLog, Snapshot, DetachProcess и другие):
+// мьютекс уже захвачен, получится взаимоблокировка. Поля правятся напрямую.
+func (t *TaskSession) Update(fn func(*TaskSession)) {
+	if fn == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	fn(t)
+}
+
+// AnswerChannel — канал ответов пользователя на вопрос агента (для select в пайплайне).
+func (t *TaskSession) AnswerChannel() <-chan string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.AnswerChan
+}
+
+// PauseChannel — канал сигнала о паузе или отмене задачи (для select в пайплайне).
+func (t *TaskSession) PauseChannel() <-chan struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.PauseChan
 }
 
 // AppendLog безопасно добавляет запись в лог с ограничением глубины и сохраняет в БД.
 func (t *TaskSession) AppendLog(line string) {
-	t.Lock()
+	t.mu.Lock()
 	t.RecentLogs = append(t.RecentLogs, line)
 	if len(t.RecentLogs) > 20 {
 		t.RecentLogs = t.RecentLogs[1:]
@@ -287,7 +414,7 @@ func (t *TaskSession) AppendLog(line string) {
 	sink := t.logSink
 	s := t.storage
 	id := t.ID
-	t.Unlock()
+	t.mu.Unlock()
 
 	// Запись в хранилище уходит в писатель логов: пайплайн зовёт AppendLog на каждое
 	// событие агента, и синхронный INSERT на каждую строку тормозил бы чтение потока.
@@ -304,11 +431,11 @@ func (t *TaskSession) AppendLog(line string) {
 
 // ClearPendingFollowups очищает очередь правок и синхронизирует с хранилищем.
 func (t *TaskSession) ClearPendingFollowups() {
-	t.Lock()
+	t.mu.Lock()
 	t.PendingFollowups = nil
 	s := t.storage
 	id := t.ID
-	t.Unlock()
+	t.mu.Unlock()
 
 	if s != nil {
 		_ = s.ClearFollowups(context.Background(), id)
@@ -317,8 +444,8 @@ func (t *TaskSession) ClearPendingFollowups() {
 
 // DeliverAnswer безопасно передаёт ответ пользователя на вопрос агента.
 func (t *TaskSession) DeliverAnswer(answer string) bool {
-	t.Lock()
-	defer t.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	t.writeStdinLocked(answer)
 
@@ -341,8 +468,8 @@ func (t *TaskSession) DeliverAnswer(answer string) bool {
 
 // PauseTask переводит ожидающую ввода задачу в режим паузы.
 func (t *TaskSession) PauseTask() bool {
-	t.Lock()
-	defer t.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	if t.Status == TaskStatusWaitingInput {
 		t.Status = TaskStatusPaused
@@ -686,10 +813,10 @@ func (tm *TaskManager) HasRunningTaskInProject(project string) bool {
 	defer tm.RUnlock()
 
 	for _, task := range tm.tasks {
-		task.Lock()
+		task.mu.Lock()
 		isRunning := (task.Project == project) &&
 			(task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput || task.Status == TaskStatusPlanning || task.Status == TaskStatusWaitingApproval)
-		task.Unlock()
+		task.mu.Unlock()
 		if isRunning {
 			return true
 		}
@@ -705,9 +832,9 @@ func (tm *TaskManager) GetNextQueuedTaskForProject(project string) *TaskSession 
 	for _, id := range tm.taskOrder {
 		task := tm.tasks[id]
 		if task != nil {
-			task.Lock()
+			task.mu.Lock()
 			isQueued := task.Project == project && task.Status == TaskStatusQueued
-			task.Unlock()
+			task.mu.Unlock()
 			if isQueued {
 				return task
 			}
@@ -726,10 +853,10 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 		return nil, fmt.Errorf("задача #%d не найдена", id)
 	}
 
-	task.Lock()
+	task.mu.Lock()
 	if task.Status == TaskStatusCompleted || task.Status == TaskStatusCancelled {
 		statusTitle := task.Status.RussianTitle()
-		task.Unlock()
+		task.mu.Unlock()
 		return task, fmt.Errorf("задача #%d уже %s", id, statusTitle)
 	}
 
@@ -746,7 +873,7 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 	}
 	finAt := task.FinishedAt
 	prURL := task.LastPRURL
-	task.Unlock()
+	task.mu.Unlock()
 
 	tm.RLock()
 	s := tm.storage
@@ -771,7 +898,7 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 		return nil, fmt.Errorf("задача #%d не найдена", id)
 	}
 
-	task.Lock()
+	task.mu.Lock()
 
 	// Для задач с активным процессом — останавливаем текущий процесс
 	if task.Status == TaskStatusRunning || task.Status == TaskStatusPlanning ||
@@ -798,7 +925,7 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 					task.AnswerChan <- answer
 				}
 			}
-			task.Unlock()
+			task.mu.Unlock()
 			tm.Unlock()
 			return task, nil
 		}
@@ -814,10 +941,10 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 		}
 		other := tm.tasks[otherID]
 		if other != nil {
-			other.Lock()
+			other.mu.Lock()
 			busy := (other.Project == projectName) &&
 				(other.Status == TaskStatusRunning || other.Status == TaskStatusWaitingInput || other.Status == TaskStatusPlanning || other.Status == TaskStatusWaitingApproval)
-			other.Unlock()
+			other.mu.Unlock()
 			if busy {
 				isProjectBusy = true
 				break
@@ -849,7 +976,7 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 		task.FinishedAt = time.Time{}
 		task.RecentLogs = nil
 	}
-	task.Unlock()
+	task.mu.Unlock()
 	tm.Unlock()
 
 	tm.SaveTask(task)
@@ -871,13 +998,13 @@ func (tm *TaskManager) SetTaskConversationID(id int, convID string) {
 		return
 	}
 
-	task.Lock()
+	task.mu.Lock()
 	if task.ConversationID == convID {
-		task.Unlock()
+		task.mu.Unlock()
 		return
 	}
 	task.ConversationID = convID
-	task.Unlock()
+	task.mu.Unlock()
 
 	if s != nil {
 		_ = s.UpdateTaskConversationID(context.Background(), id, convID)
@@ -898,9 +1025,9 @@ func (tm *TaskManager) ClearTaskConversationID(id int) {
 		return
 	}
 
-	task.Lock()
+	task.mu.Lock()
 	task.ConversationID = ""
-	task.Unlock()
+	task.mu.Unlock()
 
 	if s != nil {
 		_ = s.UpdateTaskConversationID(context.Background(), id, "")
@@ -921,13 +1048,13 @@ func (tm *TaskManager) SetTaskAgent(id int, agent string) {
 		return
 	}
 
-	task.Lock()
+	task.mu.Lock()
 	if task.Agent == agent {
-		task.Unlock()
+		task.mu.Unlock()
 		return
 	}
 	task.Agent = agent
-	task.Unlock()
+	task.mu.Unlock()
 
 	if s != nil {
 		_ = s.UpdateTaskAgent(context.Background(), id, agent)
@@ -944,23 +1071,23 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 		return nil, 0, false, fmt.Errorf("задача #%d не найдена", id)
 	}
 
-	task.Lock()
+	task.mu.Lock()
 	if task.Status == TaskStatusCompleted {
 		statusTitle := task.Status.RussianTitle()
-		task.Unlock()
+		task.mu.Unlock()
 		return task, 0, false, fmt.Errorf("задача #%d уже %s", id, statusTitle)
 	}
 
 	// Если задача на паузе или отменена — возобновляем её с переданным ответом
 	if task.Status == TaskStatusPaused || task.Status == TaskStatusCancelled {
-		task.Unlock()
+		task.mu.Unlock()
 		resumedTask, err := tm.ResumeTask(id, text)
 		return resumedTask, 0, true, err
 	}
 
 	// Если задача ждёт ответа на вопрос (ask_question): DeliverAnswer сам пишет в stdin.
 	if task.Status == TaskStatusWaitingInput {
-		task.Unlock()
+		task.mu.Unlock()
 		task.DeliverAnswer(text)
 		return task, 0, true, nil
 	}
@@ -969,7 +1096,7 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 	orderIdx := len(task.PendingFollowups)
 	task.PendingFollowups = append(task.PendingFollowups, text)
 	queueLen := len(task.PendingFollowups)
-	task.Unlock()
+	task.mu.Unlock()
 
 	tm.RLock()
 	s := tm.storage
@@ -1009,7 +1136,7 @@ func (tm *TaskManager) SaveTask(task *TaskSession) {
 		return
 	}
 
-	task.Lock()
+	task.mu.Lock()
 	rec := &storage.TaskRecord{
 		ID:              task.ID,
 		Project:         task.Project,
@@ -1033,7 +1160,7 @@ func (tm *TaskManager) SaveTask(task *TaskSession) {
 	if task.Chat != "" {
 		rec.RecipientID = string(task.Chat)
 	}
-	task.Unlock()
+	task.mu.Unlock()
 
 	_ = s.UpdateTask(context.Background(), rec)
 }
@@ -1092,10 +1219,10 @@ func (tm *TaskManager) GetRunningWorkerPids() (int, []int) {
 	var otherPids []int
 
 	for id, task := range tm.tasks {
-		task.Lock()
+		task.mu.Lock()
 		pid := task.workerPIDLocked()
 		isRunning := task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput || task.Status == TaskStatusPlanning
-		task.Unlock()
+		task.mu.Unlock()
 
 		if isRunning && pid > 0 {
 			if id == tm.activeTaskID {
@@ -1146,14 +1273,14 @@ func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
 	if len(activeList) > 0 {
 		bldr.WriteString("⚡ <b>Активные и в очереди:</b>\n")
 		for _, t := range activeList {
-			t.Lock()
+			t.mu.Lock()
 			id := t.ID
 			proj := t.Project
 			status := t.Status
 			prompt := t.InitialPrompt
 			followupsCount := len(t.PendingFollowups)
 			durStr := FormatDurationHuman(t.durationLocked())
-			t.Unlock()
+			t.mu.Unlock()
 			focusBadge := "  "
 			if id == activeID {
 				focusBadge = "👉 🎯 "
@@ -1194,7 +1321,7 @@ func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
 		}
 		for i := len(completedList) - 1; i >= startIdx; i-- {
 			t := completedList[i]
-			t.Lock()
+			t.mu.Lock()
 			id := t.ID
 			proj := t.Project
 			agentName := t.Agent
@@ -1204,7 +1331,7 @@ func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
 			status := t.Status
 			prompt := t.InitialPrompt
 			prURL := t.LastPRURL
-			t.Unlock()
+			t.mu.Unlock()
 
 			focusBadge := "  "
 			if id == activeID {
@@ -1235,11 +1362,11 @@ func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
 	// Формируем инлайн-клавиатуру для активных задач
 	var buttons []ports.Button
 	for _, t := range activeList {
-		t.Lock()
+		t.mu.Lock()
 		id := t.ID
 		proj := t.Project
 		emoji := t.Status.Emoji()
-		t.Unlock()
+		t.mu.Unlock()
 
 		badge := ""
 		if id == activeID {
@@ -1273,7 +1400,7 @@ const MaxTaskDetailsPlanRunes = 400
 
 // FormatTaskDetails формирует подробную карточку статуса задачи.
 func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
-	task.Lock()
+	task.mu.Lock()
 	id := task.ID
 	proj := task.Project
 	model := task.Model
@@ -1293,7 +1420,7 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 	prURL := task.LastPRURL
 	lastQuestion := task.LastQuestion
 	durStr := FormatDurationHuman(task.durationLocked())
-	task.Unlock()
+	task.mu.Unlock()
 
 	var bldr strings.Builder
 	focusTitle := ""
@@ -1379,11 +1506,11 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 // BuildTaskDetailsMarkup формирует инлайн-клавиатуру для карточки задачи,
 // включая кнопку скачивания плана (если он есть) и управляющие кнопки по статусу.
 func BuildTaskDetailsMarkup(task *TaskSession) *ports.Keyboard {
-	task.Lock()
+	task.mu.Lock()
 	id := task.ID
 	hasPlan := task.Plan != ""
 	status := task.Status
-	task.Unlock()
+	task.mu.Unlock()
 
 	var rows [][]ports.Button
 

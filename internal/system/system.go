@@ -467,12 +467,11 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 	// 2. Если есть задачи на проекте бота и нет флага Force
 	if len(botTasks) > 0 && !flags.Force {
 		firstTask := botTasks[0]
-		firstTask.Lock()
-		tID := firstTask.ID
-		tProj := firstTask.Project
-		tPrompt := firstTask.CurrentPrompt
-		tStatus := firstTask.Status.RussianTitle()
-		firstTask.Unlock()
+		firstView := firstTask.Snapshot()
+		tID := firstView.ID
+		tProj := firstView.Project
+		tPrompt := firstView.CurrentPrompt
+		tStatus := firstView.Status.RussianTitle()
 
 		countStr := ""
 		if len(botTasks) > 1 {
@@ -509,12 +508,11 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 	// 3. Если есть любые другие активные задачи в боте и нет флага Force
 	if len(otherTasks) > 0 && !flags.Force {
 		firstTask := otherTasks[0]
-		firstTask.Lock()
-		tID := firstTask.ID
-		tProj := firstTask.Project
-		tPrompt := firstTask.CurrentPrompt
-		tStatus := firstTask.Status.RussianTitle()
-		firstTask.Unlock()
+		firstView2 := firstTask.Snapshot()
+		tID := firstView2.ID
+		tProj := firstView2.Project
+		tPrompt := firstView2.CurrentPrompt
+		tStatus := firstView2.Status.RussianTitle()
 
 		return fmt.Sprintf(
 			"⚠️ <b>Выполняются активные задачи (%d шт.)!</b>\n\n"+
