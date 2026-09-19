@@ -10,6 +10,7 @@ import (
 	"bro-bot/internal/system"
 	"bro-bot/internal/utils"
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -58,90 +59,26 @@ func SetActiveAgent(framework ports.AgentFramework, name string) {
 }
 
 // Start настраивает бота и регистрирует обработчики. Реестр агентов приходит из корня
-// композиции: обработчики не зависят от конкретных адаптеров.
-func Start(t ports.Transport, reg *agents.Registry) {
+// композиции: обработчики не зависят от конкретных адаптеров. Конфигурация приходит
+// оттуда же готовым снимком — окружение здесь уже не читается.
+//
+// Ошибки возвращаются наверх: решение завершить процесс принимает корень композиции,
+// а не библиотечный пакет.
+func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	setAgentRegistry(reg)
+	config.Apply(cfg)
 
-	adminIDStr := os.Getenv("TELEGRAM_ADMIN_ID")
-	adminIDNum, err := strconv.ParseInt(adminIDStr, 10, 64)
-	if err != nil || adminIDNum == 0 {
-		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр TELEGRAM_ADMIN_ID не задан или некорректен")
-	}
-	config.AdminID = ports.ChatID(strconv.FormatInt(adminIDNum, 10))
-
-	envProjectsRoot := os.Getenv("PROJECTS_ROOT")
-	if envProjectsRoot == "" {
-		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр PROJECTS_ROOT не задан")
-	}
-	config.ProjectsRoot = envProjectsRoot
-
-	envTimeout := os.Getenv("QUESTION_TIMEOUT")
-	if envTimeout == "" {
-		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр QUESTION_TIMEOUT не задан")
-	}
-	if d, err := time.ParseDuration(envTimeout); err == nil && d > 0 {
-		config.QuestionTimeout = d
-	} else if sec, err := strconv.Atoi(envTimeout); err == nil && sec > 0 {
-		config.QuestionTimeout = time.Duration(sec) * time.Second
-	} else {
-		log.Fatal("Некорректный формат QUESTION_TIMEOUT")
-	}
-
-	config.StepTimeout = 30 * time.Minute
-	if envStepTimeout := os.Getenv("STEP_TIMEOUT"); envStepTimeout != "" {
-		if d, err := time.ParseDuration(envStepTimeout); err == nil && d > 0 {
-			config.StepTimeout = d
-		} else if sec, err := strconv.Atoi(envStepTimeout); err == nil && sec > 0 {
-			config.StepTimeout = time.Duration(sec) * time.Second
-		} else {
-			log.Printf("Предупреждение: некорректный формат STEP_TIMEOUT, используется значение по умолчанию %v", config.StepTimeout)
-		}
-	}
-
-	config.ChatTimeout = 5 * time.Minute
-	if envChatTimeout := os.Getenv("CHAT_TIMEOUT"); envChatTimeout != "" {
-		if d, err := time.ParseDuration(envChatTimeout); err == nil && d > 0 {
-			config.ChatTimeout = d
-		} else if sec, err := strconv.Atoi(envChatTimeout); err == nil && sec > 0 {
-			config.ChatTimeout = time.Duration(sec) * time.Second
-		} else {
-			log.Printf("Предупреждение: некорректный формат CHAT_TIMEOUT, используется значение по умолчанию %v", config.ChatTimeout)
-		}
-	}
-
-	if os.Getenv("BOT_SERVICE_NAME") == "" {
-		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр BOT_SERVICE_NAME не задан")
-	}
-
-	botDir := os.Getenv("BOT_DIR")
-	if botDir == "" {
-		botDir = "/home/deploy/bro-bot"
-	}
-	config.BotDir = botDir
-
-	dbPath := os.Getenv("SQLITE_DB_PATH")
-	if dbPath == "" {
-		dbPath = filepath.Join(botDir, "data", "bot.db")
-	}
-	config.DBPath = dbPath
-
-	scriptsDir := os.Getenv("SCRIPTS_DIR")
-	if scriptsDir == "" {
-		scriptsDir = filepath.Join(botDir, "scripts")
-	}
-	config.ScriptsDir = scriptsDir
-
-	sqliteStorage, err := storage.NewSQLiteStorage(dbPath)
+	sqliteStorage, err := storage.NewSQLiteStorage(cfg.DBPath)
 	if err != nil {
-		log.Fatalf("Не удалось инициализировать SQLite базу данных: %v", err)
+		return fmt.Errorf("не удалось инициализировать SQLite базу данных: %w", err)
 	}
 	domain.GlobalTaskManager.InitWithStorage(sqliteStorage)
 	domain.GlobalChatManager.InitWithStorage(sqliteStorage)
 
 	models.GlobalModelRegistry = models.NewModelRegistry(10 * time.Minute)
 
-	initDefaultProject(config.ProjectsRoot)
-	initDefaultModel()
+	initDefaultProject(cfg.ProjectsRoot, cfg.DefaultProject)
+	initDefaultModel(cfg.DefaultModel)
 
 	// Восстанавливаем сохраненные настройки из базы данных
 	ctx := context.Background()
@@ -244,16 +181,16 @@ func Start(t ports.Transport, reg *agents.Registry) {
 	t.OnCommand("script", handleScript)
 	t.OnText(handleText)
 
-	go system.CheckAndNotifyRestart(t, config.AdminID)
+	// Каталог передаётся значением, а не читается из config внутри горутины: она
+	// просыпается через полторы секунды, и в тестах к этому моменту следующий Start
+	// уже переписывает снимок — детектор гонок это заметит.
+	go system.CheckAndNotifyRestart(t, cfg.AdminID, cfg.BotDir)
 
 	log.Println("Мультипроектный агент-бот запущен...")
-	if err := t.Start(context.Background()); err != nil {
-		log.Fatal(err)
-	}
+	return t.Start(context.Background())
 }
 
-func initDefaultProject(root string) {
-	defaultProject := os.Getenv("DEFAULT_PROJECT")
+func initDefaultProject(root, defaultProject string) {
 	if defaultProject != "" {
 		targetDir := filepath.Join(root, defaultProject)
 		if info, err := os.Stat(targetDir); err == nil && info.IsDir() {
@@ -281,16 +218,16 @@ func initDefaultProject(root string) {
 	}
 }
 
-func initDefaultModel() {
-	defaultModel := os.Getenv("DEFAULT_MODEL")
-	if defaultModel == "" {
-		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр DEFAULT_MODEL не задан")
-	}
+// initDefaultModel разрешает псевдоним модели один раз и публикует результат в
+// config.DefaultModel. Раньше DEFAULT_MODEL читали три места с разными запасными
+// значениями, и псевдоним flash давал в них разные модели.
+func initDefaultModel(defaultModel string) {
 	if models.GlobalModelRegistry != nil {
 		if resolved, ok := models.GlobalModelRegistry.ResolveModel(defaultModel); ok {
 			defaultModel = resolved
 		}
 	}
+	config.DefaultModel = defaultModel
 	config.ProjectState.Lock()
 	config.ProjectState.CurrentModel = defaultModel
 	config.ProjectState.Unlock()

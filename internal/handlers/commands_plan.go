@@ -329,7 +329,7 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 
 	domain.GlobalTokenTracker.StartTaskWithAgent(projectName, modelName, initialPrompt, ActiveAgentName())
 	workDir := filepath.Join(config.ProjectsRoot, projectName)
-	go runAgentTaskPipeline(m, chat, task, workDir)
+	go runAgentTaskPipeline(m, chat, task, workDir, config.ProjectsRoot)
 
 	return nil
 }
@@ -360,7 +360,7 @@ func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback
 	_, _ = m.Send(context.Background(), chat, fmt.Sprintf("📝 <b>Задача #%d: Обновляю план с учётом замечаний...</b>\n<i>«%s»</i>", taskID, html.EscapeString(utils.TruncateString(feedback, 100))), ports.Rich())
 
 	workDir := filepath.Join(config.ProjectsRoot, projectName)
-	go runAgentTaskPipeline(m, chat, task, workDir)
+	go runAgentTaskPipeline(m, chat, task, workDir, config.ProjectsRoot)
 
 	return nil
 }

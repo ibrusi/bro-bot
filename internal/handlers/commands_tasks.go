@@ -335,7 +335,7 @@ func onQuestionChoice(s ports.Session) error {
 				taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 		}
 		workDir := filepath.Join(config.ProjectsRoot, projectName)
-		go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+		go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
 		return s.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>",
 			taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 	} else if status == domain.TaskStatusPaused {
@@ -360,7 +360,7 @@ func onQuestionChoice(s ports.Session) error {
 				taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 		}
 		workDir := filepath.Join(config.ProjectsRoot, projectName)
-		go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+		go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
 		return s.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>",
 			taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 	}
@@ -464,7 +464,7 @@ func onQuestionResume(s ports.Session) error {
 	}
 
 	workDir := filepath.Join(config.ProjectsRoot, proj)
-	go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+	go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
 	return s.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с сохранённой сессии %s!</b>", taskID, html.EscapeString(proj), html.EscapeString(tAgent)), ports.Rich())
 }
 
@@ -515,7 +515,7 @@ func onTaskAgentRestart(s ports.Session) error {
 	}
 
 	workDir := filepath.Join(config.ProjectsRoot, proj)
-	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
+	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir, config.ProjectsRoot)
 	return s.Send(fmt.Sprintf("🔄 <b>Задача #%d перезапущена с агентом %s</b> (новая сессия в <code>%s</code>).", taskID, html.EscapeString(ActiveAgentName()), html.EscapeString(proj)), ports.Rich())
 }
 
@@ -565,7 +565,7 @@ func onTaskAgentSwitch(s ports.Session) error {
 	}
 
 	workDir := filepath.Join(config.ProjectsRoot, proj)
-	go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+	go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
 	return s.Send(fmt.Sprintf("%s\n\n▶️ <b>Задача #%d (<code>%s</code>) возобновлена с агентом %s!</b>", switchMsg, taskID, html.EscapeString(proj), html.EscapeString(targetAgent)), ports.Rich())
 }
 
@@ -692,7 +692,7 @@ func handleResume(s ports.Session) error {
 			}
 
 			workDir := filepath.Join(config.ProjectsRoot, proj)
-			go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+			go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
 			return s.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code> с ответом:</b>\n<i>«%s»</i>", targetID, html.EscapeString(proj), html.EscapeString(answer)), ports.Rich())
 		}
 		menu := buildQuestionMarkup(task)
@@ -714,7 +714,7 @@ func handleResume(s ports.Session) error {
 	}
 
 	workDir := filepath.Join(config.ProjectsRoot, proj)
-	go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir)
+	go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
 	return s.Send(fmt.Sprintf("▶️ <b>Задача #%d возобновлена в <code>%s</code>!</b>", targetID, html.EscapeString(proj)), ports.Rich())
 }
 
@@ -788,7 +788,7 @@ func handleRetry(s ports.Session) error {
 	syncLegacySession(task)
 
 	workDir := filepath.Join(config.ProjectsRoot, proj)
-	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
+	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir, config.ProjectsRoot)
 	return s.Send(fmt.Sprintf("🔄 <b>Задача #%d перезапущена с чистого листа</b> (новая сессия %s в <code>%s</code>).", targetID, html.EscapeString(ActiveAgentName()), html.EscapeString(proj)), ports.Rich())
 }
 
@@ -938,7 +938,7 @@ func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan b
 	domain.GlobalTokenTracker.StartTaskWithAgent(targetProj, curMod, prompt, targetAgent)
 	workDir := filepath.Join(config.ProjectsRoot, targetProj)
 
-	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
+	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir, config.ProjectsRoot)
 
 	return nil
 }
@@ -1006,7 +1006,7 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 			syncLegacySession(task)
 
 			workDir := filepath.Join(config.ProjectsRoot, proj)
-			go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir)
+			go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir, config.ProjectsRoot)
 			return s.Send(fmt.Sprintf("▶️ <b>Задача #%d (<code>%s</code>) возобновлена с ответом:</b>\n<i>«%s»</i>",
 				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
 		}
@@ -1247,7 +1247,7 @@ func checkAndStartQueuedTask(m ports.Messenger, project, root string) {
 
 	domain.GlobalTokenTracker.StartTaskWithAgent(project, model, prompt, tAgent)
 	workDir := filepath.Join(root, project)
-	go runAgentTaskPipeline(m, chat, nextTask, workDir)
+	go runAgentTaskPipeline(m, chat, nextTask, workDir, config.ProjectsRoot)
 }
 
 func syncLegacySession(task *domain.TaskSession) {

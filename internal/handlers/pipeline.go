@@ -32,10 +32,14 @@ func runAgentPipeline(m ports.Messenger, chat ports.ChatID, workDir, projectName
 	})
 
 	syncLegacySession(task)
-	runAgentTaskPipeline(m, chat, task, workDir)
+	runAgentTaskPipeline(m, chat, task, workDir, config.ProjectsRoot)
 }
 
-func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir string) {
+// runAgentTaskPipeline ведёт задачу от первого шага до отчёта. Корень проектов приходит
+// параметром: пайплайн живёт в фоновой горутине минутами, а config.ProjectsRoot —
+// снимок конфигурации, который переписывается при старте бота. Читать его по ходу
+// работы значит гонку, которую видит детектор гонок в тестах, перезапускающих бота.
+func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir, projectsRoot string) {
 	// Имя активного агента читаем до снимка задачи: activeAgentMu остаётся листовым
 	// мьютексом и никогда не берётся внутри чужих блокировок.
 	fallbackAgent := ActiveAgentName()
@@ -144,7 +148,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 				activeModel = t.Model
 			})
 			if cancelled {
-				checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
+				checkAndStartQueuedTask(m, projectName, projectsRoot)
 				return
 			}
 
@@ -154,13 +158,13 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 
 			stepView := task.Snapshot()
 			if stepView.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
-				checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
+				checkAndStartQueuedTask(m, projectName, projectsRoot)
 				return
 			}
 			st := stepView.Status
 
 			if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
-				answer, ok := waitForTaskInput(m, chat, task, projectName, taskID)
+				answer, ok := waitForTaskInput(m, chat, task, projectName, projectsRoot, taskID)
 				if !ok {
 					return
 				}
@@ -169,12 +173,12 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			}
 
 			if res.Outcome == StepOutcomeTimeout {
-				handleTaskStepTimeout(m, chat, task, projectName, taskID, true)
+				handleTaskStepTimeout(m, chat, task, projectName, projectsRoot, taskID, true)
 				return
 			}
 
 			if res.Outcome == StepOutcomeError {
-				handleTaskStepError(m, chat, task, projectName, taskID, res.Error)
+				handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, res.Error)
 				return
 			}
 
@@ -183,7 +187,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 
 		planText := strings.TrimSpace(task.Snapshot().Output)
 		if isLikelyErrorMessage(planText) {
-			handleTaskStepError(m, chat, task, projectName, taskID, errors.New(planText))
+			handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, errors.New(planText))
 			return
 		}
 		if planText == "" {
@@ -231,13 +235,13 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 
 		stepView := task.Snapshot()
 		if stepView.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
-			checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
+			checkAndStartQueuedTask(m, projectName, projectsRoot)
 			return
 		}
 		st := stepView.Status
 
 		if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
-			answer, ok := waitForTaskInput(m, chat, task, projectName, taskID)
+			answer, ok := waitForTaskInput(m, chat, task, projectName, projectsRoot, taskID)
 			if !ok {
 				return
 			}
@@ -246,12 +250,12 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		}
 
 		if res.Outcome == StepOutcomeTimeout {
-			handleTaskStepTimeout(m, chat, task, projectName, taskID, false)
+			handleTaskStepTimeout(m, chat, task, projectName, projectsRoot, taskID, false)
 			return
 		}
 
 		if res.Outcome == StepOutcomeError {
-			handleTaskStepError(m, chat, task, projectName, taskID, res.Error)
+			handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, res.Error)
 			return
 		}
 
@@ -354,7 +358,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			}
 
 			// Запускаем следующую задачу из очереди для этого проекта, если есть
-			checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
+			checkAndStartQueuedTask(m, projectName, projectsRoot)
 			return
 		}
 
@@ -852,7 +856,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}
 }
 
-func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName string, taskID int, isPlanning bool) {
+func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, isPlanning bool) {
 	var convID string
 	var tAgent string
 	task.Update(func(t *domain.TaskSession) {
@@ -896,10 +900,10 @@ func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.Ta
 		}
 	}
 
-	checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
+	checkAndStartQueuedTask(m, projectName, projectsRoot)
 }
 
-func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName string, taskID int, err error) {
+func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, err error) {
 	var convID string
 	task.Update(func(t *domain.TaskSession) {
 		t.Status = domain.TaskStatusFailed
@@ -937,10 +941,10 @@ func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.Task
 		}
 	}
 
-	checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
+	checkAndStartQueuedTask(m, projectName, projectsRoot)
 }
 
-func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName string, taskID int) (string, bool) {
+func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int) (string, bool) {
 	timeout := config.QuestionTimeout
 
 	select {
@@ -972,7 +976,7 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 		syncLegacySession(task)
 
 		if !isCancelled {
-			checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
+			checkAndStartQueuedTask(m, projectName, projectsRoot)
 		}
 		return "", false
 
@@ -996,7 +1000,7 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 			domain.GlobalTaskManager.RegisterMessageTask(tRef, taskID)
 		}
 
-		checkAndStartQueuedTask(m, projectName, config.ProjectsRoot)
+		checkAndStartQueuedTask(m, projectName, projectsRoot)
 		return "", false
 	}
 }
