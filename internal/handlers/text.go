@@ -37,7 +37,7 @@ func handleText(s ports.Session) error {
 	// 1. Проверяем, является ли сообщение ответом (Reply) на статус/вопрос конкретной задачи
 	if msg := s.Message(); msg != nil && msg.ReplyTo != nil {
 		if task := domain.GlobalTaskManager.GetTaskByMessageID(msg.ReplyTo.ID); task != nil {
-			return handleAddFollowupToTask(s, task.ID, userText)
+			return handleAddFollowupToTask(s, task.Snapshot().ID, userText)
 		}
 	}
 
@@ -46,16 +46,17 @@ func handleText(s ports.Session) error {
 	active := domain.GlobalTaskManager.GetActiveTask()
 	if active != nil {
 		if active.IsActive() {
-			return handleAddFollowupToTask(s, active.ID, userText)
+			return handleAddFollowupToTask(s, active.Snapshot().ID, userText)
 		}
 		// Приостановленная задача забирает сообщение, только если она действительно ждёт ответа
 		// на свежий вопрос. Иначе задача, зависшая после перезапуска бота, навсегда
 		// перехватывала бы весь диалог.
 		if hasFreshPendingQuestion(active) {
-			return handleAddFollowupToTask(s, active.ID, userText)
+			return handleAddFollowupToTask(s, active.Snapshot().ID, userText)
 		}
 		if isAwaitingAnswer(active) {
-			note = fmt.Sprintf("❓ Задача #%d всё ещё ждёт ответа: /resume %d", active.ID, active.ID)
+			activeID := active.Snapshot().ID
+			note = fmt.Sprintf("❓ Задача #%d всё ещё ждёт ответа: /resume %d", activeID, activeID)
 		}
 	}
 

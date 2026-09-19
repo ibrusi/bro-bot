@@ -1011,7 +1011,7 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		taskIsActive bool
 	)
 	if task != nil {
-		task.Lock()
+		task.mu.Lock()
 		taskID = task.ID
 		taskProj = task.Project
 		taskMod = task.Model
@@ -1025,7 +1025,7 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		taskConvID = task.ConversationID
 		taskMetrics = task.TokenMetrics
 		taskIsActive = task.isActiveLocked()
-		task.Unlock()
+		task.mu.Unlock()
 	}
 
 	t.RLock()
@@ -1141,9 +1141,9 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		if taskConvID != "" {
 			agentName := metrics.Agent
 			if agentName == "" && task != nil {
-				task.Lock()
+				task.mu.Lock()
 				agentName = task.Agent
-				task.Unlock()
+				task.mu.Unlock()
 			}
 			if agentName == "" {
 				agentName = "agy"

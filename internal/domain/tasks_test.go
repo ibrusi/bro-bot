@@ -122,9 +122,9 @@ func TestTaskManagerAddFollowup(t *testing.T) {
 	}
 
 	// Verify task 2 is unaffected
-	t2.Lock()
+	t2.mu.Lock()
 	t2Followups := len(t2.PendingFollowups)
-	t2.Unlock()
+	t2.mu.Unlock()
 	if t2Followups != 0 {
 		t.Fatalf("expected task 2 to have 0 followups, got %d", t2Followups)
 	}
@@ -136,10 +136,10 @@ func TestTaskManagerAddFollowup(t *testing.T) {
 	}
 
 	// Try adding to cancelled task — should resume it
-	t1.Lock()
+	t1.mu.Lock()
 	t1.Status = TaskStatusCancelled
 	t1.FinishedAt = time.Now()
-	t1.Unlock()
+	t1.mu.Unlock()
 	resumedT1, _, isAnswer, err := tm.AddFollowup(1, "resume after cancel")
 	if err != nil {
 		t.Fatalf("expected no error adding to cancelled task (should resume), got: %v", err)
@@ -403,19 +403,19 @@ func TestTaskSessionDurationAndLocking(t *testing.T) {
 		t.Errorf("expected ~5s duration, got %v", dur)
 	}
 
-	// 2. durationLocked() while task.Lock() is held (simulating ticker goroutine)
-	task.Lock()
+	// 2. durationLocked() while task.mu.Lock() is held (simulating ticker goroutine)
+	task.mu.Lock()
 	durLocked := task.durationLocked()
-	task.Unlock()
+	task.mu.Unlock()
 	if durLocked < 4*time.Second || durLocked > 7*time.Second {
 		t.Errorf("expected ~5s durationLocked, got %v", durLocked)
 	}
 
 	// 3. Completed task duration
-	task.Lock()
+	task.mu.Lock()
 	task.FinishedAt = task.StartedAt.Add(12 * time.Second)
 	durFinished := task.durationLocked()
-	task.Unlock()
+	task.mu.Unlock()
 	if durFinished != 12*time.Second {
 		t.Errorf("expected 12s, got %v", durFinished)
 	}
@@ -424,20 +424,20 @@ func TestTaskSessionDurationAndLocking(t *testing.T) {
 func TestTaskManagerLiveQueriesDuringTaskExecution(t *testing.T) {
 	tm := NewTaskManager()
 	t1 := tm.CreateTask("proj-live", "gemini-3.8-flash", "test concurrency", testChatID)
-	t1.Lock()
+	t1.mu.Lock()
 	t1.Status = TaskStatusRunning
 	t1.StartedAt = time.Now().Add(-10 * time.Second)
 	t1.RecentLogs = []string{"initializing...", "running tool test"}
-	t1.Unlock()
+	t1.mu.Unlock()
 
 	// Run concurrent queries that would hang if any lock was deadlocked
 	done := make(chan bool)
 	go func() {
 		for i := 0; i < 20; i++ {
 			// Simulate ticker reading durationLocked under lock
-			t1.Lock()
+			t1.mu.Lock()
 			_ = t1.durationLocked()
-			t1.Unlock()
+			t1.mu.Unlock()
 
 			t1.AppendLog("another step")
 
@@ -472,11 +472,11 @@ func TestTaskManagerLiveQueriesDuringTaskExecution(t *testing.T) {
 func TestTaskStatusWaitingInputAndDeliverAnswer(t *testing.T) {
 	tm := NewTaskManager()
 	task := tm.CreateTask("proj-test", "model-x", "do something", testChatID)
-	task.Lock()
+	task.mu.Lock()
 	task.Status = TaskStatusWaitingInput
 	task.LastQuestion = "Какой цвет выбрать?"
 	task.QuestionOptions = []string{"Красный", "Синий"}
-	task.Unlock()
+	task.mu.Unlock()
 
 	if !task.IsActive() {
 		t.Errorf("expected WaitingInput task to be active")
@@ -502,9 +502,9 @@ func TestTaskStatusPausedAndQueueUnblocking(t *testing.T) {
 
 	// Task 1 in proj-1 is waiting input
 	t1 := tm.CreateTask("proj-1", "m1", "task 1", testChatID)
-	t1.Lock()
+	t1.mu.Lock()
 	t1.Status = TaskStatusWaitingInput
-	t1.Unlock()
+	t1.mu.Unlock()
 
 	if !tm.HasRunningTaskInProject("proj-1") {
 		t.Fatalf("expected proj-1 to have running/waiting task")
@@ -512,9 +512,9 @@ func TestTaskStatusPausedAndQueueUnblocking(t *testing.T) {
 
 	// Task 2 in proj-1 is queued
 	t2 := tm.CreateTask("proj-1", "m1", "task 2", testChatID)
-	t2.Lock()
+	t2.mu.Lock()
 	t2.Status = TaskStatusQueued
-	t2.Unlock()
+	t2.mu.Unlock()
 
 	// t1 pauses
 	paused := t1.PauseTask()
@@ -545,12 +545,12 @@ func TestTaskManagerResumeTask(t *testing.T) {
 	tm := NewTaskManager()
 
 	t1 := tm.CreateTask("proj-resume", "m1", "initial", testChatID)
-	t1.Lock()
+	t1.mu.Lock()
 	t1.Status = TaskStatusPaused
 	t1.ConversationID = "conv-abc-123"
 	t1.LastQuestion = "Вы уверены?"
 	t1.QuestionOptions = []string{"Да", "Нет"}
-	t1.Unlock()
+	t1.mu.Unlock()
 
 	// 1. Возобновление при свободном проекте
 	resumed, err := tm.ResumeTask(t1.ID, "Да, уверен")
@@ -569,14 +569,14 @@ func TestTaskManagerResumeTask(t *testing.T) {
 
 	// 2. Возобновление при занятом проекте
 	t2 := tm.CreateTask("proj-resume", "m1", "another task", testChatID)
-	t2.Lock()
+	t2.mu.Lock()
 	t2.Status = TaskStatusRunning
-	t2.Unlock()
+	t2.mu.Unlock()
 
 	// Снова ставим t1 на паузу для теста
-	t1.Lock()
+	t1.mu.Lock()
 	t1.Status = TaskStatusPaused
-	t1.Unlock()
+	t1.mu.Unlock()
 
 	resumedQueued, err := tm.ResumeTask(t1.ID, "Новый ответ")
 	if err != nil {
@@ -591,9 +591,9 @@ func TestTaskManagerResumeTask(t *testing.T) {
 
 	// 3. Тест AddFollowup для задачи на паузе
 	t3 := tm.CreateTask("proj-free", "m1", "task 3", testChatID)
-	t3.Lock()
+	t3.mu.Lock()
 	t3.Status = TaskStatusPaused
-	t3.Unlock()
+	t3.mu.Unlock()
 
 	resumedViaFollowup, _, isAnswer, err := tm.AddFollowup(t3.ID, "Ответ через AddFollowup")
 	if err != nil {
@@ -611,9 +611,9 @@ func TestGetActiveTaskWithCompletedAndActiveTasks(t *testing.T) {
 	tm := NewTaskManager()
 
 	t1 := tm.CreateTask("proj-1", "m1", "task 1", testChatID)
-	t1.Lock()
+	t1.mu.Lock()
 	t1.Status = TaskStatusRunning
-	t1.Unlock()
+	t1.mu.Unlock()
 
 	// Initially, t1 is active
 	active := tm.GetActiveTask()
@@ -623,19 +623,19 @@ func TestGetActiveTaskWithCompletedAndActiveTasks(t *testing.T) {
 
 	// Task 2 is queued with plan requirement
 	t2 := tm.CreateTaskWithPlan("proj-1", "m1", "task 2", testChatID, true)
-	t2.Lock()
+	t2.mu.Lock()
 	t2.Status = TaskStatusQueued
-	t2.Unlock()
+	t2.mu.Unlock()
 
 	// Task 1 completes
-	t1.Lock()
+	t1.mu.Lock()
 	t1.Status = TaskStatusCompleted
-	t1.Unlock()
+	t1.mu.Unlock()
 
 	// Task 2 transitions to planning
-	t2.Lock()
+	t2.mu.Lock()
 	t2.Status = TaskStatusPlanning
-	t2.Unlock()
+	t2.mu.Unlock()
 
 	// GetActiveTask should now return t2 even though activeTaskID initially was t1
 	active = tm.GetActiveTask()
@@ -644,9 +644,9 @@ func TestGetActiveTaskWithCompletedAndActiveTasks(t *testing.T) {
 	}
 
 	// Task 2 transitions to waiting approval
-	t2.Lock()
+	t2.mu.Lock()
 	t2.Status = TaskStatusWaitingApproval
-	t2.Unlock()
+	t2.mu.Unlock()
 
 	active = tm.GetActiveTask()
 	if active == nil || active.ID != t2.ID {
@@ -654,9 +654,9 @@ func TestGetActiveTaskWithCompletedAndActiveTasks(t *testing.T) {
 	}
 
 	// Task 2 completes, and no active tasks remain
-	t2.Lock()
+	t2.mu.Lock()
 	t2.Status = TaskStatusCompleted
-	t2.Unlock()
+	t2.mu.Unlock()
 
 	active = tm.GetActiveTask()
 	if active == nil {
@@ -679,11 +679,11 @@ func TestTaskManagerWithSQLiteStorage(t *testing.T) {
 		t.Fatalf("expected task1 ID 1, got %d", task1.ID)
 	}
 
-	task1.Lock()
+	task1.mu.Lock()
 	task1.Plan = "## Step 1\nArchitecture Plan"
 	task1.PlanApproved = true
 	task1.Status = TaskStatusWaitingApproval
-	task1.Unlock()
+	task1.mu.Unlock()
 	tm1.SaveTask(task1)
 
 	task1.AppendLog("Log 1: started planning")
@@ -698,9 +698,9 @@ func TestTaskManagerWithSQLiteStorage(t *testing.T) {
 	_, _ = tm1.SetActiveTask(task1.ID)
 
 	task2 := tm1.CreateTask("proj-beta", "flash", "Task 2 prompt", testChatID)
-	task2.Lock()
+	task2.mu.Lock()
 	task2.Status = TaskStatusRunning // Имитируем задачу, оставшуюся running при падении
-	task2.Unlock()
+	task2.mu.Unlock()
 	tm1.SaveTask(task2)
 
 	// 2. Имитация перезапуска сервиса (создаём новый TaskManager над той же БД).
@@ -765,9 +765,9 @@ func TestSetAndClearTaskConversationID(t *testing.T) {
 	testConvID := "agy-conv-uuid-12345"
 	tm.SetTaskConversationID(task.ID, testConvID)
 
-	task.Lock()
+	task.mu.Lock()
 	gotMemConv := task.ConversationID
-	task.Unlock()
+	task.mu.Unlock()
 	if gotMemConv != testConvID {
 		t.Fatalf("expected task.ConversationID to be %s in memory, got %s", testConvID, gotMemConv)
 	}
@@ -784,9 +784,9 @@ func TestSetAndClearTaskConversationID(t *testing.T) {
 	// 2. Очистка conversation_id через ClearTaskConversationID
 	tm.ClearTaskConversationID(task.ID)
 
-	task.Lock()
+	task.mu.Lock()
 	clearedMem := task.ConversationID
-	task.Unlock()
+	task.mu.Unlock()
 	if clearedMem != "" {
 		t.Fatalf("expected empty ConversationID after clear, got %s", clearedMem)
 	}
@@ -805,10 +805,10 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 
 	// 1. Задача на планировании без переданного ответа с существующей сессией
 	pTask := tm.CreateTaskWithPlan("proj-plan", "m", "Make plan", testChatID, true)
-	pTask.Lock()
+	pTask.mu.Lock()
 	pTask.Status = TaskStatusPaused
 	pTask.ConversationID = "conv-plan-123"
-	pTask.Unlock()
+	pTask.mu.Unlock()
 
 	resumedPlan, err := tm.ResumeTask(pTask.ID, "")
 	if err != nil {
@@ -823,11 +823,11 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 
 	// 2. Задача на исполнении без переданного ответа с существующей сессией
 	execTask := tm.CreateTaskWithPlan("proj-exec", "m", "Execute task", testChatID, true)
-	execTask.Lock()
+	execTask.mu.Lock()
 	execTask.PlanApproved = true
 	execTask.Status = TaskStatusPaused
 	execTask.ConversationID = "conv-exec-123"
-	execTask.Unlock()
+	execTask.mu.Unlock()
 
 	resumedExec, err := tm.ResumeTask(execTask.ID, "")
 	if err != nil {
@@ -842,10 +842,10 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 
 	// 3. Задача со статусом TaskStatusFailed должна успешно возобновляться
 	failedTask := tm.CreateTaskWithPlan("proj-failed", "m", "Failed task", testChatID, false)
-	failedTask.Lock()
+	failedTask.mu.Lock()
 	failedTask.Status = TaskStatusFailed
 	failedTask.FinishedAt = time.Now()
-	failedTask.Unlock()
+	failedTask.mu.Unlock()
 
 	resumedFailed, err := tm.ResumeTask(failedTask.ID, "Fix the previous error and continue")
 	if err != nil {
@@ -863,11 +863,11 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 
 	// 4. Задача со статусом TaskStatusCancelled должна успешно возобновляться
 	cancelledTask := tm.CreateTaskWithPlan("proj-cancelled", "m", "Cancelled task", testChatID, false)
-	cancelledTask.Lock()
+	cancelledTask.mu.Lock()
 	cancelledTask.Status = TaskStatusCancelled
 	cancelledTask.FinishedAt = time.Now()
 	cancelledTask.ConversationID = "conv-cancelled-123"
-	cancelledTask.Unlock()
+	cancelledTask.mu.Unlock()
 
 	resumedCancelled, err := tm.ResumeTask(cancelledTask.ID, "Continue the cancelled task")
 	if err != nil {
@@ -888,11 +888,11 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 
 	// 5. Возобновление отменённой задачи без ответа — должен сгенерировать дефолтный промпт
 	cancelledTask2 := tm.CreateTaskWithPlan("proj-cancelled2", "m", "Another cancelled", testChatID, false)
-	cancelledTask2.Lock()
+	cancelledTask2.mu.Lock()
 	cancelledTask2.Status = TaskStatusCancelled
 	cancelledTask2.FinishedAt = time.Now()
 	cancelledTask2.ConversationID = "conv-cancelled-456"
-	cancelledTask2.Unlock()
+	cancelledTask2.mu.Unlock()
 
 	resumedCancelled2, err := tm.ResumeTask(cancelledTask2.ID, "")
 	if err != nil {
@@ -910,11 +910,11 @@ func TestAddFollowupResumeCancelledTask(t *testing.T) {
 	tm := NewTaskManager()
 
 	task := tm.CreateTask("proj-followup-cancel", "m1", "task to cancel and resume", testChatID)
-	task.Lock()
+	task.mu.Lock()
 	task.Status = TaskStatusCancelled
 	task.FinishedAt = time.Now()
 	task.ConversationID = "conv-followup-cancel"
-	task.Unlock()
+	task.mu.Unlock()
 
 	resumed, _, isAnswer, err := tm.AddFollowup(task.ID, "Resume via followup")
 	if err != nil {
@@ -1028,9 +1028,9 @@ func attachFake(t *testing.T, task *TaskSession, proc *fakeProcess) func() bool 
 func TestCancelTaskStopsProcessThroughInterface(t *testing.T) {
 	tm := NewTaskManager()
 	task := tm.CreateTask("proj", "m", "остановить", testChatID)
-	task.Lock()
+	task.mu.Lock()
 	task.Status = TaskStatusRunning
-	task.Unlock()
+	task.mu.Unlock()
 
 	proc := &fakeProcess{}
 	cancelled := attachFake(t, task, proc)
@@ -1056,9 +1056,9 @@ func TestCancelTaskStopsProcessThroughInterface(t *testing.T) {
 func TestPauseTaskStopsProcessThroughInterface(t *testing.T) {
 	tm := NewTaskManager()
 	task := tm.CreateTask("proj", "m", "пауза", testChatID)
-	task.Lock()
+	task.mu.Lock()
 	task.Status = TaskStatusWaitingInput
-	task.Unlock()
+	task.mu.Unlock()
 
 	proc := &fakeProcess{}
 	cancelled := attachFake(t, task, proc)
@@ -1077,9 +1077,9 @@ func TestPauseTaskStopsProcessThroughInterface(t *testing.T) {
 func TestResumeTaskStopsRunningProcess(t *testing.T) {
 	tm := NewTaskManager()
 	task := tm.CreateTask("proj", "m", "перезапуск", testChatID)
-	task.Lock()
+	task.mu.Lock()
 	task.Status = TaskStatusRunning
-	task.Unlock()
+	task.mu.Unlock()
 
 	proc := &fakeProcess{}
 	cancelled := attachFake(t, task, proc)
@@ -1095,9 +1095,9 @@ func TestResumeTaskStopsRunningProcess(t *testing.T) {
 func TestAttachProcessRefusesCancelledTask(t *testing.T) {
 	tm := NewTaskManager()
 	task := tm.CreateTask("proj", "m", "гонка", testChatID)
-	task.Lock()
+	task.mu.Lock()
 	task.Status = TaskStatusRunning
-	task.Unlock()
+	task.mu.Unlock()
 	if _, err := tm.CancelTask(task.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -1133,9 +1133,9 @@ func TestDetachProcessClosesStdin(t *testing.T) {
 	}
 	// Повторный DetachProcess и Cancel без процесса не должны паниковать.
 	task.DetachProcess()
-	task.Lock()
+	task.mu.Lock()
 	task.Status = TaskStatusRunning
-	task.Unlock()
+	task.mu.Unlock()
 	if _, err := tm.CancelTask(task.ID); err != nil {
 		t.Errorf("CancelTask без процесса: %v", err)
 	}
@@ -1148,9 +1148,9 @@ func TestGetRunningWorkerPidsIgnoresProcessesWithoutPID(t *testing.T) {
 	cli := tm.CreateTask("proj-a", "m", "cli", testChatID)
 	api := tm.CreateTask("proj-b", "m", "api", testChatID)
 	for _, task := range []*TaskSession{cli, api} {
-		task.Lock()
+		task.mu.Lock()
 		task.Status = TaskStatusRunning
-		task.Unlock()
+		task.mu.Unlock()
 	}
 	attachFake(t, cli, &fakeProcess{pid: 100})
 	attachFake(t, api, &fakeProcess{pid: 0})
@@ -1170,15 +1170,15 @@ func TestAppendOutputLockedCapsSize(t *testing.T) {
 
 	chunk := strings.Repeat("я", 64*1024) // 128 КиБ: кириллица по два байта
 	for i := 0; i < 20; i++ {
-		task.Lock()
+		task.mu.Lock()
 		task.AppendOutputLocked(chunk)
-		task.Unlock()
+		task.mu.Unlock()
 	}
 
-	task.Lock()
+	task.mu.Lock()
 	size := task.FullOutput.Len()
 	out := task.FullOutput.String()
-	task.Unlock()
+	task.mu.Unlock()
 
 	if !task.OutputTruncated() {
 		t.Fatal("после 2.5 МиБ вывод должен быть помечен обрезанным")
@@ -1194,13 +1194,13 @@ func TestAppendOutputLockedCapsSize(t *testing.T) {
 	}
 
 	// После обрезки ничего не дописывается, а сброс снимает пометку.
-	task.Lock()
+	task.mu.Lock()
 	task.AppendOutputLocked("ещё")
 	after := task.FullOutput.Len()
 	task.ResetOutputLocked()
 	task.AppendOutputLocked("снова")
 	restarted := task.FullOutput.String()
-	task.Unlock()
+	task.mu.Unlock()
 	if after != size {
 		t.Error("после обрезки вывод не должен расти")
 	}
@@ -1239,9 +1239,9 @@ func TestAppendLogWritesInBatchesAndKeepsOrder(t *testing.T) {
 		}
 	}
 
-	task.Lock()
+	task.mu.Lock()
 	recent := len(task.RecentLogs)
-	task.Unlock()
+	task.mu.Unlock()
 	if recent != 20 {
 		t.Errorf("RecentLogs должен хранить 20 последних строк, хранит %d", recent)
 	}
@@ -1269,5 +1269,123 @@ func TestInitWithStorageStopsPreviousLogWriter(t *testing.T) {
 	}
 	if len(logs) != 1 || logs[0] != "до переинициализации" {
 		t.Errorf("строка из очереди прежнего писателя потеряна: %v", logs)
+	}
+}
+
+// TestSnapshotReturnsSliceCopies — снимок не должен делить срезы с задачей: иначе
+// читатель снаружи домена правил бы состояние задачи мимо мьютекса.
+func TestSnapshotReturnsSliceCopies(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj", "m", "промпт", testChatID)
+	task.AppendLog("первая строка")
+	task.Update(func(ts *TaskSession) {
+		ts.PendingFollowups = []string{"догонка"}
+		ts.QuestionOptions = []string{"да", "нет"}
+	})
+
+	view := task.Snapshot()
+	view.RecentLogs[0] = "подменено"
+	view.PendingFollowups[0] = "подменено"
+	view.QuestionOptions[0] = "подменено"
+
+	after := task.Snapshot()
+	if after.RecentLogs[0] != "первая строка" {
+		t.Errorf("правка снимка видна задаче: RecentLogs = %q", after.RecentLogs[0])
+	}
+	if after.PendingFollowups[0] != "догонка" {
+		t.Errorf("правка снимка видна задаче: PendingFollowups = %q", after.PendingFollowups[0])
+	}
+	if after.QuestionOptions[0] != "да" {
+		t.Errorf("правка снимка видна задаче: QuestionOptions = %q", after.QuestionOptions[0])
+	}
+
+	// И наоборот: задача, изменившись после снимка, не трогает уже отданный срез.
+	task.AppendLog("вторая строка")
+	if len(view.RecentLogs) != 1 {
+		t.Errorf("снимок изменился вслед за задачей: RecentLogs = %v", view.RecentLogs)
+	}
+}
+
+// TestUpdateIsAtomicForReaders — пара полей, изменённых в одном Update, снаружи
+// видна только целиком: снимок не может застать задачу на середине правки.
+func TestUpdateIsAtomicForReaders(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj", "m", "промпт", testChatID)
+
+	// Два согласованных состояния: статус и модель меняются только вместе.
+	states := []struct {
+		status TaskStatus
+		model  string
+	}{
+		{TaskStatusRunning, "модель-в-работе"},
+		{TaskStatusCompleted, "модель-завершено"},
+	}
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			s := states[i%len(states)]
+			task.Update(func(ts *TaskSession) {
+				ts.Status = s.status
+				ts.LastModelUsed = s.model
+			})
+		}
+		close(done)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			v := task.Snapshot()
+			for _, s := range states {
+				if v.Status == s.status && v.LastModelUsed != s.model {
+					t.Errorf("снимок застал задачу на середине правки: статус %s, модель %q",
+						v.Status, v.LastModelUsed)
+					return
+				}
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
+// TestSnapshotAndUpdateAreRaceFree — несколько горутин читают и правят задачу
+// одновременно; тест имеет смысл под -race.
+func TestSnapshotAndUpdateAreRaceFree(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj", "m", "промпт", testChatID)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				task.Update(func(ts *TaskSession) {
+					ts.RecentLogs = append(ts.RecentLogs, fmt.Sprintf("горутина %d шаг %d", n, j))
+					ts.LastPRURL = fmt.Sprintf("https://example.invalid/%d", n)
+				})
+				v := task.Snapshot()
+				_ = v.Duration
+				_ = len(v.RecentLogs)
+				task.AppendLog("через метод")
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if task.Snapshot().ID != task.ID {
+		t.Error("снимок потерял идентификатор задачи")
 	}
 }

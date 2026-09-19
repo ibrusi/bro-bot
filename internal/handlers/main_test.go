@@ -339,26 +339,26 @@ func TestGetDefaultCommands(t *testing.T) {
 func TestPlanApprovalPreservesPendingFollowups(t *testing.T) {
 	tm := domain.NewTaskManager()
 	task := tm.CreateTaskWithPlan("test-proj", "flash", "Build feature", testChatID, true)
-	task.Lock()
-	task.Status = domain.TaskStatusWaitingApproval
-	task.Plan = "1. Step one\n2. Step two"
-	task.PendingFollowups = []string{"add extra validation", "include unit test"}
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusWaitingApproval
+		t.Plan = "1. Step one\n2. Step two"
+		t.PendingFollowups = []string{"add extra validation", "include unit test"}
+	})
 
 	// Simulate plan approval logic
-	task.Lock()
-	task.PlanApproved = true
-	task.Status = domain.TaskStatusRunning
-	task.RecentLogs = nil
-	// Verify that PendingFollowups is NOT cleared
-	followupsCount := len(task.PendingFollowups)
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.PlanApproved = true
+		t.Status = domain.TaskStatusRunning
+		t.RecentLogs = nil
+	})
 
-	if followupsCount != 2 {
-		t.Fatalf("expected 2 pending followups to be preserved on plan approval, got %d", followupsCount)
+	// Verify that PendingFollowups is NOT cleared
+	followups := task.Snapshot().PendingFollowups
+	if len(followups) != 2 {
+		t.Fatalf("expected 2 pending followups to be preserved on plan approval, got %d", len(followups))
 	}
-	if task.PendingFollowups[0] != "add extra validation" || task.PendingFollowups[1] != "include unit test" {
-		t.Errorf("unexpected pending followups content: %v", task.PendingFollowups)
+	if followups[0] != "add extra validation" || followups[1] != "include unit test" {
+		t.Errorf("unexpected pending followups content: %v", followups)
 	}
 }
 
@@ -371,16 +371,16 @@ func TestWaitForTaskInputPlanningStatusLogic(t *testing.T) {
 		Status:       domain.TaskStatusWaitingInput,
 	}
 
-	task.Lock()
-	if task.RequiresPlan && !task.PlanApproved {
-		task.Status = domain.TaskStatusPlanning
-	} else {
-		task.Status = domain.TaskStatusRunning
-	}
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		if t.RequiresPlan && !t.PlanApproved {
+			t.Status = domain.TaskStatusPlanning
+		} else {
+			t.Status = domain.TaskStatusRunning
+		}
+	})
 
-	if task.Status != domain.TaskStatusPlanning {
-		t.Errorf("expected status domain.TaskStatusPlanning, got %s", task.Status)
+	if task.Snapshot().Status != domain.TaskStatusPlanning {
+		t.Errorf("expected status domain.TaskStatusPlanning, got %s", task.Snapshot().Status)
 	}
 
 	// When task does not require plan or is approved
@@ -391,16 +391,16 @@ func TestWaitForTaskInputPlanningStatusLogic(t *testing.T) {
 		Status:       domain.TaskStatusWaitingInput,
 	}
 
-	task2.Lock()
-	if task2.RequiresPlan && !task2.PlanApproved {
-		task2.Status = domain.TaskStatusPlanning
-	} else {
-		task2.Status = domain.TaskStatusRunning
-	}
-	task2.Unlock()
+	task2.Update(func(t *domain.TaskSession) {
+		if t.RequiresPlan && !t.PlanApproved {
+			t.Status = domain.TaskStatusPlanning
+		} else {
+			t.Status = domain.TaskStatusRunning
+		}
+	})
 
-	if task2.Status != domain.TaskStatusRunning {
-		t.Errorf("expected status domain.TaskStatusRunning, got %s", task2.Status)
+	if task2.Snapshot().Status != domain.TaskStatusRunning {
+		t.Errorf("expected status domain.TaskStatusRunning, got %s", task2.Snapshot().Status)
 	}
 }
 
@@ -500,17 +500,17 @@ func TestSyncLegacySessionSavesToSQLite(t *testing.T) {
 
 	task := domain.GlobalTaskManager.CreateTaskWithPlan("test-sync-proj", "flash", "Build sqlite feature", testChatID, true)
 
-	task.Lock()
-	task.Status = domain.TaskStatusWaitingApproval
-	task.Plan = "### My Detailed SQLite Plan\n- Step 1: Storage\n- Step 2: Domain\n- Step 3: Handlers"
-	task.PlanApproved = false
-	task.LastPRURL = "https://github.com/pull/99"
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusWaitingApproval
+		t.Plan = "### My Detailed SQLite Plan\n- Step 1: Storage\n- Step 2: Domain\n- Step 3: Handlers"
+		t.PlanApproved = false
+		t.LastPRURL = "https://github.com/pull/99"
+	})
 
 	// Вызов syncLegacySession синхронизирует состояние задачи в SQLite
 	syncLegacySession(task)
 
-	rec, err := s.GetTask(context.Background(), task.ID)
+	rec, err := s.GetTask(context.Background(), task.Snapshot().ID)
 	if err != nil {
 		t.Fatalf("GetTask from sqlite failed: %v", err)
 	}
@@ -520,8 +520,8 @@ func TestSyncLegacySessionSavesToSQLite(t *testing.T) {
 	if rec.Status != string(domain.TaskStatusWaitingApproval) {
 		t.Errorf("expected status %s, got %s", domain.TaskStatusWaitingApproval, rec.Status)
 	}
-	if rec.Plan != task.Plan {
-		t.Errorf("expected plan %q, got %q", task.Plan, rec.Plan)
+	if rec.Plan != task.Snapshot().Plan {
+		t.Errorf("expected plan %q, got %q", task.Snapshot().Plan, rec.Plan)
 	}
 	if rec.LastPRURL != "https://github.com/pull/99" {
 		t.Errorf("expected LastPRURL https://github.com/pull/99, got %s", rec.LastPRURL)
@@ -561,19 +561,18 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	domain.GlobalTaskManager = tm
 
 	task := tm.CreateTask("proj-timeout", "m", "Prompt", testChatID)
-	task.Lock()
-	task.ConversationID = "conv-timeout-123"
-	task.Status = domain.TaskStatusRunning
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.ConversationID = "conv-timeout-123"
+		t.Status = domain.TaskStatusRunning
+	})
 	tm.SaveTask(task)
 
 	// 1. Проверяем перевод задачи в статус paused при таймауте
-	handleTaskStepTimeout(nil, testChatID, task, "proj-timeout", task.ID, false)
+	handleTaskStepTimeout(nil, testChatID, task, "proj-timeout", task.Snapshot().ID, false)
 
-	task.Lock()
-	st := task.Status
-	logs := append([]string(nil), task.RecentLogs...)
-	task.Unlock()
+	view := task.Snapshot()
+	st := view.Status
+	logs := append([]string(nil), view.RecentLogs...)
 
 	if st != domain.TaskStatusPaused {
 		t.Errorf("expected task to be paused after timeout, got: %s", st)
@@ -584,18 +583,17 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 
 	// 2. Проверяем перевод задачи в статус failed при ошибке
 	task2 := tm.CreateTask("proj-err", "m", "Prompt 2", testChatID)
-	task2.Lock()
-	task2.ConversationID = "conv-err-456"
-	task2.Status = domain.TaskStatusRunning
-	task2.Unlock()
+	task2.Update(func(t *domain.TaskSession) {
+		t.ConversationID = "conv-err-456"
+		t.Status = domain.TaskStatusRunning
+	})
 	tm.SaveTask(task2)
 
-	handleTaskStepError(nil, testChatID, task2, "proj-err", task2.ID, fmt.Errorf("exit status 127"))
+	handleTaskStepError(nil, testChatID, task2, "proj-err", task2.Snapshot().ID, fmt.Errorf("exit status 127"))
 
-	task2.Lock()
-	st2 := task2.Status
-	logs2 := append([]string(nil), task2.RecentLogs...)
-	task2.Unlock()
+	task2View := task2.Snapshot()
+	st2 := task2View.Status
+	logs2 := append([]string(nil), task2View.RecentLogs...)
 
 	if st2 != domain.TaskStatusFailed {
 		t.Errorf("expected task to be failed after error, got: %s", st2)
@@ -866,11 +864,11 @@ func TestTaskWaitingInputResumeAndDeliver(t *testing.T) {
 	tm := domain.NewTaskManager()
 	task := tm.CreateTask("test-proj", "flash", "Test question answer flow", testChatID)
 
-	task.Lock()
-	task.Status = domain.TaskStatusWaitingInput
-	task.LastQuestion = "Какой цвет выбрать?"
-	task.QuestionOptions = []string{"Красный", "Синий"}
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusWaitingInput
+		t.LastQuestion = "Какой цвет выбрать?"
+		t.QuestionOptions = []string{"Красный", "Синий"}
+	})
 
 	// 1. DeliverAnswer with active Stdin
 	pr, pw := io.Pipe()
@@ -893,7 +891,7 @@ func TestTaskWaitingInputResumeAndDeliver(t *testing.T) {
 
 	// Check that AnswerChan also received it
 	select {
-	case ans := <-task.AnswerChan:
+	case ans := <-task.AnswerChannel():
 		if ans != "Красный" {
 			t.Errorf("expected 'Красный' on AnswerChan, got %q", ans)
 		}
@@ -903,19 +901,18 @@ func TestTaskWaitingInputResumeAndDeliver(t *testing.T) {
 
 	// 2. ResumeTask, когда живого процесса больше нет
 	task.DetachProcess()
-	task.Lock()
-	task.Status = domain.TaskStatusWaitingInput
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusWaitingInput
+	})
 
-	resumedTask, err := tm.ResumeTask(task.ID, "Синий")
+	resumedTask, err := tm.ResumeTask(task.Snapshot().ID, "Синий")
 	if err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)
 	}
 
-	resumedTask.Lock()
-	st := resumedTask.Status
-	prompt := resumedTask.CurrentPrompt
-	resumedTask.Unlock()
+	resumedView := resumedTask.Snapshot()
+	st := resumedView.Status
+	prompt := resumedView.CurrentPrompt
 
 	if st != domain.TaskStatusRunning {
 		t.Errorf("expected status TaskStatusRunning after resume, got %s", st)
@@ -979,34 +976,34 @@ func TestExtractStepErrorMessage(t *testing.T) {
 	}
 
 	// 2. При отсутствии resultError, поиск в RecentLogs
-	task.Lock()
-	task.RecentLogs = []string{
-		"⚡ git status",
-		"error: Eligibility check failed: Your current account is not eligible",
-	}
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.RecentLogs = []string{
+			"⚡ git status",
+			"error: Eligibility check failed: Your current account is not eligible",
+		}
+	})
 	got2 := extractStepErrorMessage(task, "", errors.New("exit status 1"))
 	if got2 != "error: Eligibility check failed: Your current account is not eligible" {
 		t.Errorf("expected recent log error, got %q", got2)
 	}
 
 	// 3. При отсутствии в RecentLogs, поиск в FullOutput
-	task.Lock()
-	task.RecentLogs = []string{"⚡ ls -la"}
-	task.FullOutput.Reset()
-	task.FullOutput.WriteString("some normal log\nerror: invalid model selection: model xyz\n")
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.RecentLogs = []string{"⚡ ls -la"}
+		t.FullOutput.Reset()
+		t.FullOutput.WriteString("some normal log\nerror: invalid model selection: model xyz\n")
+	})
 	got3 := extractStepErrorMessage(task, "", errors.New("exit status 1"))
 	if got3 != "error: invalid model selection: model xyz" {
 		t.Errorf("expected fullOutput error, got %q", got3)
 	}
 
 	// 4. Если ничего не найдено, возвращается waitErr
-	task.Lock()
-	task.RecentLogs = nil
-	task.FullOutput.Reset()
-	task.FullOutput.WriteString("just some text\nno error markers here\n")
-	task.Unlock()
+	task.Update(func(t *domain.TaskSession) {
+		t.RecentLogs = nil
+		t.FullOutput.Reset()
+		t.FullOutput.WriteString("just some text\nno error markers here\n")
+	})
 	got4 := extractStepErrorMessage(task, "", errors.New("process killed unexpectedly"))
 	if got4 != "process killed unexpectedly" {
 		t.Errorf("expected waitErr error, got %q", got4)
@@ -1457,10 +1454,10 @@ func TestResumeAgentConflictDialog(t *testing.T) {
 	_, _ = SwitchActiveAgent("agy")
 
 	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "claude", "initial prompt", testChatID, false)
-	domain.GlobalTaskManager.SetTaskConversationID(task.ID, "session-uuid-1234")
-	task.Lock()
-	task.Status = domain.TaskStatusPaused
-	task.Unlock()
+	domain.GlobalTaskManager.SetTaskConversationID(task.Snapshot().ID, "session-uuid-1234")
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusPaused
+	})
 
 	resumeHandler, ok := mt.commands["resume"]
 	if !ok {
@@ -1471,7 +1468,7 @@ func TestResumeAgentConflictDialog(t *testing.T) {
 		M:       mt.Messenger,
 		ChatID:  testChatID,
 		Sender:  string(testChatID),
-		ArgsVal: []string{strconv.Itoa(task.ID), "answer text to resume"},
+		ArgsVal: []string{strconv.Itoa(task.Snapshot().ID), "answer text to resume"},
 	}
 
 	err := resumeHandler(sess)
@@ -1494,9 +1491,8 @@ func TestResumeAgentConflictDialog(t *testing.T) {
 	}
 
 	// Verify task.CurrentPrompt was preserved
-	task.Lock()
-	curPrompt := task.CurrentPrompt
-	task.Unlock()
+	view2 := task.Snapshot()
+	curPrompt := view2.CurrentPrompt
 	if curPrompt != "answer text to resume" {
 		t.Errorf("expected answer to be preserved in CurrentPrompt, got: %s", curPrompt)
 	}
@@ -1508,11 +1504,11 @@ func TestTaskAgentRestartCallback(t *testing.T) {
 	_, _ = SwitchActiveAgent("agy")
 
 	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "claude", "initial prompt", testChatID, false)
-	domain.GlobalTaskManager.SetTaskConversationID(task.ID, "session-uuid-9999")
-	task.Lock()
-	task.Status = domain.TaskStatusPaused
-	task.CurrentPrompt = "new instructions"
-	task.Unlock()
+	domain.GlobalTaskManager.SetTaskConversationID(task.Snapshot().ID, "session-uuid-9999")
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusPaused
+		t.CurrentPrompt = "new instructions"
+	})
 
 	restartCb, ok := mt.callbacks["task_agent_restart"]
 	if !ok {
@@ -1526,7 +1522,7 @@ func TestTaskAgentRestartCallback(t *testing.T) {
 		CB: &ports.CallbackQuery{
 			ID:          "cb1",
 			Action:      "task_agent_restart",
-			Payload:     strconv.Itoa(task.ID),
+			Payload:     strconv.Itoa(task.Snapshot().ID),
 			MessageText: "⚠️ Задача #1 была начата...",
 		},
 	}
@@ -1536,10 +1532,9 @@ func TestTaskAgentRestartCallback(t *testing.T) {
 		t.Fatalf("task_agent_restart failed: %v", err)
 	}
 
-	task.Lock()
-	convID := task.ConversationID
-	agent := task.Agent
-	task.Unlock()
+	view3 := task.Snapshot()
+	convID := view3.ConversationID
+	agent := view3.Agent
 
 	if convID != "" {
 		t.Errorf("expected ConversationID to be cleared, got: %s", convID)
@@ -1558,11 +1553,11 @@ func TestTaskAgentSwitchCallback(t *testing.T) {
 	_, _ = SwitchActiveAgent("agy")
 
 	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "claude", "initial prompt", testChatID, false)
-	domain.GlobalTaskManager.SetTaskConversationID(task.ID, "session-uuid-8888")
-	task.Lock()
-	task.Status = domain.TaskStatusPaused
-	task.CurrentPrompt = "continue step"
-	task.Unlock()
+	domain.GlobalTaskManager.SetTaskConversationID(task.Snapshot().ID, "session-uuid-8888")
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusPaused
+		t.CurrentPrompt = "continue step"
+	})
 
 	switchCb, ok := mt.callbacks["task_agent_switch"]
 	if !ok {
@@ -1576,7 +1571,7 @@ func TestTaskAgentSwitchCallback(t *testing.T) {
 		CB: &ports.CallbackQuery{
 			ID:          "cb2",
 			Action:      "task_agent_switch",
-			Payload:     strconv.Itoa(task.ID),
+			Payload:     strconv.Itoa(task.Snapshot().ID),
 			MessageText: "⚠️ Задача #1 была начата...",
 		},
 	}
@@ -1808,14 +1803,14 @@ func TestNewCommandWithAgent(t *testing.T) {
 	if task1 == nil {
 		t.Fatalf("expected task 1 to be created")
 	}
-	if task1.Project != "testproj" {
-		t.Errorf("expected task project to be testproj, got %s", task1.Project)
+	if task1.Snapshot().Project != "testproj" {
+		t.Errorf("expected task project to be testproj, got %s", task1.Snapshot().Project)
 	}
-	if task1.Agent != "claude" {
-		t.Errorf("expected task agent to be claude, got %s", task1.Agent)
+	if task1.Snapshot().Agent != "claude" {
+		t.Errorf("expected task agent to be claude, got %s", task1.Snapshot().Agent)
 	}
-	if task1.InitialPrompt != "implement feature" {
-		t.Errorf("expected prompt to be 'implement feature', got %s", task1.InitialPrompt)
+	if task1.Snapshot().InitialPrompt != "implement feature" {
+		t.Errorf("expected prompt to be 'implement feature', got %s", task1.Snapshot().InitialPrompt)
 	}
 
 	// 4. Create second project dir testproj2 and run /new claude testproj2 fix critical bug
@@ -1835,14 +1830,14 @@ func TestNewCommandWithAgent(t *testing.T) {
 	if task2 == nil {
 		t.Fatalf("expected task 2 to be created")
 	}
-	if task2.Project != "testproj2" {
-		t.Errorf("expected task project to be testproj2, got %s", task2.Project)
+	if task2.Snapshot().Project != "testproj2" {
+		t.Errorf("expected task project to be testproj2, got %s", task2.Snapshot().Project)
 	}
-	if task2.Agent != "claude" {
-		t.Errorf("expected task agent to be claude, got %s", task2.Agent)
+	if task2.Snapshot().Agent != "claude" {
+		t.Errorf("expected task agent to be claude, got %s", task2.Snapshot().Agent)
 	}
-	if task2.InitialPrompt != "fix critical bug" {
-		t.Errorf("expected prompt to be 'fix critical bug', got %s", task2.InitialPrompt)
+	if task2.Snapshot().InitialPrompt != "fix critical bug" {
+		t.Errorf("expected prompt to be 'fix critical bug', got %s", task2.Snapshot().InitialPrompt)
 	}
 
 	// 5. /new agy testproj3 write integration tests
@@ -1865,14 +1860,14 @@ func TestNewCommandWithAgent(t *testing.T) {
 	if task3 == nil {
 		t.Fatalf("expected task 3 to be created")
 	}
-	if task3.Agent != "agy" {
-		t.Errorf("expected task agent to be agy, got %s", task3.Agent)
+	if task3.Snapshot().Agent != "agy" {
+		t.Errorf("expected task agent to be agy, got %s", task3.Snapshot().Agent)
 	}
-	if task3.Project != "testproj3" {
-		t.Errorf("expected task project to be testproj3, got %s", task3.Project)
+	if task3.Snapshot().Project != "testproj3" {
+		t.Errorf("expected task project to be testproj3, got %s", task3.Snapshot().Project)
 	}
-	if task3.InitialPrompt != "write integration tests" {
-		t.Errorf("expected prompt to be 'write integration tests', got %s", task3.InitialPrompt)
+	if task3.Snapshot().InitialPrompt != "write integration tests" {
+		t.Errorf("expected prompt to be 'write integration tests', got %s", task3.Snapshot().InitialPrompt)
 	}
 }
 

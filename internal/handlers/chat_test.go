@@ -243,10 +243,9 @@ func TestChatSuggestionCallbacksCreateTasks(t *testing.T) {
 				t.Fatalf("ожидали новую задачу: было %d, стало %d", tasksBefore, len(tasks))
 			}
 			created := tasks[len(tasks)-1]
-			created.Lock()
-			requiresPlan := created.RequiresPlan
-			prompt := created.InitialPrompt
-			created.Unlock()
+			createdView := created.Snapshot()
+			requiresPlan := createdView.RequiresPlan
+			prompt := createdView.InitialPrompt
 
 			if requiresPlan != tc.wantPlan {
 				t.Errorf("RequiresPlan = %v, ожидали %v", requiresPlan, tc.wantPlan)
@@ -307,10 +306,10 @@ func TestPausedTaskWithoutFreshQuestionDoesNotHijackChat(t *testing.T) {
 	mt, agent := setupChatTestApp(t, "отвечаю в чате")
 
 	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "agy", "старая задача", testChatID, false)
-	task.Lock()
-	task.Status = domain.TaskStatusPaused
-	task.Unlock()
-	if _, err := domain.GlobalTaskManager.SetActiveTask(task.ID); err != nil {
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusPaused
+	})
+	if _, err := domain.GlobalTaskManager.SetActiveTask(task.Snapshot().ID); err != nil {
 		t.Fatalf("не удалось сделать задачу активной: %v", err)
 	}
 
@@ -318,9 +317,8 @@ func TestPausedTaskWithoutFreshQuestionDoesNotHijackChat(t *testing.T) {
 
 	waitFor(t, "запуск агента для диалога", func() bool { return len(agent.Calls()) == 1 })
 
-	task.Lock()
-	followups := len(task.PendingFollowups)
-	task.Unlock()
+	view := task.Snapshot()
+	followups := len(view.PendingFollowups)
 	if followups != 0 {
 		t.Errorf("сообщение не должно попадать в приостановленную задачу без свежего вопроса (дополнений: %d)", followups)
 	}
@@ -330,12 +328,12 @@ func TestPausedTaskWithFreshQuestionGetsAnswer(t *testing.T) {
 	mt, agent := setupChatTestApp(t, "не должно вызываться")
 
 	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "agy", "задача с вопросом", testChatID, false)
-	task.Lock()
-	task.Status = domain.TaskStatusPaused
-	task.LastQuestion = "Какой вариант выбрать?"
-	task.QuestionAskedAt = time.Now()
-	task.Unlock()
-	if _, err := domain.GlobalTaskManager.SetActiveTask(task.ID); err != nil {
+	task.Update(func(t *domain.TaskSession) {
+		t.Status = domain.TaskStatusPaused
+		t.LastQuestion = "Какой вариант выбрать?"
+		t.QuestionAskedAt = time.Now()
+	})
+	if _, err := domain.GlobalTaskManager.SetActiveTask(task.Snapshot().ID); err != nil {
 		t.Fatalf("не удалось сделать задачу активной: %v", err)
 	}
 
@@ -347,7 +345,7 @@ func TestPausedTaskWithFreshQuestionGetsAnswer(t *testing.T) {
 
 	found := false
 	for _, text := range mt.AllTexts() {
-		if strings.Contains(text, "#"+strconv.Itoa(task.ID)) {
+		if strings.Contains(text, "#"+strconv.Itoa(task.Snapshot().ID)) {
 			found = true
 			break
 		}

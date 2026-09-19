@@ -110,9 +110,8 @@ func isAwaitingAnswer(task *domain.TaskSession) bool {
 	if task == nil {
 		return false
 	}
-	task.Lock()
-	defer task.Unlock()
-	return task.Status == domain.TaskStatusPaused && strings.TrimSpace(task.LastQuestion) != ""
+	view := task.Snapshot()
+	return view.Status == domain.TaskStatusPaused && strings.TrimSpace(view.LastQuestion) != ""
 }
 
 // hasFreshPendingQuestion сообщает, что задача ждёт ответа на недавно заданный вопрос:
@@ -121,9 +120,8 @@ func hasFreshPendingQuestion(task *domain.TaskSession) bool {
 	if !isAwaitingAnswer(task) {
 		return false
 	}
-	task.Lock()
-	askedAt := task.QuestionAskedAt
-	task.Unlock()
+	view := task.Snapshot()
+	askedAt := view.QuestionAskedAt
 
 	if askedAt.IsZero() {
 		return false
