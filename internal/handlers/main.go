@@ -117,11 +117,19 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 		log.Printf("Восстановлен режим взаимодействия из SQLite: %s", savedInteraction)
 	}
 
+	if savedLang, err := sqliteStorage.GetSetting(ctx, "bot_language"); err == nil && savedLang != "" {
+		config.ProjectState.SetLanguage(savedLang)
+		log.Printf("Восстановлен язык интерфейса из SQLite: %s", savedLang)
+	}
+
 	savedAgent, _ := sqliteStorage.GetSetting(ctx, "current_agent")
 	initActiveAgent(savedAgent)
 
-	if err := t.SetCommands(context.Background(), getDefaultCommands()); err != nil {
+	if err := t.SetCommands(context.Background(), getDefaultCommands("en"), ""); err != nil {
 		log.Printf("Предупреждение: не удалось зарегистрировать команды: %v", err)
+	}
+	if err := t.SetCommands(context.Background(), getDefaultCommands("ru"), "ru"); err != nil {
+		log.Printf("Предупреждение: не удалось зарегистрировать команды для ru: %v", err)
 	}
 
 	t.Use(authMiddleware(config.AdminID))
@@ -150,6 +158,8 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	t.OnCommand("chat", handleChat)
 	t.OnCommand("chatmode", handleChatMode)
 	t.OnCallback("chat_mode_toggle", onChatModeToggle)
+	t.OnCommand("language", handleLanguage)
+	t.OnCallback("lang_sel", onLanguageSel)
 	t.OnCallback("chat_answer", onChatAnswer)
 	t.OnCallback("chat_plan", onChatPlan)
 	t.OnCallback("chat_task", onChatTask)
@@ -235,37 +245,73 @@ func initDefaultModel(defaultModel string) {
 }
 
 // getDefaultCommands возвращает список команд для регистрации в мессенджере (меню подсказок).
-func getDefaultCommands() []ports.BotCommand {
+func getDefaultCommands(lang string) []ports.BotCommand {
+	if lang == "ru" {
+		return []ports.BotCommand{
+			{Name: "status", Description: "[id] Статус текущей задачи, логи и очередь"},
+			{Name: "tasks", Description: "Список всех задач и переключение"},
+			{Name: "task", Description: "<id> [текст] Переключить фокус на задачу или дополнить её"},
+			{Name: "plan", Description: "[проект] <текст> Составить план для новой задачи"},
+			{Name: "planmode", Description: "[on|off] Включить/выключить обязательный план"},
+			{Name: "approve", Description: "[id] Утвердить план и начать реализацию"},
+			{Name: "planfile", Description: "[id] Скачать полный план задачи в виде .md файла"},
+			{Name: "history", Description: "[id] Показать переписку пользователя и агента в сессии задачи"},
+			{Name: "add", Description: "[id] <текст> Дополнить задачу текстом"},
+			{Name: "chat", Description: "[вопрос|new|stop] Разговор с агентом по текущему проекту"},
+			{Name: "chatmode", Description: "[on|off] Отвечать в чате вместо создания задачи"},
+			{Name: "new", Description: "[проект] [агент] <текст> Создать новую задачу в проекте/агенте"},
+			{Name: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
+			{Name: "retry", Description: "[id] Перезапустить задачу с чистого листа"},
+			{Name: "pause", Description: "[id] Приостановить выполнение задачи"},
+			{Name: "cancel", Description: "[id] Остановить задачу"},
+			{Name: "tokens", Description: "Статистика токенов, скорости и кэша"},
+			{Name: "context", Description: "[id] Распределение окна контекста модели"},
+			{Name: "top", Description: "Мониторинг CPU и памяти бота, agy и claude"},
+			{Name: "usage", Description: "Остаток квот и лимиты аккаунта"},
+			{Name: "models", Description: "Список доступных моделей"},
+			{Name: "model", Description: "[имя] Переключить активную модель"},
+			{Name: "agent", Description: "[" + strings.Join(registry().Names(), "|") + "] Переключить активный агент"},
+			{Name: "mode", Description: "[cli|api] Переключить режим (CLI или API)"},
+			{Name: "projects", Description: "Список доступных проектов"},
+			{Name: "use", Description: "<имя> Переключить активный проект"},
+			{Name: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
+			{Name: "language", Description: "Сменить язык интерфейса бота"},
+			{Name: "restart", Description: "Перезапустить бота"},
+			{Name: "rebuild", Description: "[branch=имя] [pull] [force] Собрать и перезапустить бота"},
+			{Name: "start", Description: "Перезапуск и приветственное сообщение"},
+		}
+	}
 	return []ports.BotCommand{
-		{Name: "status", Description: "[id] Статус текущей задачи, логи и очередь"},
-		{Name: "tasks", Description: "Список всех задач и переключение"},
-		{Name: "task", Description: "<id> [текст] Переключить фокус на задачу или дополнить её"},
-		{Name: "plan", Description: "[проект] <текст> Составить план для новой задачи"},
-		{Name: "planmode", Description: "[on|off] Включить/выключить обязательный план"},
-		{Name: "approve", Description: "[id] Утвердить план и начать реализацию"},
-		{Name: "planfile", Description: "[id] Скачать полный план задачи в виде .md файла"},
-		{Name: "history", Description: "[id] Показать переписку пользователя и агента в сессии задачи"},
-		{Name: "add", Description: "[id] <текст> Дополнить задачу текстом"},
-		{Name: "chat", Description: "[вопрос|new|stop] Разговор с агентом по текущему проекту"},
-		{Name: "chatmode", Description: "[on|off] Отвечать в чате вместо создания задачи"},
-		{Name: "new", Description: "[проект] [агент] <текст> Создать новую задачу в проекте/агенте"},
-		{Name: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
-		{Name: "retry", Description: "[id] Перезапустить задачу с чистого листа"},
-		{Name: "pause", Description: "[id] Приостановить выполнение задачи"},
-		{Name: "cancel", Description: "[id] Остановить задачу"},
-		{Name: "tokens", Description: "Статистика токенов, скорости и кэша"},
-		{Name: "context", Description: "[id] Распределение окна контекста модели"},
-		{Name: "top", Description: "Мониторинг CPU и памяти бота, agy и claude"},
-		{Name: "usage", Description: "Остаток квот и лимиты аккаунта"},
-		{Name: "models", Description: "Список доступных моделей"},
-		{Name: "model", Description: "[имя] Переключить активную модель"},
-		{Name: "agent", Description: "[" + strings.Join(registry().Names(), "|") + "] Переключить активный агент"},
-		{Name: "mode", Description: "[cli|api] Переключить режим (CLI или API)"},
-		{Name: "projects", Description: "Список доступных проектов"},
-		{Name: "use", Description: "<имя> Переключить активный проект"},
-		{Name: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
-		{Name: "restart", Description: "Перезапустить бота"},
-		{Name: "rebuild", Description: "[branch=имя] [pull] [force] Собрать и перезапустить бота"},
-		{Name: "start", Description: "Перезапуск и приветственное сообщение"},
+		{Name: "status", Description: "[id] Status of current task, logs and queue"},
+		{Name: "tasks", Description: "List all tasks and switch"},
+		{Name: "task", Description: "<id> [text] Focus on task or append to it"},
+		{Name: "plan", Description: "[project] <text> Create a plan for a new task"},
+		{Name: "planmode", Description: "[on|off] Toggle mandatory planning"},
+		{Name: "approve", Description: "[id] Approve plan and start execution"},
+		{Name: "planfile", Description: "[id] Download full task plan as .md file"},
+		{Name: "history", Description: "[id] Show conversation history of task session"},
+		{Name: "add", Description: "[id] <text> Append text to a task"},
+		{Name: "chat", Description: "[question|new|stop] Chat with agent in current project"},
+		{Name: "chatmode", Description: "[on|off] Reply in chat instead of creating a task"},
+		{Name: "new", Description: "[project] [agent] <text> Create new task"},
+		{Name: "resume", Description: "[id] [reply] Resume task or send reply"},
+		{Name: "retry", Description: "[id] Restart task from scratch"},
+		{Name: "pause", Description: "[id] Pause task execution"},
+		{Name: "cancel", Description: "[id] Cancel task"},
+		{Name: "tokens", Description: "Token, speed and cache statistics"},
+		{Name: "context", Description: "[id] Context window distribution"},
+		{Name: "top", Description: "CPU/memory monitoring of bot, agy, and claude"},
+		{Name: "usage", Description: "API usage costs and account limits"},
+		{Name: "models", Description: "List available models"},
+		{Name: "model", Description: "[name] Switch active model"},
+		{Name: "agent", Description: "[" + strings.Join(registry().Names(), "|") + "] Switch active agent"},
+		{Name: "mode", Description: "[cli|api] Switch mode (CLI or API)"},
+		{Name: "projects", Description: "List available projects"},
+		{Name: "use", Description: "<name> Switch active project"},
+		{Name: "clone", Description: "<url> [name] Clone git repository"},
+		{Name: "language", Description: "Change bot interface language"},
+		{Name: "restart", Description: "Restart the bot"},
+		{Name: "rebuild", Description: "[branch=name] [pull] [force] Build and restart the bot"},
+		{Name: "start", Description: "Restart and welcome message"},
 	}
 }

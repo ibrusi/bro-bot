@@ -403,7 +403,7 @@ func TestChatStatusShowsAgentAndMode(t *testing.T) {
 func TestChatCommandsRegisteredInMenu(t *testing.T) {
 	setupTestApp(t)
 
-	cmds := getDefaultCommands()
+	cmds := getDefaultCommands("ru")
 	found := map[string]bool{}
 	for _, cmd := range cmds {
 		found[cmd.Name] = true

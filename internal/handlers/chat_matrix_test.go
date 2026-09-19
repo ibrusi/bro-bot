@@ -75,7 +75,7 @@ func TestChatWorksForEveryAgentAndMode(t *testing.T) {
 
 			// 2. Память режима: в api историю и преамбулу передаём сами, в cli их держит агент.
 			if tc.mode == "api" {
-				if first.SystemPrompt == "" {
+				if first.SystemPrompt == "" || (!strings.Contains(first.SystemPrompt, "РЕЖИМ ДИАЛОГА") && !strings.Contains(first.SystemPrompt, "CHAT MODE")) {
 					t.Error("в api-режиме преамбула диалога должна уходить системным полем")
 				}
 				if first.Prompt != "как устроен роутер сообщений?" {
@@ -85,7 +85,7 @@ func TestChatWorksForEveryAgentAndMode(t *testing.T) {
 				if first.SystemPrompt != "" {
 					t.Error("в cli-режиме системное поле не используется")
 				}
-				if !strings.Contains(first.Prompt, "РЕЖИМ ДИАЛОГА") {
+				if !strings.Contains(first.Prompt, "РЕЖИМ ДИАЛОГА") && !strings.Contains(first.Prompt, "CHAT MODE") {
 					t.Errorf("в cli-режиме преамбула должна быть в промпте: %q", first.Prompt)
 				}
 			}

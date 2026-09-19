@@ -5,6 +5,7 @@ import (
 	"bro-bot/internal/domain"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
+	"bro-bot/internal/i18n"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -467,7 +468,8 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 		tID := firstView.ID
 		tProj := firstView.Project
 		tPrompt := firstView.CurrentPrompt
-		tStatus := firstView.Status.RussianTitle()
+		lang := config.ProjectState.GetLanguage()
+		tStatus := i18n.TaskStatusTitle(string(firstView.Status), lang)
 
 		countStr := ""
 		if len(botTasks) > 1 {
@@ -508,7 +510,8 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 		tID := firstView2.ID
 		tProj := firstView2.Project
 		tPrompt := firstView2.CurrentPrompt
-		tStatus := firstView2.Status.RussianTitle()
+		lang := config.ProjectState.GetLanguage()
+		tStatus := i18n.TaskStatusTitle(string(firstView2.Status), lang)
 
 		return fmt.Sprintf(
 			"⚠️ <b>Выполняются активные задачи (%d шт.)!</b>\n\n"+

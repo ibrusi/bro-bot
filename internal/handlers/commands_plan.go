@@ -5,6 +5,7 @@ import (
 	"bro-bot/internal/domain"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
+	"bro-bot/internal/i18n"
 	"context"
 	"fmt"
 	"html"
@@ -297,7 +298,8 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 	task.Update(func(t *domain.TaskSession) {
 		if t.Status != domain.TaskStatusWaitingApproval {
 			wrongStatus = true
-			statusTitle = t.Status.RussianTitle()
+			lang := config.ProjectState.GetLanguage()
+			statusTitle = i18n.TaskStatusTitle(string(t.Status), lang)
 			return
 		}
 
@@ -407,11 +409,12 @@ func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.Task
 		}
 	}
 
+	lang := config.ProjectState.GetLanguage()
 	rows = append(rows, []ports.Button{
-		{Text: "✅ Утвердить и начать", Action: "plan_approve", Payload: strconv.Itoa(taskID)},
-		{Text: "❌ Отменить", Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
+		{Text: i18n.T(lang, "BtnApproveAndStart"), Action: "plan_approve", Payload: strconv.Itoa(taskID)},
+		{Text: i18n.T(lang, "BtnCancel"), Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
 	})
-	rows = append(rows, []ports.Button{{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: strconv.Itoa(taskID)}})
+	rows = append(rows, []ports.Button{{Text: i18n.T(lang, "BtnDownloadPlan"), Action: "plan_doc", Payload: strconv.Itoa(taskID)}})
 	planMenu := &ports.Keyboard{Rows: rows}
 
 	planRunes := []rune(planText)
