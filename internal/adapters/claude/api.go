@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bro-bot/internal/agents"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
 	"bytes"
@@ -10,7 +11,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -41,10 +41,7 @@ func NewClaudeAPIAdapter() *ClaudeAPIAdapter {
 // apiKeyFromEnv возвращает ключ Claude API из окружения: ANTHROPIC_API_KEY либо
 // устаревший CLAUDE_API_KEY. Пустая строка — ключа нет.
 func apiKeyFromEnv() string {
-	if key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); key != "" {
-		return key
-	}
-	return strings.TrimSpace(os.Getenv("CLAUDE_API_KEY"))
+	return agents.FirstEnv(apiKeyEnv...)
 }
 
 func (a *ClaudeAPIAdapter) AgentName() string {

@@ -22,8 +22,9 @@ import (
 
 const (
 	restartMarkerFilename = ".restart_notify.json"
-	defaultBotDir         = "/home/deploy/bro-bot"
-	defaultServiceName    = "tg-bot.service"
+	// botRepoName — имя каталога репозитория самого бота: по нему команды /rebuild
+	// и /restart отличают проект бота от прочих проектов.
+	botRepoName = "bro-bot"
 )
 
 var (
@@ -77,21 +78,6 @@ type SystemFlags struct {
 	Pull   bool
 	Force  bool
 	Branch string
-}
-
-func getBotDir() string {
-	if d := os.Getenv("BOT_DIR"); d != "" {
-		return d
-	}
-	exe, err := os.Executable()
-	if err == nil {
-		exeDir := filepath.Dir(exe)
-		if _, err := os.Stat(filepath.Join(exeDir, "go.mod")); err == nil {
-			return exeDir
-		}
-	}
-	log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр BOT_DIR не задан и не удалось определить его автоматически")
-	return ""
 }
 
 func getGoBinary() string {
@@ -158,10 +144,17 @@ func loadAndClearRestartMarker(botDir string) (*RestartMarker, error) {
 	return &marker, nil
 }
 
-func CheckAndNotifyRestart(m ports.Messenger, defaultAdminChat ports.ChatID) {
+// CheckAndNotifyRestart досылает отчёт о перезапуске. Каталог бота приходит
+// параметром, а не из config: горутина просыпается через полторы секунды, а снимок
+// конфигурации к этому времени может переписывать следующий Start — и чтение против
+// записи поймает детектор гонок.
+func CheckAndNotifyRestart(m ports.Messenger, defaultAdminChat ports.ChatID, botDir string) {
 	time.Sleep(1500 * time.Millisecond)
 
-	botDir := getBotDir()
+	if botDir == "" {
+		log.Printf("Каталог бота не определён, проверку маркера перезапуска пропускаем")
+		return
+	}
 	marker, err := loadAndClearRestartMarker(botDir)
 	if err != nil {
 		log.Printf("Ошибка чтения маркера перезапуска: %v", err)
@@ -340,9 +333,14 @@ func performBuild(ctx context.Context, botDir string) (string, error) {
 }
 
 func executeRestart(t ports.Transport) {
-	serviceName := os.Getenv("BOT_SERVICE_NAME")
+	serviceName := config.ServiceName
 	if serviceName == "" {
-		log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр BOT_SERVICE_NAME не задан")
+		// До этого места с пустым именем не добраться: конфигурация проверена на
+		// старте. Но если добрались — выходим чисто и даём systemd поднять юнит,
+		// вместо того чтобы убивать бота посреди пользовательской команды.
+		log.Printf("Имя сервиса не задано, systemctl не вызываем — выходим и полагаемся на Restart=always")
+		t.Stop()
+		os.Exit(0)
 	}
 
 	log.Printf("Инициирован перезапуск бота (сервис: %s)...", serviceName)
@@ -406,18 +404,16 @@ func isBotProject(projectName, botDir, projectsRoot string) bool {
 	cleanProj = filepath.Clean(cleanProj)
 	baseProj := filepath.Base(cleanProj)
 
-	// Проверка по DEFAULT_PROJECT
-	if defProj := os.Getenv("DEFAULT_PROJECT"); defProj != "" {
+	// Проверка по проекту по умолчанию
+	if defProj := config.DefaultProject; defProj != "" {
 		if strings.EqualFold(cleanProj, defProj) || strings.EqualFold(baseProj, defProj) {
 			return true
 		}
 	}
 
-	// Прямое совпадение с известными именами репозитория бота
-	for _, name := range []string{"bro-bot", "bro-bot"} {
-		if strings.EqualFold(cleanProj, name) || strings.EqualFold(baseProj, name) {
-			return true
-		}
+	// Прямое совпадение с именем репозитория бота
+	if strings.EqualFold(cleanProj, botRepoName) || strings.EqualFold(baseProj, botRepoName) {
+		return true
 	}
 
 	// Совпадение с basename директории бота (например, bro-bot)
@@ -587,7 +583,10 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 	}()
 
 	flags := parseSystemFlags(s.Args())
-	botDir := getBotDir()
+	botDir := config.BotDir
+	if botDir == "" {
+		return s.Send("❌ Каталог бота не определён: задайте <code>BOT_DIR</code> в .env", ports.Rich())
+	}
 
 	cmdName := "/rebuild"
 	if flags.Pull {
@@ -731,7 +730,10 @@ func HandleRestart(t ports.Transport, s ports.Session) error {
 	}()
 
 	flags := parseSystemFlags(s.Args())
-	botDir := getBotDir()
+	botDir := config.BotDir
+	if botDir == "" {
+		return s.Send("❌ Каталог бота не определён: задайте <code>BOT_DIR</code> в .env", ports.Rich())
+	}
 
 	if warnMsg, blocked := checkActiveTasksForSystemAction("/restart", flags, botDir, config.ProjectsRoot); blocked {
 		return s.Send(warnMsg, ports.Rich())

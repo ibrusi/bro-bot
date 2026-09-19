@@ -38,8 +38,7 @@ func TestInitDefaultProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	os.Unsetenv("DEFAULT_PROJECT")
-	initDefaultProject(tmpDir)
+	initDefaultProject(tmpDir, "")
 
 	config.ProjectState.RLock()
 	cur := config.ProjectState.CurrentProject
@@ -49,10 +48,8 @@ func TestInitDefaultProject(t *testing.T) {
 		t.Errorf("expected aaa-project, got %s", cur)
 	}
 
-	// Case 2: Custom DEFAULT_PROJECT env var
-	os.Setenv("DEFAULT_PROJECT", "bro-bot")
-	defer os.Unsetenv("DEFAULT_PROJECT")
-	initDefaultProject(tmpDir)
+	// Case 2: задан проект по умолчанию
+	initDefaultProject(tmpDir, "bro-bot")
 
 	config.ProjectState.RLock()
 	cur = config.ProjectState.CurrentProject
@@ -67,8 +64,7 @@ func TestInitDefaultProject(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(otherDir, "zzz-fallback"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	os.Setenv("DEFAULT_PROJECT", "non-existent")
-	initDefaultProject(otherDir)
+	initDefaultProject(otherDir, "non-existent")
 
 	config.ProjectState.RLock()
 	cur = config.ProjectState.CurrentProject
@@ -84,10 +80,8 @@ func TestInitDefaultModel(t *testing.T) {
 		models.GlobalModelRegistry = models.NewModelRegistry(10 * time.Minute)
 	}
 
-	// Case 1: Custom DEFAULT_MODEL with alias
-	os.Setenv("DEFAULT_MODEL", "flash")
-	defer os.Unsetenv("DEFAULT_MODEL")
-	initDefaultModel()
+	// Case 1: псевдоним разрешается через реестр моделей
+	initDefaultModel("flash")
 
 	config.ProjectState.RLock()
 	cur := config.ProjectState.CurrentModel
@@ -97,9 +91,8 @@ func TestInitDefaultModel(t *testing.T) {
 		t.Errorf("expected gemini-3.8-flash-medium for alias 'flash', got %s", cur)
 	}
 
-	// Case 2: Custom explicit DEFAULT_MODEL
-	os.Setenv("DEFAULT_MODEL", "gemini-3.1-pro-high")
-	initDefaultModel()
+	// Case 2: явное имя модели
+	initDefaultModel("gemini-3.1-pro-high")
 
 	config.ProjectState.RLock()
 	cur = config.ProjectState.CurrentModel
@@ -108,21 +101,6 @@ func TestInitDefaultModel(t *testing.T) {
 	if cur != "gemini-3.1-pro-high" {
 		t.Errorf("expected gemini-3.1-pro-high, got %s", cur)
 	}
-}
-
-func TestInitDefaultModel_Unset(t *testing.T) {
-	if os.Getenv("BE_CRASHER") == "1" {
-		os.Unsetenv("DEFAULT_MODEL")
-		initDefaultModel()
-		return
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=TestInitDefaultModel_Unset")
-	cmd.Env = append(os.Environ(), "BE_CRASHER=1", "DEFAULT_MODEL=")
-	err := cmd.Run()
-	if e, ok := err.(*exec.ExitError); ok && !e.Success() {
-		return
-	}
-	t.Fatalf("process ran with err %v, want exit status 1", err)
 }
 
 func TestIsConfirmationText(t *testing.T) {
@@ -568,7 +546,7 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	tm.SaveTask(task)
 
 	// 1. Проверяем перевод задачи в статус paused при таймауте
-	handleTaskStepTimeout(nil, testChatID, task, "proj-timeout", task.Snapshot().ID, false)
+	handleTaskStepTimeout(nil, testChatID, task, "proj-timeout", config.ProjectsRoot, task.Snapshot().ID, false)
 
 	view := task.Snapshot()
 	st := view.Status
@@ -589,7 +567,7 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	})
 	tm.SaveTask(task2)
 
-	handleTaskStepError(nil, testChatID, task2, "proj-err", task2.Snapshot().ID, fmt.Errorf("exit status 127"))
+	handleTaskStepError(nil, testChatID, task2, "proj-err", config.ProjectsRoot, task2.Snapshot().ID, fmt.Errorf("exit status 127"))
 
 	task2View := task2.Snapshot()
 	st2 := task2View.Status
@@ -1431,8 +1409,15 @@ func setupTestApp(t *testing.T) *mockTransport {
 	t.Setenv("SQLITE_DB_PATH", filepath.Join(tmpDir, "bot.db"))
 	t.Setenv("DEFAULT_MODEL", "gemini-3.1-pro-high")
 
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("конфигурация тестового бота: %v", err)
+	}
+
 	mt := newMockTransport()
-	Start(mt, testAgentRegistry())
+	if err := Start(mt, testAgentRegistry(), cfg); err != nil {
+		t.Fatalf("запуск тестового бота: %v", err)
+	}
 	return mt
 }
 

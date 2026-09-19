@@ -7,13 +7,18 @@ import (
 	"bro-bot/internal/ports"
 )
 
+// apiKeyEnv — переменные, любая из которых даёт ключ для режима api, в порядке
+// приоритета: ANTHROPIC_API_KEY, затем устаревшая CLAUDE_API_KEY. Список один на
+// весь адаптер: и для реестра, и для самих запросов, чтобы они не разошлись.
+var apiKeyEnv = []string{"ANTHROPIC_API_KEY", "CLAUDE_API_KEY"}
+
 // Spec описывает агента claude для реестра: CLI Claude Code либо Claude API напрямую.
 func Spec() agents.Spec {
 	return agents.Spec{
 		Name:         "claude",
 		CLITitle:     "Claude Code",
 		APITitle:     "Claude API",
-		APIKeyEnv:    []string{"ANTHROPIC_API_KEY", "CLAUDE_API_KEY"},
+		APIKeyEnv:    apiKeyEnv,
 		DefaultModel: func() string { return "sonnet" },
 		// Модели Gemini и GPT claude не запускает: при переключении на него
 		// такая модель заменяется на модель по умолчанию.

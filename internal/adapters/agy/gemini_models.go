@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"bro-bot/internal/config"
 	"bro-bot/internal/models"
 
 	"github.com/google/generative-ai-go/genai"
@@ -257,7 +258,7 @@ func matchGeminiModel(requested string, available []geminiModel) (geminiModel, b
 }
 
 // configuredGeminiModel возвращает имя модели из конфигурации в порядке приоритета:
-// GEMINI_API_MODEL → модель задачи/чата → DEFAULT_MODEL.
+// GEMINI_API_MODEL → модель задачи/чата → модель бота по умолчанию.
 func configuredGeminiModel(requested string) string {
 	if envModel := strings.TrimSpace(os.Getenv("GEMINI_API_MODEL")); envModel != "" {
 		return envModel
@@ -273,13 +274,8 @@ func configuredGeminiModel(requested string) string {
 		return requested
 	}
 
-	if defaultModel := strings.TrimSpace(os.Getenv("DEFAULT_MODEL")); defaultModel != "" {
-		if models.GlobalModelRegistry != nil {
-			if resolved, ok := models.GlobalModelRegistry.ResolveModel(defaultModel); ok {
-				return resolved
-			}
-		}
-		return defaultModel
+	if model := strings.TrimSpace(config.DefaultModel); model != "" {
+		return model
 	}
 
 	return ""

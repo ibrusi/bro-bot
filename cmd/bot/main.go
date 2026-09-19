@@ -2,26 +2,27 @@ package main
 
 import (
 	"log"
-	"os"
 	"time"
 
 	"bro-bot/internal/adapters/agy"
 	"bro-bot/internal/adapters/claude"
 	"bro-bot/internal/adapters/telegram"
 	"bro-bot/internal/agents"
+	"bro-bot/internal/config"
 	"bro-bot/internal/handlers"
 	"bro-bot/internal/ports"
 )
 
-// buildTransport выбирает и инициализирует адаптер мессенджера по переменной окружения
-// MESSENGER (по умолчанию — telegram). Новый мессенджер подключается добавлением одного
-// case сюда, без изменений в internal/handlers.
-func buildTransport() ports.Transport {
-	switch messenger := os.Getenv("MESSENGER"); messenger {
+// buildTransport выбирает и инициализирует адаптер мессенджера. Новый мессенджер
+// подключается добавлением одного case сюда, без изменений в internal/handlers.
+//
+// Токен берётся прямо здесь и нигде не сохраняется: в снимке конфигурации ему не место.
+func buildTransport(messenger string) ports.Transport {
+	switch messenger {
 	case "", "telegram":
-		botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
-		if botToken == "" {
-			log.Fatal("ОБЯЗАТЕЛЬНЫЙ параметр TELEGRAM_BOT_TOKEN не задан")
+		botToken, err := config.BotToken()
+		if err != nil {
+			log.Fatal(err)
 		}
 		t, err := telegram.New(telegram.Config{
 			Token:       botToken,
@@ -47,6 +48,15 @@ func buildAgentRegistry() *agents.Registry {
 	return reg
 }
 
+// main — корень композиции и единственное место, где бот завершает процесс: всё
+// остальное возвращает ошибку наверх.
 func main() {
-	handlers.Start(buildTransport(), buildAgentRegistry())
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := handlers.Start(buildTransport(cfg.Messenger), buildAgentRegistry(), cfg); err != nil {
+		log.Fatal(err)
+	}
 }

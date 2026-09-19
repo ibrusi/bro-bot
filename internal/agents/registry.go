@@ -184,11 +184,22 @@ func canonical(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
-func anyEnvSet(vars []string) bool {
+// FirstEnv возвращает значение первой заданной переменной из списка, обрезав пробелы.
+// Общий помощник нужен, чтобы ключ проверялся одинаково везде: раньше реестр обрезал
+// пробелы, а адаптер agy — нет, и ключ из одних пробелов проходил все проверки,
+// чтобы упасть уже на запросе к API.
+func FirstEnv(vars ...string) string {
 	for _, v := range vars {
-		if strings.TrimSpace(os.Getenv(v)) != "" {
-			return true
+		if value := strings.TrimSpace(os.Getenv(v)); value != "" {
+			return value
 		}
 	}
-	return len(vars) == 0
+	return ""
+}
+
+func anyEnvSet(vars []string) bool {
+	if len(vars) == 0 {
+		return true
+	}
+	return FirstEnv(vars...) != ""
 }

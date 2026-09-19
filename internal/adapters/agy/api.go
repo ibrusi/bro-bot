@@ -1,6 +1,7 @@
 package agy
 
 import (
+	"bro-bot/internal/agents"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
 	"context"
@@ -9,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -32,7 +32,7 @@ func (a *AgyAPIAdapter) AgentName() string {
 }
 
 func (a *AgyAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
-	apiKey := os.Getenv("GEMINI_API_KEY")
+	apiKey := agents.FirstEnv(apiKeyEnv...)
 	if apiKey == "" {
 		return nil, fmt.Errorf("API ключ не найден. Задайте GEMINI_API_KEY в .env для работы в режиме API")
 	}
@@ -58,7 +58,7 @@ func (a *AgyAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 }
 
 func (a *AgyAPIAdapter) GetModels(ctx context.Context) ([]byte, error) {
-	apiKey := os.Getenv("GEMINI_API_KEY")
+	apiKey := agents.FirstEnv(apiKeyEnv...)
 	if apiKey == "" {
 		return nil, fmt.Errorf("API ключ не найден. Задайте GEMINI_API_KEY в .env для работы в режиме API")
 	}

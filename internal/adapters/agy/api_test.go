@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"bro-bot/internal/config"
 	"bro-bot/internal/ports"
 
 	"github.com/google/generative-ai-go/genai"
@@ -257,5 +258,38 @@ func TestUsageFromMetadata(t *testing.T) {
 	})
 	if usage["input_tokens"] != int64(120) || usage["output_tokens"] != int64(45) || usage["cache_read_input_tokens"] != int64(10) {
 		t.Errorf("неожиданные счётчики токенов: %+v", usage)
+	}
+}
+
+// TestAgyAPIAdapter_GetModels_WhitespaceKey — ключ из одних пробелов считается
+// незаданным. Раньше реестр агентов обрезал пробелы, а адаптер нет: такой ключ
+// проходил проверку /mode api и падал уже на запросе к Gemini.
+func TestAgyAPIAdapter_GetModels_WhitespaceKey(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "   ")
+
+	adapter := NewAgyAPIAdapter()
+	_, err := adapter.GetModels(context.Background())
+	if err == nil {
+		t.Fatal("ожидали ошибку: пробельный ключ — это отсутствующий ключ")
+	}
+	if !strings.Contains(err.Error(), "GEMINI_API_KEY") {
+		t.Errorf("ошибка не называет переменную: %v", err)
+	}
+}
+
+// TestDefaultModelUsesConfigSnapshot — модель по умолчанию берётся из снимка
+// конфигурации, уже разрешённого через реестр моделей, а не из окружения.
+func TestDefaultModelUsesConfigSnapshot(t *testing.T) {
+	prev := config.DefaultModel
+	t.Cleanup(func() { config.DefaultModel = prev })
+
+	config.DefaultModel = "gemini-3.8-flash-medium"
+	if got := defaultModel(); got != "gemini-3.8-flash-medium" {
+		t.Errorf("defaultModel() = %q, ожидалось значение из снимка", got)
+	}
+
+	config.DefaultModel = ""
+	if got := defaultModel(); got != fallbackDefaultModel {
+		t.Errorf("defaultModel() без снимка = %q, ожидалось %q", got, fallbackDefaultModel)
 	}
 }

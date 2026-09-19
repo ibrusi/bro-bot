@@ -2,6 +2,7 @@ package system
 
 import (
 	"bro-bot/internal/adapters/mock"
+	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
 	"bro-bot/internal/ports"
 	"context"
@@ -305,11 +306,10 @@ func TestIsBotProject(t *testing.T) {
 		t.Errorf("expected other-web-app to NOT be recognized as bot project")
 	}
 
-	// Проверка через DEFAULT_PROJECT
-	os.Setenv("DEFAULT_PROJECT", "custom-bot-project")
-	defer os.Unsetenv("DEFAULT_PROJECT")
+	// Проверка через проект по умолчанию из конфигурации
+	setConfigDefaultProject(t, "custom-bot-project")
 	if !isBotProject("custom-bot-project", "/tmp/bot", "") {
-		t.Errorf("expected custom-bot-project to match DEFAULT_PROJECT")
+		t.Errorf("expected custom-bot-project to match config.DefaultProject")
 	}
 }
 
@@ -388,7 +388,7 @@ func TestHandleRebuildRejectsBadBranchName(t *testing.T) {
 	domain.GlobalTaskManager = domain.NewTaskManager()
 
 	botDir := t.TempDir()
-	t.Setenv("BOT_DIR", botDir)
+	setConfigBotDir(t, botDir)
 
 	transport := stubTransport{Messenger: mock.New()}
 	sess := &mock.Session{
@@ -414,4 +414,22 @@ func TestHandleRebuildRejectsBadBranchName(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(botDir, "bot")); err == nil {
 		t.Error("сборка не должна была выполниться")
 	}
+}
+
+// setConfigDefaultProject и setConfigBotDir задают снимок конфигурации на время теста:
+// окружение с появлением config.Load здесь больше ни на что не влияет.
+func setConfigDefaultProject(t *testing.T, value string) {
+	t.Helper()
+
+	prev := config.DefaultProject
+	config.DefaultProject = value
+	t.Cleanup(func() { config.DefaultProject = prev })
+}
+
+func setConfigBotDir(t *testing.T, value string) {
+	t.Helper()
+
+	prev := config.BotDir
+	config.BotDir = value
+	t.Cleanup(func() { config.BotDir = prev })
 }
