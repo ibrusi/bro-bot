@@ -7,6 +7,7 @@ import (
 	"bro-bot/internal/ports"
 	"bro-bot/internal/system"
 	"bro-bot/internal/utils"
+	"bro-bot/internal/i18n"
 	"context"
 	"errors"
 	"fmt"
@@ -24,7 +25,7 @@ import (
 
 // handleTasks — обработчик команды /tasks.
 func handleTasks(s ports.Session) error {
-	msg, menu := domain.FormatTasksList(domain.GlobalTaskManager)
+	msg, menu := domain.FormatTasksList(domain.GlobalTaskManager, config.ProjectState.GetLanguage())
 	return s.Send(msg, ports.RichWith(menu))
 }
 
@@ -42,8 +43,8 @@ func onTaskSel(s ports.Session) error {
 	syncLegacySession(task)
 	_ = s.Respond(fmt.Sprintf("Выбрана задача #%d", id))
 
-	details := domain.FormatTaskDetails(task, true)
-	markup := domain.BuildTaskDetailsMarkup(task)
+	details := domain.FormatTaskDetails(task, true, config.ProjectState.GetLanguage())
+	markup := domain.BuildTaskDetailsMarkup(task, config.ProjectState.GetLanguage())
 	conflictNote := ""
 	if HasAgentConflict(task, ActiveAgentName()) {
 		view := task.Snapshot()
@@ -92,7 +93,7 @@ func handleStatus(s ports.Session) error {
 	targetID := target.Snapshot().ID
 	activeTask := domain.GlobalTaskManager.GetActiveTask()
 	isActiveFocus := (activeTask != nil && activeTask.Snapshot().ID == targetID)
-	msg := domain.FormatTaskDetails(target, isActiveFocus)
+	msg := domain.FormatTaskDetails(target, isActiveFocus, config.ProjectState.GetLanguage())
 
 	tokenBlock := domain.GlobalTokenTracker.GetCurrentTaskStatusBlock()
 	if tokenBlock != "" {
@@ -118,7 +119,7 @@ func handleStatus(s ports.Session) error {
 		}
 	}
 
-	statusMarkup := domain.BuildTaskDetailsMarkup(target)
+	statusMarkup := domain.BuildTaskDetailsMarkup(target, config.ProjectState.GetLanguage())
 	return s.Send(msg, ports.RichWith(statusMarkup))
 }
 
@@ -130,8 +131,8 @@ func handleTask(s ports.Session) error {
 		if active == nil {
 			return s.Send("💤 Нет активных задач. Создать: <code>/new &lt;текст&gt;</code>", ports.Rich())
 		}
-		details := domain.FormatTaskDetails(active, true)
-		markup := domain.BuildTaskDetailsMarkup(active)
+		details := domain.FormatTaskDetails(active, true, config.ProjectState.GetLanguage())
+		markup := domain.BuildTaskDetailsMarkup(active, config.ProjectState.GetLanguage())
 		conflictNote := ""
 		if HasAgentConflict(active, ActiveAgentName()) {
 			activeView := active.Snapshot()
@@ -170,8 +171,8 @@ func handleTask(s ports.Session) error {
 	}
 	syncLegacySession(task)
 
-	details := domain.FormatTaskDetails(task, true)
-	markup := domain.BuildTaskDetailsMarkup(task)
+	details := domain.FormatTaskDetails(task, true, config.ProjectState.GetLanguage())
+	markup := domain.BuildTaskDetailsMarkup(task, config.ProjectState.GetLanguage())
 	conflictNote := ""
 	if HasAgentConflict(task, ActiveAgentName()) {
 		view2 := task.Snapshot()
@@ -365,7 +366,8 @@ func onQuestionChoice(s ports.Session) error {
 			taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
 	}
 
-	return s.Send(fmt.Sprintf("ℹ️ Задача #%d сейчас не ожидает ответа (текущий статус: %s).", taskID, status.RussianTitle()), nil)
+	lang := config.ProjectState.GetLanguage()
+	return s.Send(fmt.Sprintf("ℹ️ Задача #%d сейчас не ожидает ответа (текущий статус: %s).", taskID, i18n.TaskStatusTitle(string(status), lang)), nil)
 }
 
 // onQuestionPause — обработчик кнопки q_pause.
@@ -424,7 +426,8 @@ func onQuestionResume(s ports.Session) error {
 	_ = s.Respond("")
 
 	if status != domain.TaskStatusPaused && status != domain.TaskStatusWaitingInput {
-		return s.Send(fmt.Sprintf("ℹ️ Задача #%d не находится на паузе (текущий статус: %s).", taskID, status.RussianTitle()), nil)
+		lang := config.ProjectState.GetLanguage()
+		return s.Send(fmt.Sprintf("ℹ️ Задача #%d сейчас не ожидает ответа (текущий статус: %s).", taskID, i18n.TaskStatusTitle(string(status), lang)), nil)
 	}
 
 	if HasAgentConflict(task, ActiveAgentName()) {
@@ -596,7 +599,8 @@ func handlePause(s ports.Session) error {
 	if !task.PauseTask() {
 		view8 := task.Snapshot()
 		st := view8.Status
-		return s.Send(fmt.Sprintf("ℹ️ Задачу #%d нельзя приостановить (текущий статус: %s). Пауза доступна при ожидании ответа.", targetID, st.RussianTitle()), ports.Rich())
+		lang := config.ProjectState.GetLanguage()
+		return s.Send(fmt.Sprintf("ℹ️ Задачу #%d нельзя приостановить (текущий статус: %s). Пауза доступна при ожидании ответа.", targetID, i18n.TaskStatusTitle(string(st), lang)), ports.Rich())
 	}
 
 	syncLegacySession(task)
@@ -1137,10 +1141,11 @@ func formatHistoryDocument(turns []transcript.Turn, proj string, id int) string 
 }
 
 func buildResumeMarkup(taskID int) *ports.Keyboard {
+	lang := config.ProjectState.GetLanguage()
 	return &ports.Keyboard{Rows: [][]ports.Button{
 		{
-			{Text: "▶️ Возобновить задачу", Action: "q_resume", Payload: strconv.Itoa(taskID)},
-			{Text: "❌ Отменить", Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
+			{Text: i18n.T(lang, "BtnResume"), Action: "q_resume", Payload: strconv.Itoa(taskID)},
+			{Text: i18n.T(lang, "BtnCancel"), Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
 		},
 	}}
 }
@@ -1183,9 +1188,10 @@ func buildQuestionMarkup(task *domain.TaskSession) *ports.Keyboard {
 		}
 	}
 
+	lang := config.ProjectState.GetLanguage()
 	rows = append(rows, []ports.Button{
-		{Text: "⏸ Приостановить", Action: "q_pause", Payload: strconv.Itoa(taskID)},
-		{Text: "❌ Отменить", Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
+		{Text: i18n.T(lang, "BtnPause"), Action: "q_pause", Payload: strconv.Itoa(taskID)},
+		{Text: i18n.T(lang, "BtnCancel"), Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
 	})
 
 	return &ports.Keyboard{Rows: rows}

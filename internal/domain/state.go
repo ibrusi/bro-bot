@@ -33,6 +33,7 @@ type ProjectState struct {
 	// InteractionMode задаёт, что делать с обычным сообщением без активной задачи:
 	// "chat" — отвечать в диалоге, "task" — сразу создавать задачу.
 	InteractionMode string
+	Language        string
 }
 
 // GetCurrentAgent возвращает имя активного агента (по умолчанию agy).
@@ -97,5 +98,26 @@ func (ps *ProjectState) SetInteractionMode(mode string) {
 		ps.InteractionMode = InteractionModeTask
 	} else {
 		ps.InteractionMode = InteractionModeChat
+	}
+}
+
+// GetLanguage возвращает текущий язык интерфейса (по умолчанию "en").
+func (ps *ProjectState) GetLanguage() string {
+	ps.RLock()
+	defer ps.RUnlock()
+	if ps.Language == "" {
+		return "en"
+	}
+	return ps.Language
+}
+
+// SetLanguage обновляет язык интерфейса.
+func (ps *ProjectState) SetLanguage(lang string) {
+	ps.Lock()
+	defer ps.Unlock()
+	if strings.ToLower(lang) == "ru" {
+		ps.Language = "ru"
+	} else {
+		ps.Language = "en"
 	}
 }

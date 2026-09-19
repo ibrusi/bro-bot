@@ -94,6 +94,6 @@ type Messenger interface {
 	Edit(ctx context.Context, ref MessageRef, text string, opts *SendOptions) error
 	SendDocument(ctx context.Context, chat ChatID, doc Document) (MessageRef, error)
 	AnswerCallback(ctx context.Context, callbackID, text string) error
-	SetCommands(ctx context.Context, cmds []BotCommand) error
+	SetCommands(ctx context.Context, cmds []BotCommand, languageCode string) error
 	Capabilities() Capabilities
 }

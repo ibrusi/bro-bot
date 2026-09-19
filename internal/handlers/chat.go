@@ -5,6 +5,7 @@ import (
 	"bro-bot/internal/domain"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
+	"bro-bot/internal/i18n"
 	"bufio"
 	"context"
 	"fmt"
@@ -30,16 +31,14 @@ const (
 )
 
 // chatSystemPreamble — инструкция диалогового режима: агент изучает код и отвечает, но не меняет его.
-func chatSystemPreamble() string {
-	return "РЕЖИМ ДИАЛОГА. Ты отвечаешь на вопросы пользователя о проекте в чате.\n" +
-		"Разрешено: читать файлы, искать по коду, выполнять безопасные read-only команды (git log, git status, ls, grep), объяснять архитектуру и предлагать решения словами.\n" +
-		"ЗАПРЕЩЕНО: создавать git-ветки, изменять, создавать и удалять файлы, делать commit и push, открывать Pull Request, запускать миграции и деплой.\n" +
-		"Если для ответа нужна правка кода — не выполняй её, а коротко опиши, что именно нужно сделать: пользователь оформит это отдельной задачей.\n" +
-		"Отвечай кратко, по делу и на русском языке."
+func chatSystemPreamble(lang string) string {
+	return i18n.T(lang, "ChatSystemPreamble")
 }
 
 // chatShortReminder — короткое напоминание о режиме для последующих ходов CLI-агента.
-const chatShortReminder = "(режим диалога: только чтение и ответ, без изменений в файлах и git)"
+func chatShortReminder(lang string) string {
+	return i18n.T(lang, "ChatShortReminder")
+}
 
 // buildChatPrompt собирает промпт хода диалога.
 //
@@ -47,18 +46,18 @@ const chatShortReminder = "(режим диалога: только чтение
 // поэтому в промпте остаётся только текст пользователя. В cli-режиме у агента своя память сессии:
 // при первом ходе новой пары агент/режим подмешиваем преамбулу и краткий контекст прошлых реплик,
 // дальше достаточно короткого напоминания.
-func buildChatPrompt(session *domain.ChatSession, agent, mode, userText string) string {
+func buildChatPrompt(session *domain.ChatSession, agent, mode, userText, lang string) string {
 	if strings.EqualFold(mode, "api") {
 		return userText
 	}
 
 	firstTurn := session.ConversationIDFor(agent, mode) == ""
 	if !firstTurn {
-		return fmt.Sprintf("%s\n\n%s", chatShortReminder, userText)
+		return fmt.Sprintf("%s\n\n%s", chatShortReminder(lang), userText)
 	}
 
 	var bldr strings.Builder
-	bldr.WriteString(chatSystemPreamble())
+	bldr.WriteString(chatSystemPreamble(lang))
 
 	if session.NeedsContextBootstrap(agent, mode) {
 		if prev := formatChatContext(session.HistoryForPrompt(chatBootstrapTurns, chatBootstrapChars)); prev != "" {
@@ -267,12 +266,12 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 	args := ports.ExecuteArgs{
 		ConversationID: session.ConversationIDFor(agent, mode),
 		ModelName:      model,
-		Prompt:         buildChatPrompt(session, agent, mode, userText),
+		Prompt:         buildChatPrompt(session, agent, mode, userText, config.ProjectState.GetLanguage()),
 		WorkDir:        workDir,
 		History:        chatHistoryForAgent(session, mode),
 	}
 	if strings.EqualFold(mode, "api") {
-		args.SystemPrompt = chatSystemPreamble()
+		args.SystemPrompt = chatSystemPreamble(config.ProjectState.GetLanguage())
 	}
 
 	startedAt := time.Now()

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+	"bro-bot/internal/i18n"
 )
 
 const testChatID ports.ChatID = "12345"
@@ -203,7 +204,7 @@ func TestFormatTasksListAndDetails(t *testing.T) {
 	t2 := tm.CreateTask("proj-alpha", "gemini-3.8-flash", "Add documentation", testChatID)
 	t2.Status = TaskStatusQueued
 
-	msg, menu := FormatTasksList(tm)
+	msg, menu := FormatTasksList(tm, "ru")
 	if !strings.Contains(msg, "#1") || !strings.Contains(msg, "proj-alpha") {
 		t.Errorf("expected msg to contain #1 and proj-alpha, got: %s", msg)
 	}
@@ -214,7 +215,7 @@ func TestFormatTasksListAndDetails(t *testing.T) {
 		t.Errorf("expected inline menu with task buttons")
 	}
 
-	details := FormatTaskDetails(t1, true)
+	details := FormatTaskDetails(t1, true, "ru")
 	if !strings.Contains(details, "Задача #1") || !strings.Contains(details, "в фокусе") {
 		t.Errorf("expected details to contain task #1 and focus badge, got: %s", details)
 	}
@@ -274,8 +275,8 @@ func TestTaskManagerCreateTaskWithPlan(t *testing.T) {
 	if !task.IsActive() {
 		t.Errorf("expected task to be active during planning")
 	}
-	if task.Status.RussianTitle() != "📝 Составление плана" {
-		t.Errorf("unexpected RussianTitle: %s", task.Status.RussianTitle())
+	if i18n.TaskStatusTitle(string(task.Status), "ru") != "📝 Составление плана" {
+		t.Errorf("unexpected RussianTitle: %s", i18n.TaskStatusTitle(string(task.Status), "ru"))
 	}
 	if task.Status.Emoji() != "📝" {
 		t.Errorf("unexpected Emoji: %s", task.Status.Emoji())
@@ -290,8 +291,8 @@ func TestTaskManagerCreateTaskWithPlan(t *testing.T) {
 	if !task.IsActive() {
 		t.Errorf("expected task to be active when waiting approval")
 	}
-	if task.Status.RussianTitle() != "📋 Ожидает утверждения плана" {
-		t.Errorf("unexpected RussianTitle: %s", task.Status.RussianTitle())
+	if i18n.TaskStatusTitle(string(task.Status), "ru") != "📋 Ожидает утверждения плана" {
+		t.Errorf("unexpected RussianTitle: %s", i18n.TaskStatusTitle(string(task.Status), "ru"))
 	}
 	if task.Status.Emoji() != "📋" {
 		t.Errorf("unexpected Emoji: %s", task.Status.Emoji())
@@ -307,7 +308,7 @@ func TestFormatTasksListAndDetailsWithPlan(t *testing.T) {
 	task.Status = TaskStatusWaitingApproval
 	task.Plan = "1. Create models\n2. Add endpoints"
 
-	listMsg, menu := FormatTasksList(tm)
+	listMsg, menu := FormatTasksList(tm, "ru")
 	if !strings.Contains(listMsg, "📋") {
 		t.Errorf("expected listMsg to contain 📋 emoji")
 	}
@@ -318,7 +319,7 @@ func TestFormatTasksListAndDetailsWithPlan(t *testing.T) {
 		t.Errorf("expected inline menu for active tasks")
 	}
 
-	details := FormatTaskDetails(task, true)
+	details := FormatTaskDetails(task, true, "ru")
 	if !strings.Contains(details, "Ожидает утверждения") {
 		t.Errorf("expected details to mention 'Ожидает утверждения'")
 	}
@@ -338,7 +339,7 @@ func TestFormatTaskDetails_PlanTruncationAndDownloadLink(t *testing.T) {
 	// 1. Short plan fits without truncation and includes /planfile link
 	shortPlan := "1. Short step 1\n2. Short step 2"
 	task.Plan = shortPlan
-	detailsShort := FormatTaskDetails(task, true)
+	detailsShort := FormatTaskDetails(task, true, "ru")
 	if !strings.Contains(detailsShort, shortPlan) {
 		t.Errorf("expected details to contain full short plan")
 	}
@@ -349,7 +350,7 @@ func TestFormatTaskDetails_PlanTruncationAndDownloadLink(t *testing.T) {
 	// 2. Plan longer than MaxTaskDetailsPlanRunes is truncated and contains /planfile link
 	veryLongPlan := strings.Repeat("Абвгд12345", 100) // 1000 runes > MaxTaskDetailsPlanRunes (400)
 	task.Plan = veryLongPlan
-	detailsLong := FormatTaskDetails(task, true)
+	detailsLong := FormatTaskDetails(task, true, "ru")
 	if strings.Contains(detailsLong, veryLongPlan) {
 		t.Errorf("expected veryLongPlan to be truncated in details")
 	}
@@ -362,13 +363,13 @@ func TestFormatTaskDetails_PlanTruncationAndDownloadLink(t *testing.T) {
 
 	// 3. Long prompt is truncated to MaxTaskDetailsPromptRunes
 	task.InitialPrompt = strings.Repeat("Очень длинная задача. ", 30) // ~660 chars > 250
-	detailsWithLongPrompt := FormatTaskDetails(task, true)
+	detailsWithLongPrompt := FormatTaskDetails(task, true, "ru")
 	if strings.Contains(detailsWithLongPrompt, task.InitialPrompt) {
 		t.Errorf("expected initialPrompt to be truncated in details")
 	}
 
 	// 4. Markup builders
-	markup := BuildTaskDetailsMarkup(task)
+	markup := BuildTaskDetailsMarkup(task, "ru")
 	if markup == nil || len(markup.Rows) == 0 {
 		t.Fatalf("expected non-empty markup from BuildTaskDetailsMarkup")
 	}
@@ -384,7 +385,7 @@ func TestFormatTaskDetails_PlanTruncationAndDownloadLink(t *testing.T) {
 		t.Errorf("expected plan_doc button in BuildTaskDetailsMarkup")
 	}
 
-	planMarkup := BuildTaskPlanMarkup(task.ID)
+	planMarkup := BuildTaskPlanMarkup(task.ID, "ru")
 	if planMarkup == nil || len(planMarkup.Rows) == 0 {
 		t.Errorf("expected non-empty planMarkup")
 	}
@@ -442,13 +443,13 @@ func TestTaskManagerLiveQueriesDuringTaskExecution(t *testing.T) {
 			t1.AppendLog("another step")
 
 			// Concurrently format tasks list (what /tasks does)
-			msg, _ := FormatTasksList(tm)
+			msg, _ := FormatTasksList(tm, "ru")
 			if !strings.Contains(msg, "#1") {
 				t.Errorf("expected #1 in tasks list")
 			}
 
 			// Concurrently format details (what /status does)
-			det := FormatTaskDetails(t1, true)
+			det := FormatTaskDetails(t1, true, "ru")
 			if !strings.Contains(det, "#1") {
 				t.Errorf("expected #1 in details")
 			}
@@ -951,7 +952,7 @@ func TestTaskAgentAndSessionFormatting(t *testing.T) {
 	tm.SetTaskConversationID(tAgy.ID, "session-agy-uuid-5678")
 
 	// 4. Проверка FormatTasksList
-	listMsg, _ := FormatTasksList(tm)
+	listMsg, _ := FormatTasksList(tm, "ru")
 	if !strings.Contains(listMsg, "[<code>claude</code>]") {
 		t.Errorf("expected FormatTasksList to contain '[<code>claude</code>]', got: %s", listMsg)
 	}
@@ -960,7 +961,7 @@ func TestTaskAgentAndSessionFormatting(t *testing.T) {
 	}
 
 	// 5. Проверка FormatTaskDetails
-	detailsClaude := FormatTaskDetails(tClaude, true)
+	detailsClaude := FormatTaskDetails(tClaude, true, "ru")
 	if !strings.Contains(detailsClaude, "• <b>Агент:</b> <code>claude</code>") {
 		t.Errorf("expected FormatTaskDetails to contain '• <b>Агент:</b> <code>claude</code>', got: %s", detailsClaude)
 	}

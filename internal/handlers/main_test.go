@@ -214,7 +214,7 @@ func TestBuildResumeMarkup(t *testing.T) {
 	foundResume := false
 	for _, row := range menu.Rows {
 		for _, btn := range row {
-			if btn.Text == "▶️ Возобновить задачу" {
+			if btn.Text == "▶️ Resume" || btn.Text == "▶️ Возобновить" {
 				foundResume = true
 			}
 		}
@@ -255,7 +255,7 @@ func TestPlanApprovalWithVariantsMarkup(t *testing.T) {
 }
 
 func TestGetDefaultCommands(t *testing.T) {
-	commands := getDefaultCommands()
+	commands := getDefaultCommands("ru")
 	if len(commands) == 0 {
 		t.Fatalf("expected non-empty commands list")
 	}
@@ -1882,7 +1882,7 @@ func TestStartCommandAndMenuNewDescription(t *testing.T) {
 	}
 
 	// 2. Check getDefaultCommands menu description
-	cmds := getDefaultCommands()
+	cmds := getDefaultCommands("ru")
 	var foundNewCmd *ports.BotCommand
 	for i := range cmds {
 		if cmds[i].Name == "new" {

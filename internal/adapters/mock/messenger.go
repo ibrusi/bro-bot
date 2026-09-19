@@ -95,7 +95,7 @@ func (m *Messenger) AnswerCallback(_ context.Context, callbackID, text string) e
 	return nil
 }
 
-func (m *Messenger) SetCommands(_ context.Context, cmds []ports.BotCommand) error {
+func (m *Messenger) SetCommands(_ context.Context, cmds []ports.BotCommand, languageCode string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Commands = cmds

@@ -4,6 +4,7 @@ import (
 	"bro-bot/internal/ports"
 	"bro-bot/internal/storage"
 	"bro-bot/internal/utils"
+	"bro-bot/internal/i18n"
 	"context"
 	"fmt"
 	"html"
@@ -31,31 +32,6 @@ const (
 	TaskStatusCancelled       TaskStatus = "cancelled"
 	TaskStatusFailed          TaskStatus = "failed"
 )
-
-func (s TaskStatus) RussianTitle() string {
-	switch s {
-	case TaskStatusQueued:
-		return "⏳ В очереди"
-	case TaskStatusPlanning:
-		return "📝 Составление плана"
-	case TaskStatusWaitingApproval:
-		return "📋 Ожидает утверждения плана"
-	case TaskStatusRunning:
-		return "⚙️ Выполняется"
-	case TaskStatusWaitingInput:
-		return "❓ Ждёт вашего ответа"
-	case TaskStatusPaused:
-		return "⏸ Приостановлена"
-	case TaskStatusCompleted:
-		return "✅ Завершена"
-	case TaskStatusCancelled:
-		return "🛑 Отменена"
-	case TaskStatusFailed:
-		return "❌ Ошибка"
-	default:
-		return string(s)
-	}
-}
 
 func (s TaskStatus) Emoji() string {
 	switch s {
@@ -855,7 +831,9 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 
 	task.mu.Lock()
 	if task.Status == TaskStatusCompleted || task.Status == TaskStatusCancelled {
-		statusTitle := task.Status.RussianTitle()
+		// Since we don't have project state here, default to "ru" for internal errors,
+		// or pass lang through context if needed. In error messages it's less critical.
+		statusTitle := i18n.TaskStatusTitle(string(task.Status), "ru")
 		task.mu.Unlock()
 		return task, fmt.Errorf("задача #%d уже %s", id, statusTitle)
 	}
@@ -1073,7 +1051,7 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 
 	task.mu.Lock()
 	if task.Status == TaskStatusCompleted {
-		statusTitle := task.Status.RussianTitle()
+		statusTitle := i18n.TaskStatusTitle(string(task.Status), "ru")
 		task.mu.Unlock()
 		return task, 0, false, fmt.Errorf("задача #%d уже %s", id, statusTitle)
 	}
@@ -1243,7 +1221,7 @@ func (tm *TaskManager) GetRunningWorkerPids() (int, []int) {
 }
 
 // FormatTasksList формирует сообщение со списком всех задач и кнопками быстрого переключения.
-func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
+func FormatTasksList(tm *TaskManager, lang string) (string, *ports.Keyboard) {
 	tasks := tm.ListTasks()
 	activeTask := tm.GetActiveTask()
 	activeID := 0
@@ -1292,7 +1270,7 @@ func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
 			}
 
 			bldr.WriteString(fmt.Sprintf("%s<b>#%d</b> %s <code>%s</code> [<code>%s</code>] — <b>%s</b>\n",
-				focusBadge, id, status.Emoji(), html.EscapeString(proj), html.EscapeString(agentName), status.RussianTitle()))
+				focusBadge, id, status.Emoji(), html.EscapeString(proj), html.EscapeString(agentName), i18n.TaskStatusTitle(string(status), lang)))
 			bldr.WriteString(fmt.Sprintf("   📝 <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(prompt, 60))))
 
 			extraInfo := fmt.Sprintf("⏱ <code>%s</code>", durStr)
@@ -1344,7 +1322,7 @@ func FormatTasksList(tm *TaskManager) (string, *ports.Keyboard) {
 			}
 
 			bldr.WriteString(fmt.Sprintf("%s<b>#%d</b> %s <code>%s</code> [<code>%s</code>] — %s%s\n",
-				focusBadge, id, status.Emoji(), html.EscapeString(proj), html.EscapeString(agentName), status.RussianTitle(), prSnippet))
+				focusBadge, id, status.Emoji(), html.EscapeString(proj), html.EscapeString(agentName), i18n.TaskStatusTitle(string(status), lang), prSnippet))
 			bldr.WriteString(fmt.Sprintf("   📝 <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(prompt, 50))))
 		}
 		bldr.WriteString("\n")
@@ -1399,7 +1377,7 @@ const MaxTaskDetailsPromptRunes = 250
 const MaxTaskDetailsPlanRunes = 400
 
 // FormatTaskDetails формирует подробную карточку статуса задачи.
-func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
+func FormatTaskDetails(task *TaskSession, isActiveFocus bool, lang string) string {
 	task.mu.Lock()
 	id := task.ID
 	proj := task.Project
@@ -1428,7 +1406,7 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 		focusTitle = " 🎯 <i>(в фокусе)</i>"
 	}
 	bldr.WriteString(fmt.Sprintf("📊 <b>Задача #%d:</b> <code>%s</code>%s\n\n", id, html.EscapeString(proj), focusTitle))
-	bldr.WriteString(fmt.Sprintf("• <b>Статус:</b> %s <b>%s</b>\n", status.Emoji(), status.RussianTitle()))
+	bldr.WriteString(fmt.Sprintf("• <b>Статус:</b> %s <b>%s</b>\n", status.Emoji(), i18n.TaskStatusTitle(string(status), lang)))
 	bldr.WriteString(fmt.Sprintf("• <b>Агент:</b> <code>%s</code>\n", html.EscapeString(agent)))
 	bldr.WriteString(fmt.Sprintf("• <b>Модель:</b> <code>%s</code>\n", html.EscapeString(model)))
 	bldr.WriteString(fmt.Sprintf("• <b>Время:</b> <code>%s</code>\n", durStr))
@@ -1505,7 +1483,7 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool) string {
 
 // BuildTaskDetailsMarkup формирует инлайн-клавиатуру для карточки задачи,
 // включая кнопку скачивания плана (если он есть) и управляющие кнопки по статусу.
-func BuildTaskDetailsMarkup(task *TaskSession) *ports.Keyboard {
+func BuildTaskDetailsMarkup(task *TaskSession, lang string) *ports.Keyboard {
 	task.mu.Lock()
 	id := task.ID
 	hasPlan := task.Plan != ""
@@ -1515,18 +1493,18 @@ func BuildTaskDetailsMarkup(task *TaskSession) *ports.Keyboard {
 	var rows [][]ports.Button
 
 	if hasPlan {
-		rows = append(rows, []ports.Button{{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: strconv.Itoa(id)}})
+		rows = append(rows, []ports.Button{{Text: i18n.T(lang, "BtnDownloadPlan"), Action: "plan_doc", Payload: strconv.Itoa(id)}})
 	}
 
 	if status == TaskStatusWaitingApproval {
 		rows = append(rows, []ports.Button{
-			{Text: "✅ Утвердить план", Action: "plan_approve", Payload: strconv.Itoa(id)},
-			{Text: "❌ Отменить", Action: "plan_cancel", Payload: strconv.Itoa(id)},
+			{Text: i18n.T(lang, "BtnApprovePlan"), Action: "plan_approve", Payload: strconv.Itoa(id)},
+			{Text: i18n.T(lang, "BtnCancel"), Action: "plan_cancel", Payload: strconv.Itoa(id)},
 		})
 	} else if status == TaskStatusPaused {
 		rows = append(rows, []ports.Button{
-			{Text: "▶️ Возобновить", Action: "q_resume", Payload: strconv.Itoa(id)},
-			{Text: "❌ Отменить", Action: "plan_cancel", Payload: strconv.Itoa(id)},
+			{Text: i18n.T(lang, "BtnResume"), Action: "q_resume", Payload: strconv.Itoa(id)},
+			{Text: i18n.T(lang, "BtnCancel"), Action: "plan_cancel", Payload: strconv.Itoa(id)},
 		})
 	}
 
@@ -1537,9 +1515,9 @@ func BuildTaskDetailsMarkup(task *TaskSession) *ports.Keyboard {
 }
 
 // BuildTaskPlanMarkup создает инлайн-кнопку скачивания полного файла плана задачи.
-func BuildTaskPlanMarkup(taskID int) *ports.Keyboard {
+func BuildTaskPlanMarkup(taskID int, lang string) *ports.Keyboard {
 	return &ports.Keyboard{Rows: [][]ports.Button{
-		{{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: strconv.Itoa(taskID)}},
+		{{Text: i18n.T(lang, "BtnDownloadPlan"), Action: "plan_doc", Payload: strconv.Itoa(taskID)}},
 	}}
 }
 

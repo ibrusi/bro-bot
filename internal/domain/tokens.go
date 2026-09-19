@@ -4,6 +4,7 @@ import (
 	"bro-bot/internal/models"
 	"bro-bot/internal/storage"
 	"bro-bot/internal/utils"
+	"bro-bot/internal/i18n"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1060,7 +1061,7 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		windowLimitStr := FormatContextLimit(windowLimit)
 
 		if !hasMetrics || (metrics.Usage.TotalTokens == 0 && metrics.LastStepUsage.TotalTokens == 0) {
-			bldr.WriteString(fmt.Sprintf("📋 <b>Контекст задачи #%d</b> [%s]\n\n", taskID, taskStatus.RussianTitle()))
+			bldr.WriteString(fmt.Sprintf("📋 <b>Контекст задачи #%d</b> [%s]\n\n", taskID, i18n.TaskStatusTitle(string(taskStatus), "ru"))) // TODO
 			bldr.WriteString(fmt.Sprintf("📁 <b>Проект:</b> <code>%s</code>\n", html.EscapeString(taskProj)))
 			bldr.WriteString(fmt.Sprintf("🧠 <b>Модель:</b> <code>%s</code>\n", html.EscapeString(taskMod)))
 			bldr.WriteString(fmt.Sprintf("📏 <b>Окно контекста:</b> <code>%s</code> токенов (%s)\n\n", windowLimitStr, formatThousands(windowLimit)))
@@ -1085,7 +1086,7 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		if taskIsActive {
 			bldr.WriteString(fmt.Sprintf("⚡ <b>Контекст активной задачи #%d</b>\n\n", taskID))
 		} else {
-			bldr.WriteString(fmt.Sprintf("📊 <b>Контекст задачи #%d</b> [%s]\n\n", taskID, taskStatus.RussianTitle()))
+			bldr.WriteString(fmt.Sprintf("📊 <b>Контекст задачи #%d</b> [%s]\n\n", taskID, i18n.TaskStatusTitle(string(taskStatus), "ru"))) // TODO
 		}
 
 		bldr.WriteString(fmt.Sprintf("📁 <b>Проект:</b> <code>%s</code>\n", html.EscapeString(taskProj)))

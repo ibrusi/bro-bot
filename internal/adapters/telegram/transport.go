@@ -134,7 +134,10 @@ func (t *Transport) AnswerCallback(_ context.Context, callbackID, text string) e
 	return t.bot.Respond(&tele.Callback{ID: callbackID}, &tele.CallbackResponse{Text: text})
 }
 
-func (t *Transport) SetCommands(_ context.Context, cmds []ports.BotCommand) error {
+func (t *Transport) SetCommands(_ context.Context, cmds []ports.BotCommand, languageCode string) error {
+	if languageCode != "" {
+		return t.bot.SetCommands(toBotCommands(cmds), languageCode)
+	}
 	return t.bot.SetCommands(toBotCommands(cmds))
 }
 
