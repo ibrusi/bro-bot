@@ -12,12 +12,13 @@ import (
 // весь адаптер: и для реестра, и для самих запросов, чтобы они не разошлись.
 var apiKeyEnv = []string{"ANTHROPIC_API_KEY", "CLAUDE_API_KEY"}
 
-// Spec описывает агента claude для реестра: CLI Claude Code либо Claude API напрямую.
+// Spec описывает агента claude для реестра: CLI Claude Code, Claude API либо режим MCP.
 func Spec() agents.Spec {
 	return agents.Spec{
 		Name:         "claude",
 		CLITitle:     "Claude Code",
 		APITitle:     "Claude API",
+		MCPTitle:     "Claude Code (MCP)",
 		APIKeyEnv:    apiKeyEnv,
 		DefaultModel: func() string { return "sonnet" },
 		// Модели Gemini и GPT claude не запускает: при переключении на него
@@ -28,5 +29,6 @@ func Spec() agents.Spec {
 		},
 		NewCLI: func() ports.AgentFramework { return NewClaudeAdapter() },
 		NewAPI: func() ports.AgentFramework { return NewClaudeAPIAdapter() },
+		NewMCP: func() ports.AgentFramework { return NewClaudeMCPAdapter() },
 	}
 }

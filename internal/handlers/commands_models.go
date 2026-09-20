@@ -131,7 +131,7 @@ func handleMode(s ports.Session) error {
 	}
 
 	targetMode := strings.ToLower(strings.TrimSpace(args[0]))
-	if targetMode != "cli" && targetMode != "api" {
+	if targetMode != "cli" && targetMode != "api" && targetMode != "mcp" {
 		return s.Send(i18n.T(lang, "agent.mode_unknown"), ports.Rich())
 	}
 

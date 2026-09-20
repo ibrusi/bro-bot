@@ -47,7 +47,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 - **Conversational Mode (default)**:
   - A plain message is a conversation with the agent about the active project: context is preserved between messages, so `/resume` is no longer needed.
   - When a message looks like a code-change request, the bot does not run it silently — it offers buttons: answer in chat, draft a plan, or create a task.
-  - Works for every agent (`agy`, `claude`) and every execution mode (`cli`, `api`); switching `/agent` or `/mode` mid-conversation keeps the thread.
+  - Works for every agent (`agy`, `claude`) and every execution mode (`mcp`, `cli`, `api`); switching `/agent` or `/mode` mid-conversation keeps the thread.
   - In chat the agent only reads the code and answers: file edits, branches, commits and PRs go through a task.
   - Controls: `/chat` (status), `/chat <question>`, `/chat new`, `/chat stop`, `/chatmode [on|off]`.
 - **Intelligent Task Pipeline**:
@@ -71,7 +71,8 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - `/tokens` (or `/stats`) — granular token statistics for the current/completed task: Input, Output, Thinking, Cache Read, and Cache Hit Rate.
   - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
   - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, and active `agy`/`claude` processes.
-- **Execution Modes: CLI & API (`/mode [cli|api]`)**:
+- **Execution Modes: MCP, CLI & API (`/mode [mcp|cli|api]`)**:
+  - `mcp` (default): integrates agents with a built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`), providing authorized channels and tools (`telegram_send_message`, `ask_user`, `report_progress`).
   - `cli`: spawns local `agy` and `claude` CLI tools via PTY.
   - `api`: connects directly to provider APIs (Google Gemini API & Anthropic Messages API) with built-in workspace file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`).
   - Safe sandboxing: chat mode (`/chat`) provides strictly read-only file access, while file writes and command executions are enabled for pipeline tasks. All paths are validated within the project directory.
@@ -363,10 +364,10 @@ The bot is operated via text messages and slash commands in Telegram.
 The conversation transcript lives in the bot's database and is independent of agent and mode,
 while the agent session id is kept separately for each "agent + mode" pair:
 
-| | `cli` | `api` |
-|---|---|---|
-| **agy** | the agent's own session (`--conversation`) | transcript replayed from the bot's database |
-| **claude** | the agent's own session (`--resume`) | transcript replayed from the bot's database |
+| | `mcp` (default) | `cli` | `api` |
+|---|---|---|---|
+| **agy** | agent's own session with MCP config (`mcp_config.json`) | the agent's own session (`--conversation`) | transcript replayed from the bot's database |
+| **claude** | agent's own session with MCP config (`--mcp-config`) | the agent's own session (`--resume`) | transcript replayed from the bot's database |
 
 When you switch `/agent` or `/mode`, the new agent receives a short context of previous turns,
 so the conversation continues. Reset it with `/chat new`.
@@ -416,7 +417,7 @@ so the conversation continues. Reset it with `/chat new`.
 | `/models` | List all available models from the agent CLI with descriptions and aliases. | `/models` |
 | `/model [name]` | Switch active model for future tasks. | `/model flash` or `/model claude-sonnet-4-6` |
 | `/agent [name]` | Switch the active agent engine (`agy` or `claude`). | `/agent claude` |
-| `/mode [cli|api]` | Switch agent execution mode (local CLI or direct API with workspace file tools). | `/mode api` |
+| `/mode [mcp|cli|api]` | Switch agent execution mode (MCP channel integration, local CLI, or direct API with workspace file tools). | `/mode mcp` |
 | `/usage` (or `/limits`) | Check remaining free quotas and paid credit balances for Antigravity. | `/usage` |
 | `/tokens` (or `/stats`) | Token usage stats for the task: Input, Output, Thinking, Cache Read, and Hit Rate. | `/tokens` |
 | `/context [id]` | Visual breakdown of model context window utilization. | `/context` |
