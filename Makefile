@@ -5,6 +5,10 @@ REPO_URL := https://github.com/ibrusi/bro-bot.git
 REPO_DIR := /home/$(DEPLOY_USER)/$(BOT_NAME)
 BIN_DIR := /home/$(DEPLOY_USER)/.local/bin
 SERVICE_FILE := /etc/systemd/system/$(BOT_NAME).service
+WHISPER_DIR := /home/$(DEPLOY_USER)/whisper.cpp
+WHISPER_MODEL := small
+WHISPER_PORT := 8080
+WHISPER_SERVICE_FILE := /etc/systemd/system/whisper-server.service
 
 # =============================================================
 # Language detection (default: en)
@@ -51,6 +55,7 @@ ifeq ($(ACTIVE_LANG),ru)
   MSG_HELP_STEP3             := sudo make step3-service     - Шаг 3: Настройка и регистрация systemd-службы $(BOT_NAME)
   MSG_HELP_STEP4             := sudo make step4-clone-build - Шаг 4: Клонирование репозитория, настройка .env и сборка Go
   MSG_HELP_STEP5             := sudo make step5-start       - Шаг 5: Запуск и проверка статуса службы $(BOT_NAME).service
+  MSG_HELP_WHISPER           := sudo make install-whisper   - Установка whisper-server, модели $(WHISPER_MODEL) и службы
   MSG_HELP_DEV_SECTION       := Разработка и сборка (для локальной работы):
   MSG_HELP_BUILD             := make build                  - Компиляция Go-бинарника (./cmd/bot)
   MSG_HELP_TEST              := make test                   - Запуск всех тестов проекта
@@ -97,6 +102,14 @@ ifeq ($(ACTIVE_LANG),ru)
   MSG_STEP5_TITLE            := ==> [Шаг 5] Запуск и проверка службы $(BOT_NAME).service...
   MSG_STEP5_ACTIVE           := ✅ Служба активна (running)
   MSG_STEP5_FAILED           := ⚠️ Служба не смогла запуститься (проверьте значения в .env)
+
+  MSG_WHISPER_TITLE          := ==> Установка whisper-server и модели $(WHISPER_MODEL)...
+  MSG_WHISPER_DEPS           := Установка зависимостей (cmake, ffmpeg, build-essential)...
+  MSG_WHISPER_CLONE          := Клонирование репозитория whisper.cpp...
+  MSG_WHISPER_BUILD          := Компиляция whisper-server...
+  MSG_WHISPER_MODEL          := Скачивание модели ggml-$(WHISPER_MODEL).bin...
+  MSG_WHISPER_SERVICE        := Настройка systemd-службы whisper-server.service...
+  MSG_WHISPER_DONE           := ✅ whisper-server успешно установлен и запущен на порту $(WHISPER_PORT)!
 else
   MSG_HELP_TITLE             := Available Makefile targets:
   MSG_HELP_DEPLOY_SECTION    := Server deployment (run as root on a clean server):
@@ -106,6 +119,7 @@ else
   MSG_HELP_STEP3             := sudo make step3-service     - Step 3: Configure and register $(BOT_NAME) systemd service
   MSG_HELP_STEP4             := sudo make step4-clone-build - Step 4: Clone repository, configure .env, and build Go binary
   MSG_HELP_STEP5             := sudo make step5-start       - Step 5: Start and verify $(BOT_NAME).service status
+  MSG_HELP_WHISPER           := sudo make install-whisper   - Install whisper-server, $(WHISPER_MODEL) model, and service
   MSG_HELP_DEV_SECTION       := Development & build (local usage):
   MSG_HELP_BUILD             := make build                  - Compile Go binary (./cmd/bot)
   MSG_HELP_TEST              := make test                   - Run all project tests
@@ -152,9 +166,17 @@ else
   MSG_STEP5_TITLE            := ==> [Step 5] Starting and verifying $(BOT_NAME).service...
   MSG_STEP5_ACTIVE           := ✅ Service is active (running)
   MSG_STEP5_FAILED           := ⚠️ Service failed to start (check settings in .env)
+
+  MSG_WHISPER_TITLE          := ==> Installing whisper-server and $(WHISPER_MODEL) model...
+  MSG_WHISPER_DEPS           := Installing dependencies (cmake, ffmpeg, build-essential)...
+  MSG_WHISPER_CLONE          := Cloning whisper.cpp repository...
+  MSG_WHISPER_BUILD          := Compiling whisper-server...
+  MSG_WHISPER_MODEL          := Downloading model ggml-$(WHISPER_MODEL).bin...
+  MSG_WHISPER_SERVICE        := Configuring whisper-server.service systemd service...
+  MSG_WHISPER_DONE           := ✅ whisper-server successfully installed and running on port $(WHISPER_PORT)!
 endif
 
-.PHONY: all install step1-user step2-agents step2-agy step3-service step4-clone-build step5-start help build test run clean
+.PHONY: all install step1-user step2-agents step2-agy step3-service step4-clone-build step5-start install-whisper help build test run clean
 
 all: help
 
@@ -168,6 +190,7 @@ help:
 	@echo "    $(MSG_HELP_STEP3)"
 	@echo "    $(MSG_HELP_STEP4)"
 	@echo "    $(MSG_HELP_STEP5)"
+	@echo "    $(MSG_HELP_WHISPER)"
 	@echo ""
 	@echo "  $(MSG_HELP_DEV_SECTION)"
 	@echo "    $(MSG_HELP_BUILD)"
@@ -332,3 +355,33 @@ step5-start:
 	@systemctl restart $(BOT_NAME).service
 	@systemctl is-active --quiet $(BOT_NAME).service && echo "$(MSG_STEP5_ACTIVE)" || echo "$(MSG_STEP5_FAILED)"
 	@systemctl status $(BOT_NAME).service --no-pager
+
+# -------------------------------------------------------------
+# Whisper Server: installation, model download and systemd setup
+# -------------------------------------------------------------
+install-whisper:
+	@echo "$(MSG_WHISPER_TITLE)"
+	@echo "$(MSG_WHISPER_DEPS)"
+	@apt-get update && apt-get install -y cmake ffmpeg build-essential curl git
+	@sudo -u $(DEPLOY_USER) -i bash -c '\
+		set -e; \
+		if [ ! -d "$(WHISPER_DIR)/.git" ]; then \
+			echo "$(MSG_WHISPER_CLONE)"; \
+			git clone https://github.com/ggerganov/whisper.cpp.git $(WHISPER_DIR); \
+		else \
+			cd $(WHISPER_DIR) && git pull || true; \
+		fi; \
+		cd $(WHISPER_DIR); \
+		echo "$(MSG_WHISPER_BUILD)"; \
+		cmake -B build -DWHISPER_BUILD_SERVER=ON && cmake --build build --config Release -t whisper-server; \
+		echo "$(MSG_WHISPER_MODEL)"; \
+		if [ ! -f "models/ggml-$(WHISPER_MODEL).bin" ]; then \
+			bash ./models/download-ggml-model.sh $(WHISPER_MODEL); \
+		fi; \
+	'
+	@echo "$(MSG_WHISPER_SERVICE)"
+	@printf "[Unit]\nDescription=Whisper.cpp Server\nAfter=network.target\n\n[Service]\nType=simple\nUser=$(DEPLOY_USER)\nWorkingDirectory=$(WHISPER_DIR)\nExecStart=$(WHISPER_DIR)/build/bin/whisper-server -m $(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL).bin --port $(WHISPER_PORT) --host 127.0.0.1\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n" > $(WHISPER_SERVICE_FILE)
+	@systemctl daemon-reload
+	@systemctl enable whisper-server.service
+	@systemctl restart whisper-server.service
+	@systemctl is-active --quiet whisper-server.service && echo "$(MSG_WHISPER_DONE)" || echo "⚠️ whisper-server failed to start"

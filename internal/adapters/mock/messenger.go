@@ -4,6 +4,8 @@ package mock
 
 import (
 	"context"
+	"errors"
+	"io"
 	"strconv"
 	"sync"
 
@@ -151,6 +153,9 @@ type Session struct {
 	ArgsVal []string
 	Msg     *ports.IncomingMessage
 	CB      *ports.CallbackQuery
+	VoiceVal *ports.VoiceMessage
+	VoiceReader io.ReadCloser
+	OpenVoiceErr error
 
 	mu        sync.Mutex
 	Responses []string
@@ -158,11 +163,22 @@ type Session struct {
 }
 
 func (s *Session) Chat() ports.ChatID              { return s.ChatID }
-func (s *Session) SenderID() string                { return s.Sender }
+func (s *Session) SenderID() string                { return s.SenderIDVal() }
+func (s *Session) SenderIDVal() string             { return s.Sender }
 func (s *Session) Text() string                    { return s.TextVal }
 func (s *Session) Args() []string                  { return s.ArgsVal }
 func (s *Session) Message() *ports.IncomingMessage { return s.Msg }
 func (s *Session) Callback() *ports.CallbackQuery  { return s.CB }
+func (s *Session) Voice() *ports.VoiceMessage      { return s.VoiceVal }
+func (s *Session) OpenVoice(_ context.Context) (io.ReadCloser, error) {
+	if s.OpenVoiceErr != nil {
+		return nil, s.OpenVoiceErr
+	}
+	if s.VoiceReader != nil {
+		return s.VoiceReader, nil
+	}
+	return nil, errors.New("mock: no voice data")
+}
 func (s *Session) Messenger() ports.Messenger      { return s.M }
 
 func (s *Session) Send(text string, opts *ports.SendOptions) error {

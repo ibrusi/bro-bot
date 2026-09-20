@@ -28,4 +28,11 @@ var (
 	ServiceName string
 	DBPath      string
 	ScriptsDir  string
+
+	// Whisper (распознавание голосовых сообщений)
+	WhisperServerURL string
+	WhisperAPIKey    string
+	WhisperModel     string
+	WhisperLanguage  string
+	WhisperTimeout   time.Duration
 )

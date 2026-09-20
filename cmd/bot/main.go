@@ -8,6 +8,7 @@ import (
 	"bro-bot/internal/adapters/agy"
 	"bro-bot/internal/adapters/claude"
 	"bro-bot/internal/adapters/telegram"
+	"bro-bot/internal/adapters/whisper"
 	"bro-bot/internal/agents"
 	"bro-bot/internal/config"
 	"bro-bot/internal/handlers"
@@ -50,6 +51,21 @@ func buildAgentRegistry() *agents.Registry {
 	return reg
 }
 
+// buildTranscriber инициализирует адаптер распознавания речи Whisper при наличии WHISPER_SERVER_URL.
+func buildTranscriber(cfg config.Config) ports.Transcriber {
+	if cfg.WhisperServerURL == "" {
+		return nil
+	}
+	return whisper.New(whisper.Config{
+		BaseURL:    cfg.WhisperServerURL,
+		APIKey:     cfg.WhisperAPIKey,
+		Model:      cfg.WhisperModel,
+		Language:   cfg.WhisperLanguage,
+		Timeout:    cfg.WhisperTimeout,
+		ConvertWAV: true,
+	})
+}
+
 // main — корень композиции и единственное место, где бот завершает процесс: всё
 // остальное возвращает ошибку наверх.
 func main() {
@@ -65,6 +81,7 @@ func main() {
 		log.Fatal(err)
 	}
 
+	handlers.SetTranscriber(buildTranscriber(cfg))
 	if err := handlers.Start(buildTransport(cfg.Messenger), buildAgentRegistry(), cfg); err != nil {
 		log.Fatal(err)
 	}

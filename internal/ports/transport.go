@@ -1,6 +1,18 @@
 package ports
 
-import "context"
+import (
+	"context"
+	"io"
+)
+
+// VoiceMessage — нейтральное представление входящего голосового или аудиосообщения.
+type VoiceMessage struct {
+	FileID   string
+	Duration int
+	MIME     string
+	Caption  string
+	FileName string
+}
 
 // IncomingMessage — нейтральное представление входящего текстового сообщения.
 type IncomingMessage struct {
@@ -34,6 +46,11 @@ type Session interface {
 	Message() *IncomingMessage
 	// Callback возвращает данные нажатой кнопки, либо nil, если апдейт — сообщение.
 	Callback() *CallbackQuery
+	// Voice возвращает данные голосового или аудиосообщения, либо nil, если апдейт не содержит аудио.
+	Voice() *VoiceMessage
+	// OpenVoice открывает поток чтения аудиофайла для текущего голосового сообщения.
+	// Вызывающий обязан закрыть полученный io.ReadCloser.
+	OpenVoice(ctx context.Context) (io.ReadCloser, error)
 
 	Messenger() Messenger
 
@@ -63,6 +80,8 @@ type Transport interface {
 	// OnText регистрирует обработчик произвольного текстового сообщения,
 	// не распознанного как команда.
 	OnText(h Handler)
+	// OnVoice регистрирует обработчик входящих голосовых и аудиосообщений.
+	OnVoice(h Handler)
 	// OnCallback регистрирует обработчик нажатия кнопки с данным Button.Action.
 	OnCallback(action string, h Handler)
 	// Use добавляет middleware, оборачивающий все последующие обработчики.

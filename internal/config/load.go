@@ -28,13 +28,20 @@ const (
 	envServiceName     = "BOT_SERVICE_NAME"
 	envDBPath          = "SQLITE_DB_PATH"
 	envScriptsDir      = "SCRIPTS_DIR"
+	envWhisperServerURL = "WHISPER_SERVER_URL"
+	envWhisperAPIKey    = "WHISPER_API_KEY"
+	envWhisperModel     = "WHISPER_MODEL"
+	envWhisperLanguage  = "WHISPER_LANGUAGE"
+	envWhisperTimeout   = "WHISPER_TIMEOUT"
 )
 
 // Значения по умолчанию для необязательных параметров.
 const (
-	defaultMessenger   = "telegram"
-	defaultStepTimeout = 30 * time.Minute
-	defaultChatTimeout = 5 * time.Minute
+	defaultMessenger      = "telegram"
+	defaultStepTimeout    = 30 * time.Minute
+	defaultChatTimeout    = 5 * time.Minute
+	defaultWhisperTimeout = 60 * time.Second
+	defaultWhisperModel   = "small"
 )
 
 // Config — снимок настроек окружения, снятый один раз при старте процесса.
@@ -55,6 +62,13 @@ type Config struct {
 	ServiceName     string
 	DBPath          string
 	ScriptsDir      string
+
+	// Whisper (распознавание речи)
+	WhisperServerURL string
+	WhisperAPIKey    string
+	WhisperModel     string
+	WhisperLanguage  string
+	WhisperTimeout   time.Duration
 }
 
 // executablePath подменяется в тестах: это единственная часть Load, которая смотрит
@@ -140,6 +154,15 @@ func Load() (Config, error) {
 		cfg.ScriptsDir = filepath.Join(botDir, "scripts")
 	}
 
+	cfg.WhisperServerURL = envTrim(envWhisperServerURL)
+	cfg.WhisperAPIKey = envTrim(envWhisperAPIKey)
+	cfg.WhisperModel = envTrim(envWhisperModel)
+	if cfg.WhisperModel == "" {
+		cfg.WhisperModel = defaultWhisperModel
+	}
+	cfg.WhisperLanguage = envTrim(envWhisperLanguage)
+	cfg.WhisperTimeout = durationOrDefault(envWhisperTimeout, defaultWhisperTimeout)
+
 	if len(problems) > 0 {
 		return Config{}, fmt.Errorf("конфигурация: %s", strings.Join(problems, "; "))
 	}
@@ -160,6 +183,11 @@ func Apply(c Config) {
 	ServiceName = c.ServiceName
 	DBPath = c.DBPath
 	ScriptsDir = c.ScriptsDir
+	WhisperServerURL = c.WhisperServerURL
+	WhisperAPIKey = c.WhisperAPIKey
+	WhisperModel = c.WhisperModel
+	WhisperLanguage = c.WhisperLanguage
+	WhisperTimeout = c.WhisperTimeout
 }
 
 // BotToken возвращает токен бота, нигде его не сохраняя.

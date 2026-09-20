@@ -68,6 +68,16 @@ func (t *Transport) OnText(h ports.Handler) {
 	})
 }
 
+func (t *Transport) OnVoice(h ports.Handler) {
+	wrapped := t.wrap(h)
+	t.bot.Handle(tele.OnVoice, func(c tele.Context) error {
+		return wrapped(newSession(t, c))
+	})
+	t.bot.Handle(tele.OnAudio, func(c tele.Context) error {
+		return wrapped(newSession(t, c))
+	})
+}
+
 func (t *Transport) OnCallback(action string, h ports.Handler) {
 	btn := tele.Btn{Unique: action}
 	t.bot.Handle(&btn, func(c tele.Context) error {

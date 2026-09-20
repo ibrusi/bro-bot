@@ -374,6 +374,7 @@ type stubTransport struct {
 
 func (stubTransport) OnCommand(string, ports.Handler)       {}
 func (stubTransport) OnText(ports.Handler)                  {}
+func (stubTransport) OnVoice(ports.Handler)                 {}
 func (stubTransport) OnCallback(string, ports.Handler)      {}
 func (stubTransport) Use(func(ports.Handler) ports.Handler) {}
 func (stubTransport) Start(context.Context) error           { return nil }
