@@ -161,7 +161,39 @@ The current implementation is `internal/adapters/telegram`, which isolates `gopk
 
 ## 🚀 Installation & Build
 
-### 1. Clone the Repository
+### Option A. Automated Server Deployment via Makefile (Recommended for Clean Servers)
+
+A comprehensive `Makefile` is included to automate production deployment on a clean Linux server (Ubuntu/Debian):
+
+```bash
+# Run full deployment (must be executed as root)
+sudo make install
+```
+
+The `make install` command performs the following sequence:
+1. **`step1-user`**: Installs essential system dependencies (`git`, `curl`, `wget`, `build-essential`, `sudo`, `python3`, `python3-pip`), creates the `deploy` system user with passwordless `sudo`, and initializes workspace directories (`~/.local/bin`, `~/projects`).
+2. **`step2-agy`**: Checks and restores `agy` from `agy.bak` if present, and runs the `manager.py` patch script (if available).
+3. **`step3-service`**: Generates systemd unit `/etc/systemd/system/bro-bot.service` with automatic restart and `.env` support, then registers and enables the service.
+4. **`step4-clone-build`**: Checks for Go 1.23+ (downloads and installs it if missing), clones or updates the repository at `/home/deploy/bro-bot`, prepares `.env` from `.env.example`, and compiles the `bot` binary.
+5. **`step5-start`**: Restarts `bro-bot.service`, checks that it is active, and prints the current status.
+
+After deployment, configure your bot token and parameters in `/home/deploy/bro-bot/.env` and restart the service:
+```bash
+sudo systemctl restart bro-bot.service
+```
+
+#### Useful Makefile Targets for Development:
+- `make help` — displays help for all available targets;
+- `make build` — compiles the Go binary `./bot` (`go build -o bot ./cmd/bot`);
+- `make test` — runs all project tests (`go test ./...`);
+- `make run` — runs the bot directly from source (`go run ./cmd/bot`);
+- `make clean` — removes the compiled `bot` binary.
+
+---
+
+### Option B. Manual Installation & Build
+
+#### 1. Clone the Repository
 
 ```bash
 # Recommended installation directory: /home/deploy/bro-bot
@@ -170,7 +202,7 @@ git clone git@github.com:ibrusi/bro-bot.git
 cd bro-bot
 ```
 
-### 2. Create Projects Workspace Directory
+#### 2. Create Projects Workspace Directory
 
 Create the directory where your target projects will reside (default: `/home/deploy/projects`):
 
@@ -178,7 +210,7 @@ Create the directory where your target projects will reside (default: `/home/dep
 mkdir -p /home/deploy/projects
 ```
 
-### 3. Build the Application
+#### 3. Build the Application
 
 Download dependencies and compile the Go executable:
 
