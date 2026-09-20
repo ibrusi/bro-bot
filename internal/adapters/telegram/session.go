@@ -1,7 +1,9 @@
 package telegram
 
 import (
+	"context"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 
@@ -82,6 +84,60 @@ func (s *session) Callback() *ports.CallbackQuery {
 		q.MessageText = cb.Message.Text
 	}
 	return q
+}
+
+// Voice возвращает данные голосового или аудиосообщения, либо nil для текстового апдейта или callback.
+func (s *session) Voice() *ports.VoiceMessage {
+	if s.c.Callback() != nil {
+		return nil
+	}
+	m := s.c.Message()
+	if m == nil {
+		return nil
+	}
+	if m.Voice != nil {
+		return &ports.VoiceMessage{
+			FileID:   m.Voice.FileID,
+			Duration: m.Voice.Duration,
+			MIME:     m.Voice.MIME,
+			Caption:  m.Voice.Caption,
+			FileName: "voice.oga",
+		}
+	}
+	if m.Audio != nil {
+		fileName := m.Audio.FileName
+		if fileName == "" {
+			fileName = "audio.mp3"
+		}
+		return &ports.VoiceMessage{
+			FileID:   m.Audio.FileID,
+			Duration: m.Audio.Duration,
+			MIME:     m.Audio.MIME,
+			Caption:  m.Audio.Caption,
+			FileName: fileName,
+		}
+	}
+	return nil
+}
+
+// OpenVoice открывает поток чтения аудиофайла для текущего голосового сообщения.
+func (s *session) OpenVoice(_ context.Context) (io.ReadCloser, error) {
+	if s.c.Callback() != nil {
+		return nil, errors.New("telegram: callback update has no voice file")
+	}
+	m := s.c.Message()
+	if m == nil {
+		return nil, errors.New("telegram: no message in session")
+	}
+	var file *tele.File
+	if m.Voice != nil {
+		file = &m.Voice.File
+	} else if m.Audio != nil {
+		file = &m.Audio.File
+	} else {
+		return nil, errors.New("telegram: message has no voice or audio payload")
+	}
+	return s.t.bot.File(file)
 }
 
 func (s *session) Messenger() ports.Messenger {

@@ -14,7 +14,12 @@ import (
 
 // handleText — обработчик обычного текстового сообщения.
 func handleText(s ports.Session) error {
-	userText := strings.TrimSpace(s.Text())
+	return handleTextWithContent(s, s.Text())
+}
+
+// handleTextWithContent содержит логику обработки пользовательского текста (набранного вручную или распознанного из голоса).
+func handleTextWithContent(s ports.Session, rawText string) error {
+	userText := strings.TrimSpace(rawText)
 	if strings.HasPrefix(userText, "/planfile_") || strings.HasPrefix(userText, "/plan_") {
 		rawID := strings.TrimPrefix(userText, "/planfile_")
 		rawID = strings.TrimPrefix(rawID, "/plan_")

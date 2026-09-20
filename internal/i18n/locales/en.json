@@ -629,6 +629,14 @@
     "quota.gemini_text": "The Gemini API does not report the remaining quota for a key — limits and billing are visible in Google AI Studio and the Google Cloud Console.\n",
     "quota.gemini_footer": "Token spend by the bot: /tokens.",
 
-    "markdown.multi_select": " *(you can pick several)*"
+    "markdown.multi_select": " *(you can pick several)*",
+
+    "voice.not_configured": "🎤 <b>Voice recognition is not configured.</b>\nSpecify <code>WHISPER_SERVER_URL</code> in your <code>.env</code> file.",
+    "voice.recognizing": "⏳ <i>Transcribing voice message...</i>",
+    "voice.quote": "🗣 <i>«%s»</i>",
+    "voice.empty": "🎤 Could not recognize any speech in the message.",
+    "voice.download_failed": "❌ Failed to download voice message: <code>%s</code>",
+    "voice.conversion_failed": "❌ Failed to convert audio via ffmpeg: <code>%s</code>",
+    "voice.transcribe_failed": "❌ Speech recognition error: <code>%s</code>"
   }
 }

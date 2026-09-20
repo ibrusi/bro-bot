@@ -1166,6 +1166,7 @@ type mockTransport struct {
 	commands  map[string]ports.Handler
 	callbacks map[string]ports.Handler
 	textH     ports.Handler
+	voiceH    ports.Handler
 	mws       []func(ports.Handler) ports.Handler
 }
 
@@ -1195,6 +1196,9 @@ func (m *mockTransport) OnCommand(name string, h ports.Handler) {
 }
 func (m *mockTransport) OnText(h ports.Handler) {
 	m.textH = m.wrap(h)
+}
+func (m *mockTransport) OnVoice(h ports.Handler) {
+	m.voiceH = m.wrap(h)
 }
 func (m *mockTransport) OnCallback(action string, h ports.Handler) {
 	m.callbacks[action] = m.wrap(h)

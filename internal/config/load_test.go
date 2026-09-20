@@ -181,6 +181,12 @@ func TestLoadFillsDefaults(t *testing.T) {
 	if cfg.AdminID != ports.ChatID("12345") {
 		t.Errorf("AdminID = %q, ожидалось 12345", cfg.AdminID)
 	}
+	if cfg.WhisperModel != defaultWhisperModel {
+		t.Errorf("WhisperModel = %q, ожидалось %q", cfg.WhisperModel, defaultWhisperModel)
+	}
+	if cfg.WhisperTimeout != defaultWhisperTimeout {
+		t.Errorf("WhisperTimeout = %v, ожидалось %v", cfg.WhisperTimeout, defaultWhisperTimeout)
+	}
 }
 
 // TestLoadWarnsAboutBrokenOptionalTimeout — опечатка в необязательном таймауте не должна
@@ -317,8 +323,13 @@ func TestApplyPublishesEveryField(t *testing.T) {
 		ChatTimeout:     33 * time.Minute,
 		BotDir:          "/bot",
 		ServiceName:     "bro-bot.service",
-		DBPath:          "/bot/data/bot.db",
-		ScriptsDir:      "/bot/scripts",
+		DBPath:           "/bot/data/bot.db",
+		ScriptsDir:       "/bot/scripts",
+		WhisperServerURL: "http://127.0.0.1:8080",
+		WhisperAPIKey:    "secret",
+		WhisperModel:     "small",
+		WhisperLanguage:  "ru",
+		WhisperTimeout:   44 * time.Second,
 	}
 
 	Apply(cfg)
@@ -327,17 +338,22 @@ func TestApplyPublishesEveryField(t *testing.T) {
 	// Messenger живёт только в снимке: адаптер мессенджера выбирают один раз в
 	// корне композиции, глобальная переменная для этого не нужна.
 	published := map[string]any{
-		"AdminID":         AdminID,
-		"ProjectsRoot":    ProjectsRoot,
-		"DefaultProject":  DefaultProject,
-		"DefaultModel":    DefaultModel,
-		"QuestionTimeout": QuestionTimeout,
-		"StepTimeout":     StepTimeout,
-		"ChatTimeout":     ChatTimeout,
-		"BotDir":          BotDir,
-		"ServiceName":     ServiceName,
-		"DBPath":          DBPath,
-		"ScriptsDir":      ScriptsDir,
+		"AdminID":          AdminID,
+		"ProjectsRoot":     ProjectsRoot,
+		"DefaultProject":   DefaultProject,
+		"DefaultModel":     DefaultModel,
+		"QuestionTimeout":  QuestionTimeout,
+		"StepTimeout":      StepTimeout,
+		"ChatTimeout":      ChatTimeout,
+		"BotDir":           BotDir,
+		"ServiceName":      ServiceName,
+		"DBPath":           DBPath,
+		"ScriptsDir":       ScriptsDir,
+		"WhisperServerURL": WhisperServerURL,
+		"WhisperAPIKey":    WhisperAPIKey,
+		"WhisperModel":     WhisperModel,
+		"WhisperLanguage":  WhisperLanguage,
+		"WhisperTimeout":   WhisperTimeout,
 	}
 
 	v := reflect.ValueOf(cfg)

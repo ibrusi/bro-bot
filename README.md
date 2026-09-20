@@ -80,6 +80,11 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Every bot reply, button, command description and agent prompt comes from a message catalog — English and Russian ship out of the box.
   - English is the default until a language is picked; the choice is made with `/language` and survives restarts.
   - A new language is one JSON file in `internal/i18n/locales/` — no Go code changes (see [Interface Language & Localization](#-interface-language--localization)).
+- **Voice Message Recognition (Whisper)**:
+  - Voice notes and audio files sent in Telegram are transcribed automatically via `whisper-server`.
+  - Audio is converted to 16kHz mono WAV via `ffmpeg` before transcription to ensure 100% compatibility with any Whisper server.
+  - Quoting recognized text in chat (`🗣 «...»`) with immediate execution: recognized commands (`/status`, `/plan`, etc.) are executed directly, and conversational speech routes to chat or task creation.
+  - Easy setup via `sudo make install-whisper`.
 - **Hot-Rebuild & In-Bot CI/CD**:
   - `/restart` — clean, non-blocking systemd service restart.
   - `/rebuild [branch] [--pull] [--force]` — pulls latest code from Git, compiles a fresh Go binary, atomically replaces the executable, restarts the service, and sends a Telegram notification with the new commit hash upon startup.
@@ -304,6 +309,11 @@ nano .env
 | `BOT_DIR` | No | Executable's directory | Path to the bot's source code for `/rebuild` and storing restart markers. When unset, the executable's directory is used — but only if a `go.mod` sits next to it. Otherwise the bot refuses to start and says so. |
 | `BOT_SERVICE_NAME` | **Yes** | — | Name of the systemd service unit for `/restart` and `/rebuild`. |
 | `SQLITE_DB_PATH` | No | `data/bot.db` under `BOT_DIR` | Path to the SQLite database file for persistent tasks, plans, logs, and settings. |
+| `WHISPER_SERVER_URL` | No | `http://127.0.0.1:8080` (in `.env.example`) | HTTP endpoint of the Whisper speech-to-text server (e.g. `whisper.cpp`, `faster-whisper`, OpenAI API). Supports `/v1/audio/transcriptions` and `/inference`. Leave empty to disable voice recognition. |
+| `WHISPER_API_KEY` | No | — | Optional Bearer authorization token if your Whisper server requires authentication. |
+| `WHISPER_MODEL` | No | `small` | Model name sent to Whisper server. |
+| `WHISPER_LANGUAGE` | No | Auto-detected | Recognition language code (e.g. `ru`, `en`). Leave empty for automatic language detection. |
+| `WHISPER_TIMEOUT` | No | `60s` | Timeout for the speech transcription HTTP request. Formats: `60s`, `2m`, or seconds. |
 
 ### Example `.env`
 
@@ -319,6 +329,8 @@ CHAT_TIMEOUT=5m
 BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
+WHISPER_SERVER_URL=http://127.0.0.1:8080
+WHISPER_MODEL=small
 ```
 
 ---
