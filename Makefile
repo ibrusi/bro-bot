@@ -386,22 +386,19 @@ install-whisper:
 	@echo "$(MSG_WHISPER_TITLE)"
 	@echo "$(MSG_WHISPER_DEPS)"
 	@apt-get update && apt-get install -y cmake ffmpeg build-essential curl git
-	@sudo -u $(DEPLOY_USER) -i bash -c '\
-		set -e; \
-		if [ ! -d "$(WHISPER_DIR)/.git" ]; then \
-			echo "$(MSG_WHISPER_CLONE)"; \
-			git clone https://github.com/ggerganov/whisper.cpp.git $(WHISPER_DIR); \
-		else \
-			cd $(WHISPER_DIR) && git pull || true; \
-		fi; \
-		cd $(WHISPER_DIR); \
-		echo "$(MSG_WHISPER_BUILD)"; \
-		cmake -B build -DWHISPER_BUILD_SERVER=ON && cmake --build build --config Release -t whisper-server; \
-		echo "$(MSG_WHISPER_MODEL)"; \
-		if [ ! -f "models/ggml-$(WHISPER_MODEL).bin" ]; then \
-			bash ./models/download-ggml-model.sh $(WHISPER_MODEL); \
-		fi; \
-	'
+	@if [ ! -d "$(WHISPER_DIR)/.git" ]; then \
+		echo "$(MSG_WHISPER_CLONE)"; \
+		sudo -u $(DEPLOY_USER) git clone https://github.com/ggerganov/whisper.cpp.git $(WHISPER_DIR); \
+	else \
+		sudo -u $(DEPLOY_USER) git -C $(WHISPER_DIR) pull || true; \
+	fi
+	@echo "$(MSG_WHISPER_BUILD)"
+	@sudo -u $(DEPLOY_USER) cmake -B $(WHISPER_DIR)/build -S $(WHISPER_DIR) -DWHISPER_BUILD_SERVER=ON
+	@sudo -u $(DEPLOY_USER) cmake --build $(WHISPER_DIR)/build --config Release -t whisper-server
+	@echo "$(MSG_WHISPER_MODEL)"
+	@if [ ! -f "$(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL).bin" ]; then \
+		sudo -u $(DEPLOY_USER) bash $(WHISPER_DIR)/models/download-ggml-model.sh $(WHISPER_MODEL) $(WHISPER_DIR)/models; \
+	fi
 	@echo "$(MSG_WHISPER_SERVICE)"
 	@printf "[Unit]\nDescription=Whisper.cpp Server\nAfter=network.target\n\n[Service]\nType=simple\nUser=$(DEPLOY_USER)\nWorkingDirectory=$(WHISPER_DIR)\nExecStart=$(WHISPER_DIR)/build/bin/whisper-server -m $(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL).bin --port $(WHISPER_PORT) --host 127.0.0.1\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n" > $(WHISPER_SERVICE_FILE)
 	@systemctl daemon-reload
