@@ -57,12 +57,15 @@ func buildTranscriber(cfg config.Config) ports.Transcriber {
 		return nil
 	}
 	return whisper.New(whisper.Config{
-		BaseURL:    cfg.WhisperServerURL,
-		APIKey:     cfg.WhisperAPIKey,
-		Model:      cfg.WhisperModel,
-		Language:   cfg.WhisperLanguage,
-		Timeout:    cfg.WhisperTimeout,
-		ConvertWAV: true,
+		BaseURL:     cfg.WhisperServerURL,
+		APIKey:      cfg.WhisperAPIKey,
+		Model:       cfg.WhisperModel,
+		Language:    cfg.WhisperLanguage,
+		Prompt:      cfg.WhisperPrompt,
+		Temperature: cfg.WhisperTemperature,
+		Loudnorm:    cfg.WhisperLoudnorm,
+		Timeout:     cfg.WhisperTimeout,
+		ConvertWAV:  true,
 	})
 }
 

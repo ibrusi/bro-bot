@@ -311,6 +311,9 @@ nano .env
 | `WHISPER_API_KEY` | Нет | — | Опциональный токен авторизации (Bearer token), если сервер Whisper требует аутентификации. |
 | `WHISPER_MODEL` | Нет | `small` | Имя модели, передаваемое серверу Whisper. |
 | `WHISPER_LANGUAGE` | Нет | `en` | Код языка распознавания речи (`en`, `ru`, `auto` и др.). По умолчанию используется `en`. Для переключения языка, например на русский, необходимо изменить значение на `WHISPER_LANGUAGE=ru`. |
+| `WHISPER_PROMPT` | Нет | словарь IT-терминов | Контекстная подсказка и доменный словарь Whisper. Для отключения укажите `none`. |
+| `WHISPER_TEMPERATURE` | Нет | `0.0` | Температура сэмплинга (`0.0` для детерминированного жадного декодирования без галлюцинаций). |
+| `WHISPER_LOUDNORM` | Нет | `true` | Нормализация громкости через ffmpeg (`-af loudnorm`) для разборчивости тихого голоса и шёпота. Для отключения укажите `false`. |
 | `WHISPER_TIMEOUT` | Нет | `60s` | Таймаут HTTP-запроса на распознавание аудио. Форматы: `60s`, `2m` или секунды. |
 | `DEBUG` | Нет | `false` (пусто) | Режим отладки. При значении `true` или `1` в Telegram отображаются замеры скорости транскрибации (STT Latency, Audio Duration, RTF). |
 
@@ -331,6 +334,9 @@ SQLITE_DB_PATH=data/bot.db
 WHISPER_SERVER_URL=http://127.0.0.1:8080/inference
 WHISPER_MODEL=small
 WHISPER_LANGUAGE=en
+WHISPER_PROMPT="дебаг режим, код, коммит, пулл реквест, git, бот, деплой, статус, таски, логи"
+WHISPER_TEMPERATURE=0.0
+WHISPER_LOUDNORM=true
 DEBUG=
 ```
 
