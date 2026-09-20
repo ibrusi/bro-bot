@@ -10,18 +10,20 @@
 
 The bot empowers a developer or engineering team to manage a pool of projects, assign coding and refactoring tasks, approve interactive architectural plans, answer clarifying agent questions, inspect session transcripts, track token spending, and monitor server resource usage — all without leaving Telegram.
 
+<a id="disclaimer"></a>
 > [!WARNING]
 > **Safety and Usage Disclaimer**:
-> - **Autonomous Command Execution**: `bro-bot` executes AI agent CLIs (`agy`, `claude`) with elevated system permissions (`--dangerously-skip-permissions`). Autonomous agents can run shell commands, alter source files, install dependencies, and push Git changes without manual approval for every action.
-> - **Access Control**: Strictly limit bot access using `TELEGRAM_ADMIN_ID`. Never run the bot under the `root` user account. Always review agent commits and Pull Requests before merging them into production.
-> - **Token Quotas & API Costs**: Autonomous agents make numerous calls to LLM APIs (Google Gemini, Anthropic Claude), consuming context, input, output, and reasoning (thinking) tokens. Regularly inspect quotas and credit balances in your provider dashboards.
-> - **Disclaimer of Warranty (AS IS)**: This software is provided "as is", without warranty of any kind, express or implied. The authors and contributors are not liable for any data loss, system disruption, or financial expenses resulting from its use.
+> - **Autonomous Command Execution & Elevated Privileges**: `bro-bot` executes AI agent CLIs (`agy`, `claude`) with elevated system permissions (`--dangerously-skip-permissions`). Autonomous agents can run shell commands, create, modify, or delete files, install dependencies, and push Git changes without manual approval for every action. Always run the bot under a dedicated non-root user account (e.g., `deploy`), restrict `sudoers` privileges, and strictly limit bot access via `TELEGRAM_ADMIN_ID` (never run the bot as `root`).
+> - **Account Suspension Risk with Subscription Plans (CLI Mode)**: Running CLI agents authenticated with personal subscriptions (Claude Pro/Team/Max, Google One AI Premium/Gemini Advanced) in automated bot workflows (`cli` mode) violates the Terms of Service of those providers (prohibition against automated or unattended use of non-API interfaces). Using `cli` mode is strictly at your own risk and may lead to account penalties or bans. In contrast, operating via official API keys (`api` mode) fully complies with provider policies and will not result in account bans.
+> - **Verification Responsibility**: While agents follow `AGENT.md` guidelines by running tests and linters, final validation of all generated code, commits, and Pull Requests before merging them into production remains the sole responsibility of the repository maintainer.
+> - **Token Quotas & API Costs**: Autonomous agents make numerous calls to advanced LLMs (Google Gemini, Anthropic Claude), consuming significant context, generation, and reasoning (thinking) tokens. Regularly inspect your quotas, credit balances, and provider dashboards, as well as bot commands `/usage` and `/tokens`, to prevent unexpected expenses.
+> - **Disclaimer of Warranty (AS IS)**: This open-source software is distributed under the MIT License on an "AS IS" basis, without warranty of any kind, express or implied. The authors and contributors accept no liability for data loss, system disruption, account suspensions, or financial expenses resulting from its operation.
+
 
 ---
 
 ## 📑 Table of Contents
 
-- [⚠️ Disclaimer](#️-disclaimer)
 - [✨ Key Features](#-key-features)
 - [🏗 Architecture](#-architecture)
 - [📦 System Requirements](#-system-requirements)
@@ -502,14 +504,6 @@ go test -cover ./...
    - Subprocesses (`git`, `go`, `systemctl`, `agy`) are executed directly via `exec.CommandContext` without an intervening shell (`sh -c`).
    - URL and path arguments are isolated with the `--` delimiter.
 
----
-
-## ⚠️ Disclaimer
-
-- **Elevated Agent Privileges**: `bro-bot` invokes CLI agents (`agy` and `claude`) with the `--dangerously-skip-permissions` flag. This allows agents to execute terminal commands, modify files, install packages, and manage Git repositories without per-step manual confirmation. Always run the bot under a dedicated non-root user (e.g., `deploy`) with restricted `sudoers` rules.
-- **Verification Responsibility**: While agents run tests and linters per `AGENT.md`, final validation of generated code, commits, and Pull Requests remains the responsibility of the repository maintainer.
-- **Token Consumption**: Utilizing advanced LLMs (Gemini 3.1 Pro/Flash, Claude 3.7 Sonnet/Opus) incurs context and reasoning (thinking) token usage. Keep track of metrics via `/usage` and `/tokens` to prevent unexpected API expenses.
-- **AS-IS Disclaimer**: This open-source software is distributed under the MIT License on an "AS IS" basis, without warranties of any kind. The project authors accept no liability for data loss, system failure, account penalties, or financial expenses incurred through its operation.
 
 ---
 
