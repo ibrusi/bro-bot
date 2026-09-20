@@ -34,6 +34,7 @@ func setEnv(t *testing.T, env map[string]string) {
 		envMessenger, envAdminID, envProjectsRoot, envDefaultProject, envDefaultModel,
 		envQuestionTimeout, envStepTimeout, envChatTimeout, envBotDir, envServiceName,
 		envDBPath, envScriptsDir,
+		envWhisperServerURL, envWhisperAPIKey, envWhisperModel, envWhisperLanguage, envWhisperTimeout,
 	}
 	for _, name := range all {
 		if value, ok := env[name]; ok {
@@ -183,6 +184,9 @@ func TestLoadFillsDefaults(t *testing.T) {
 	}
 	if cfg.WhisperModel != defaultWhisperModel {
 		t.Errorf("WhisperModel = %q, ожидалось %q", cfg.WhisperModel, defaultWhisperModel)
+	}
+	if cfg.WhisperLanguage != defaultWhisperLanguage {
+		t.Errorf("WhisperLanguage = %q, ожидалось %q", cfg.WhisperLanguage, defaultWhisperLanguage)
 	}
 	if cfg.WhisperTimeout != defaultWhisperTimeout {
 		t.Errorf("WhisperTimeout = %v, ожидалось %v", cfg.WhisperTimeout, defaultWhisperTimeout)

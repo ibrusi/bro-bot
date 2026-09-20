@@ -110,6 +110,8 @@ func TestTranscribeSuccess(t *testing.T) {
 	var receivedAuth string
 	var receivedModel string
 	var receivedLanguage string
+	var receivedTranslate string
+	var receivedTask string
 	var receivedResponseFormat string
 	var fileContent []byte
 
@@ -128,6 +130,8 @@ func TestTranscribeSuccess(t *testing.T) {
 
 		receivedModel = r.FormValue("model")
 		receivedLanguage = r.FormValue("language")
+		receivedTranslate = r.FormValue("translate")
+		receivedTask = r.FormValue("task")
 		receivedResponseFormat = r.FormValue("response_format")
 
 		file, _, err := r.FormFile("file")
@@ -171,11 +175,44 @@ func TestTranscribeSuccess(t *testing.T) {
 	if receivedLanguage != "ru" {
 		t.Errorf("got language %q, want %q", receivedLanguage, "ru")
 	}
+	if receivedTranslate != "false" {
+		t.Errorf("got translate %q, want %q", receivedTranslate, "false")
+	}
+	if receivedTask != "transcribe" {
+		t.Errorf("got task %q, want %q", receivedTask, "transcribe")
+	}
 	if receivedResponseFormat != "json" {
 		t.Errorf("got response_format %q, want %q", receivedResponseFormat, "json")
 	}
 	if string(fileContent) != string(dummyWAV) {
 		t.Errorf("file content mismatch")
+	}
+}
+
+func TestTranscribeDefaultLanguage(t *testing.T) {
+	var receivedLanguage string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(10 << 20)
+		receivedLanguage = r.FormValue("language")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"text": "Hello"})
+	}))
+	defer server.Close()
+
+	client := New(Config{
+		BaseURL:    server.URL,
+		Language:   "", // не задан - должен отправиться "en"
+		ConvertWAV: false,
+	})
+
+	_, err := client.Transcribe(context.Background(), strings.NewReader("RIFF1234WAVEfmt "), "test.wav")
+	if err != nil {
+		t.Fatalf("Transcribe failed: %v", err)
+	}
+
+	if receivedLanguage != "en" {
+		t.Errorf("got language %q, want %q", receivedLanguage, "en")
 	}
 }
 

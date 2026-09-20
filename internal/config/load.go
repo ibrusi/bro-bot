@@ -40,8 +40,9 @@ const (
 	defaultMessenger      = "telegram"
 	defaultStepTimeout    = 30 * time.Minute
 	defaultChatTimeout    = 5 * time.Minute
-	defaultWhisperTimeout = 60 * time.Second
-	defaultWhisperModel   = "small"
+	defaultWhisperTimeout  = 60 * time.Second
+	defaultWhisperModel    = "small"
+	defaultWhisperLanguage = "en"
 )
 
 // Config — снимок настроек окружения, снятый один раз при старте процесса.
@@ -161,6 +162,9 @@ func Load() (Config, error) {
 		cfg.WhisperModel = defaultWhisperModel
 	}
 	cfg.WhisperLanguage = envTrim(envWhisperLanguage)
+	if cfg.WhisperLanguage == "" {
+		cfg.WhisperLanguage = defaultWhisperLanguage
+	}
 	cfg.WhisperTimeout = durationOrDefault(envWhisperTimeout, defaultWhisperTimeout)
 
 	if len(problems) > 0 {
