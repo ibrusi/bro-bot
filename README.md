@@ -317,7 +317,7 @@ nano .env
 | `WHISPER_API_KEY` | No | — | Optional Bearer authorization token if your Whisper server requires authentication. |
 | `WHISPER_MODEL` | No | `small` | Model name sent to Whisper server. |
 | `WHISPER_LANGUAGE` | No | `en` | Speech recognition language code (`en`, `ru`, `auto`, etc.). Defaults to `en`. To switch the language, for example to Russian, set `WHISPER_LANGUAGE=ru`. |
-| `WHISPER_PROMPT` | No | IT domain terms | Initial prompt / vocabulary hint to guide Whisper context and terminology. Set to `none` to disable. |
+| `WHISPER_PROMPT` | No | Language-specific IT terms | Initial prompt / vocabulary hint to guide Whisper context and terminology. Automatically selects IT domain terms based on `WHISPER_LANGUAGE` (`en` or `ru`). Set to `none` to disable. |
 | `WHISPER_TEMPERATURE` | No | `0.0` | Sampling temperature (`0.0` for deterministic greedy search, avoiding hallucinations). |
 | `WHISPER_LOUDNORM` | No | `true` | Audio loudness normalization via ffmpeg (`-af loudnorm`) to enhance quiet voices and whispering. Set to `false` to disable. |
 | `WHISPER_TIMEOUT` | No | `60s` | Timeout for the speech transcription HTTP request. Formats: `60s`, `2m`, or seconds. |
@@ -340,7 +340,7 @@ SQLITE_DB_PATH=data/bot.db
 WHISPER_SERVER_URL=http://127.0.0.1:8080/inference
 WHISPER_MODEL=small
 WHISPER_LANGUAGE=en
-WHISPER_PROMPT="дебаг режим, код, коммит, пулл реквест, git, бот, деплой, статус, таски, логи"
+WHISPER_PROMPT="debug mode, code, commit, pull request, git, bot, deploy, status, tasks, logs, review, build, release, terminal"
 WHISPER_TEMPERATURE=0.0
 WHISPER_LOUDNORM=true
 DEBUG=

@@ -48,10 +48,21 @@ const (
 	defaultWhisperTimeout      = 60 * time.Second
 	defaultWhisperModel        = "small"
 	defaultWhisperLanguage     = "en"
-	defaultWhisperPrompt       = "дебаг режим, код, коммит, пулл реквест, git, бот, деплой, статус, таски, логи"
+	defaultWhisperPromptEN     = "debug mode, code, commit, pull request, git, bot, deploy, status, tasks, logs, review, build, release, terminal"
+	defaultWhisperPromptRU     = "дебаг режим, код, коммит, пулл реквест, git, бот, деплой, статус, таски, логи, фикс, ревью, билд, релиз, debug mode, PR"
 	defaultWhisperTemperature  = 0.0
 	defaultWhisperLoudnorm     = true
 )
+
+// defaultPromptForLanguage возвращает доменный словарь терминов по умолчанию в зависимости от языка.
+func defaultPromptForLanguage(lang string) string {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "ru":
+		return defaultWhisperPromptRU
+	default:
+		return defaultWhisperPromptEN
+	}
+}
 
 // Config — снимок настроек окружения, снятый один раз при старте процесса.
 //
@@ -183,7 +194,7 @@ func Load() (Config, error) {
 
 	cfg.WhisperPrompt = envTrim(envWhisperPrompt)
 	if cfg.WhisperPrompt == "" {
-		cfg.WhisperPrompt = defaultWhisperPrompt
+		cfg.WhisperPrompt = defaultPromptForLanguage(cfg.WhisperLanguage)
 	} else if strings.ToLower(cfg.WhisperPrompt) == "none" || strings.ToLower(cfg.WhisperPrompt) == "off" || strings.ToLower(cfg.WhisperPrompt) == "false" {
 		cfg.WhisperPrompt = ""
 	}

@@ -251,20 +251,32 @@ func TestLoadDebugFlag(t *testing.T) {
 func TestLoadWhisperOptions(t *testing.T) {
 	botDir := t.TempDir()
 
-	// 1. По умолчанию
+	// 1a. По умолчанию (язык en)
 	setEnv(t, validEnv(botDir))
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
-	if cfg.WhisperPrompt != defaultWhisperPrompt {
-		t.Errorf("expected default WhisperPrompt %q, got %q", defaultWhisperPrompt, cfg.WhisperPrompt)
+	if cfg.WhisperPrompt != defaultWhisperPromptEN {
+		t.Errorf("expected default English WhisperPrompt %q, got %q", defaultWhisperPromptEN, cfg.WhisperPrompt)
 	}
 	if cfg.WhisperTemperature != defaultWhisperTemperature {
 		t.Errorf("expected default WhisperTemperature %v, got %v", defaultWhisperTemperature, cfg.WhisperTemperature)
 	}
 	if cfg.WhisperLoudnorm != defaultWhisperLoudnorm {
 		t.Errorf("expected default WhisperLoudnorm %v, got %v", defaultWhisperLoudnorm, cfg.WhisperLoudnorm)
+	}
+
+	// 1b. По умолчанию для русского языка (WHISPER_LANGUAGE=ru)
+	envRU := validEnv(botDir)
+	envRU[envWhisperLanguage] = "ru"
+	setEnv(t, envRU)
+	cfgRU, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfgRU.WhisperPrompt != defaultWhisperPromptRU {
+		t.Errorf("expected default Russian WhisperPrompt %q, got %q", defaultWhisperPromptRU, cfgRU.WhisperPrompt)
 	}
 
 	// 2. Явные пользовательские значения
