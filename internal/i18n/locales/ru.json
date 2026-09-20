@@ -634,6 +634,7 @@
     "voice.not_configured": "🎤 <b>Распознавание речи не настроено.</b>\nУкажите <code>WHISPER_SERVER_URL</code> в файле <code>.env</code>.",
     "voice.recognizing": "⏳ <i>Распознаю голосовое сообщение...</i>",
     "voice.quote": "🗣 <i>«%s»</i>",
+    "voice.quote_metrics": "🗣 <i>«%s»</i>\n⏱ <i>%s</i>",
     "voice.empty": "🎤 Не удалось разобрать речь в сообщении.",
     "voice.download_failed": "❌ Не удалось загрузить голосовое сообщение: <code>%s</code>",
     "voice.conversion_failed": "❌ Ошибка конвертации аудио через ffmpeg: <code>%s</code>",

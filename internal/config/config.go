@@ -35,4 +35,7 @@ var (
 	WhisperModel     string
 	WhisperLanguage  string
 	WhisperTimeout   time.Duration
+
+	// Debug включает режим отладки (расширенные метрики в чат).
+	Debug bool
 )

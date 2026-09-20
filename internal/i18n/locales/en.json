@@ -634,6 +634,7 @@
     "voice.not_configured": "🎤 <b>Voice recognition is not configured.</b>\nSpecify <code>WHISPER_SERVER_URL</code> in your <code>.env</code> file.",
     "voice.recognizing": "⏳ <i>Transcribing voice message...</i>",
     "voice.quote": "🗣 <i>«%s»</i>",
+    "voice.quote_metrics": "🗣 <i>«%s»</i>\n⏱ <i>%s</i>",
     "voice.empty": "🎤 Could not recognize any speech in the message.",
     "voice.download_failed": "❌ Failed to download voice message: <code>%s</code>",
     "voice.conversion_failed": "❌ Failed to convert audio via ffmpeg: <code>%s</code>",
