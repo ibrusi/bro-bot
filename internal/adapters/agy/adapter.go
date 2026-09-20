@@ -51,7 +51,7 @@ func (a *AgyAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (p
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка запуска PTY: %w", err)
+		return nil, fmt.Errorf("agy-cli: start PTY: %w", err)
 	}
 
 	return &AgyProcess{
@@ -72,11 +72,11 @@ func (a *AgyAdapter) GetModels(ctx context.Context) ([]byte, error) {
 	return out, nil
 }
 
-func (a *AgyAdapter) GetQuota(ctx context.Context) ([]byte, error) {
+func (a *AgyAdapter) GetQuota(ctx context.Context, _ string) ([]byte, error) {
 	return exec.CommandContext(ctx, "agy", "-p", "/quota", "--output-format", "json").CombinedOutput()
 }
 
-func (a *AgyAdapter) GetQuotaText(ctx context.Context) ([]byte, error) {
+func (a *AgyAdapter) GetQuotaText(ctx context.Context, _ string) ([]byte, error) {
 	return exec.CommandContext(ctx, "agy", "-p", "/quota").CombinedOutput()
 }
 

@@ -3,6 +3,7 @@ package system
 import (
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/utils"
 	"bufio"
 	"bytes"
@@ -798,37 +799,37 @@ type agentSectionConfig struct {
 	TaskElapsed  time.Duration
 }
 
-func formatAgentResourceSection(sb *strings.Builder, cfg agentSectionConfig) {
+func formatAgentResourceSection(sb *strings.Builder, cfg agentSectionConfig, lang string) {
 	activeTag := ""
 	if cfg.IsActive {
-		activeTag = " — 🟢 <i>активен</i>"
+		activeTag = i18n.T(lang, "res.agent_active_tag")
 	}
-	sb.WriteString(fmt.Sprintf("\n%s <b>Агент задач (%s)%s:</b>\n", cfg.Icon, html.EscapeString(cfg.AgentName), activeTag))
+	sb.WriteString(i18n.Tf(lang, "res.agent_header", cfg.Icon, html.EscapeString(cfg.AgentName), activeTag))
 
 	if cfg.WorkerActive && cfg.Worker != nil {
-		sb.WriteString(fmt.Sprintf("• PID: <code>%d</code> | Состояние: ⚡️ <b>выполняет задачу</b>\n", cfg.Worker.PID))
-		sb.WriteString(fmt.Sprintf("• Память (RSS): <b>%s</b> (<code>%.1f%%</code> RAM)\n",
+		sb.WriteString(i18n.Tf(lang, "res.agent_pid", cfg.Worker.PID))
+		sb.WriteString(i18n.Tf(lang, "res.memory",
 			formatBytes(cfg.Worker.MemoryBytes), cfg.Worker.MemoryPct))
-		sb.WriteString(fmt.Sprintf("• Нагрузка CPU: <b>%.1f%%</b>\n", cfg.Worker.CPUPercent))
+		sb.WriteString(i18n.Tf(lang, "res.cpu", cfg.Worker.CPUPercent))
 		if cfg.Worker.Elapsed != "" {
-			sb.WriteString(fmt.Sprintf("• Время процесса: <code>%s</code>\n", cfg.Worker.Elapsed))
+			sb.WriteString(i18n.Tf(lang, "res.agent_process_time", cfg.Worker.Elapsed))
 		} else if cfg.TaskElapsed > 0 {
-			sb.WriteString(fmt.Sprintf("• Время шага: <code>%s</code>\n", cfg.TaskElapsed))
+			sb.WriteString(i18n.Tf(lang, "res.agent_step_time", domain.FormatDuration(cfg.TaskElapsed, lang)))
 		}
 		if cfg.ProjectName != "" {
-			sb.WriteString(fmt.Sprintf("• Проект: <code>%s</code>\n", html.EscapeString(cfg.ProjectName)))
+			sb.WriteString(i18n.Tf(lang, "res.agent_project", html.EscapeString(cfg.ProjectName)))
 		}
 		if cfg.TaskPrompt != "" {
 			shortPrompt := utils.TruncateString(cfg.TaskPrompt, 80)
-			sb.WriteString(fmt.Sprintf("• Задача: <i>%s</i>\n", html.EscapeString(shortPrompt)))
+			sb.WriteString(i18n.Tf(lang, "res.agent_task", html.EscapeString(shortPrompt)))
 		}
 	} else if cfg.WorkerActive {
-		sb.WriteString("• Состояние: ⚙️ <i>Инициализация или запуск процесса...</i>\n")
+		sb.WriteString(i18n.T(lang, "res.agent_starting"))
 		if cfg.ProjectName != "" {
-			sb.WriteString(fmt.Sprintf("• Проект: <code>%s</code>\n", html.EscapeString(cfg.ProjectName)))
+			sb.WriteString(i18n.Tf(lang, "res.agent_project", html.EscapeString(cfg.ProjectName)))
 		}
 	} else {
-		sb.WriteString("• Состояние: 💤 <i>Простаивает (нет активных задач)</i>\n")
+		sb.WriteString(i18n.T(lang, "res.agent_idle"))
 	}
 
 	if cfg.Installed {
@@ -840,37 +841,37 @@ func formatAgentResourceSection(sb *strings.Builder, cfg agentSectionConfig) {
 				versionStr = cfg.AgentName + " CLI"
 			}
 		}
-		sb.WriteString(fmt.Sprintf("• CLI: <code>%s</code> (🟢 <i>готов к работе</i>)\n", html.EscapeString(versionStr)))
+		sb.WriteString(i18n.Tf(lang, "res.agent_cli_ready", html.EscapeString(versionStr)))
 	} else {
-		sb.WriteString("• CLI: 🔴 <i>не найден в PATH</i>\n")
+		sb.WriteString(i18n.T(lang, "res.agent_cli_missing"))
 	}
 
 	// Other processes
 	if len(cfg.OtherWorkers) > 0 {
-		sb.WriteString(fmt.Sprintf("• Фоновые процессы %s: <code>%d</code> шт.\n", cfg.AgentName, len(cfg.OtherWorkers)))
+		sb.WriteString(i18n.Tf(lang, "res.agent_background", cfg.AgentName, len(cfg.OtherWorkers)))
 		for _, other := range cfg.OtherWorkers {
-			sb.WriteString(fmt.Sprintf("  ↳ PID <code>%d</code>: RAM <b>%s</b>, CPU <b>%.1f%%</b>, аптайм <code>%s</code>\n",
+			sb.WriteString(i18n.Tf(lang, "res.agent_background_item",
 				other.PID, formatBytes(other.MemoryBytes), other.CPUPercent, other.Elapsed))
 		}
 	}
 }
 
-func FormatResourcesMessage(r ResourcesReport) string {
+func FormatResourcesMessage(r ResourcesReport, lang string) string {
 	var sb strings.Builder
-	sb.WriteString("📊 <b>Мониторинг ресурсов (CPU / RAM)</b>\n\n")
+	sb.WriteString(i18n.T(lang, "res.header"))
 
 	// 1. Host Server
-	sb.WriteString("💻 <b>Сервер:</b>\n")
-	sb.WriteString(fmt.Sprintf("• CPU Load: <code>%.2f, %.2f, %.2f</code> (%d vCPU)\n",
+	sb.WriteString(i18n.T(lang, "res.server_header"))
+	sb.WriteString(i18n.Tf(lang, "res.cpu_load",
 		r.Host.Load1, r.Host.Load5, r.Host.Load15, r.Host.Cores))
 	if r.Memory.TotalBytes > 0 {
-		sb.WriteString(fmt.Sprintf("• RAM: <b>%s</b> / <b>%s</b> (<code>%.1f%%</code> занято)\n",
+		sb.WriteString(i18n.Tf(lang, "res.ram",
 			formatBytes(r.Memory.UsedBytes),
 			formatBytes(r.Memory.TotalBytes),
 			r.Memory.UsedPercent))
 	}
 	if r.Disk.TotalBytes > 0 {
-		sb.WriteString(fmt.Sprintf("• Диск: свободно <b>%s</b> из <b>%s</b> (<code>%.1f%%</code> свободно)\n",
+		sb.WriteString(i18n.Tf(lang, "res.disk",
 			formatBytes(r.Disk.FreeBytes),
 			formatBytes(r.Disk.TotalBytes),
 			r.Disk.FreePercent))
@@ -878,36 +879,36 @@ func FormatResourcesMessage(r ResourcesReport) string {
 
 	// 2. Systemd Service CGroup
 	if r.CGroup.Available && r.CGroup.MemoryCurrentBytes > 0 {
-		sb.WriteString(fmt.Sprintf("\n🛡 <b>Сервис бота (cgroup %s):</b>\n", html.EscapeString(r.CGroup.GroupName)))
+		sb.WriteString(i18n.Tf(lang, "res.cgroup_header", html.EscapeString(r.CGroup.GroupName)))
 		peakStr := ""
 		if r.CGroup.MemoryPeakBytes > 0 {
-			peakStr = fmt.Sprintf(" (пик: <b>%s</b>)", formatBytes(r.CGroup.MemoryPeakBytes))
+			peakStr = i18n.Tf(lang, "res.cgroup_peak", formatBytes(r.CGroup.MemoryPeakBytes))
 		}
-		sb.WriteString(fmt.Sprintf("• Потребление RAM: <b>%s</b>%s\n",
+		sb.WriteString(i18n.Tf(lang, "res.cgroup_ram",
 			formatBytes(r.CGroup.MemoryCurrentBytes), peakStr))
 		if r.CGroup.TasksCount > 0 {
-			sb.WriteString(fmt.Sprintf("• Потоков/задач: <code>%d</code>\n", r.CGroup.TasksCount))
+			sb.WriteString(i18n.Tf(lang, "res.cgroup_tasks", r.CGroup.TasksCount))
 		}
 		if r.CGroup.CPUUsageUsec > 0 {
 			cpuSec := float64(r.CGroup.CPUUsageUsec) / 1000000.0
-			sb.WriteString(fmt.Sprintf("• Суммарное время CPU: <code>%.1fs</code>\n", cpuSec))
+			sb.WriteString(i18n.Tf(lang, "res.cgroup_cpu", cpuSec))
 		}
 	}
 
 	// 3. Telegram Bot Process
 	if r.BotProc != nil {
-		sb.WriteString("\n🤖 <b>Telegram-бот (bot):</b>\n")
-		sb.WriteString(fmt.Sprintf("• PID: <code>%d</code> | Состояние: 🟢 <i>active</i>\n", r.BotProc.PID))
+		sb.WriteString(i18n.T(lang, "res.bot_header"))
+		sb.WriteString(i18n.Tf(lang, "res.bot_pid", r.BotProc.PID))
 		activeAgent := r.ActiveAgent
 		if activeAgent == "" {
 			activeAgent = "agy"
 		}
-		sb.WriteString(fmt.Sprintf("• Активный CLI агент: <code>%s</code>\n", html.EscapeString(activeAgent)))
-		sb.WriteString(fmt.Sprintf("• Память (RSS): <b>%s</b> (<code>%.1f%%</code> RAM)\n",
+		sb.WriteString(i18n.Tf(lang, "res.bot_agent", html.EscapeString(activeAgent)))
+		sb.WriteString(i18n.Tf(lang, "res.memory",
 			formatBytes(r.BotProc.MemoryBytes), r.BotProc.MemoryPct))
-		sb.WriteString(fmt.Sprintf("• Нагрузка CPU: <b>%.1f%%</b>\n", r.BotProc.CPUPercent))
+		sb.WriteString(i18n.Tf(lang, "res.cpu", r.BotProc.CPUPercent))
 		if r.BotProc.Elapsed != "" {
-			sb.WriteString(fmt.Sprintf("• Аптайм: <code>%s</code> | Потоков: <code>%d</code>\n",
+			sb.WriteString(i18n.Tf(lang, "res.bot_uptime",
 				r.BotProc.Elapsed, r.BotProc.Threads))
 		}
 	}
@@ -930,7 +931,7 @@ func FormatResourcesMessage(r ResourcesReport) string {
 		ProjectName:  r.ProjectName,
 		TaskPrompt:   r.TaskPrompt,
 		TaskElapsed:  r.TaskElapsed,
-	})
+	}, lang)
 
 	// 5. Agent Worker Process (claude)
 	claudeWorkerActive := r.HasActiveTask && r.ActiveWorkerAgent == "claude"
@@ -950,18 +951,18 @@ func FormatResourcesMessage(r ResourcesReport) string {
 		ProjectName:  r.ProjectName,
 		TaskPrompt:   r.TaskPrompt,
 		TaskElapsed:  r.TaskElapsed,
-	})
+	}, lang)
 
-	sb.WriteString("\n💡 <i>Совет: в консоли Linux для мгновенного мониторинга сервиса используйте:</i>\n")
+	sb.WriteString(i18n.T(lang, "res.tip"))
 	sb.WriteString("<code>systemctl status tg-bot.service</code>\n")
-	sb.WriteString("<i>или для динамики:</i> <code>top -p $(pgrep -d, -f 'bot|agy|claude')</code>")
+	sb.WriteString(i18n.T(lang, "res.tip_dynamic"))
 
 	return sb.String()
 }
 
-func FormatCompactResourceSnippet(r ResourcesReport) string {
+func FormatCompactResourceSnippet(r ResourcesReport, lang string) string {
 	var sb strings.Builder
-	sb.WriteString("💻 <b>Ресурсы:</b>\n")
+	sb.WriteString(i18n.T(lang, "res.compact_header"))
 
 	var parts []string
 	if r.BotProc != nil {
@@ -982,9 +983,9 @@ func FormatCompactResourceSnippet(r ResourcesReport) string {
 		parts = append(parts, fmt.Sprintf("%s (PID %d): RAM <b>%s</b>, CPU <b>%.1f%%</b>",
 			workerAgent, r.ActiveWorker.PID, formatBytes(r.ActiveWorker.MemoryBytes), r.ActiveWorker.CPUPercent))
 	} else if r.HasActiveTask {
-		parts = append(parts, fmt.Sprintf("%s: <i>запуск...</i>", workerAgent))
+		parts = append(parts, i18n.Tf(lang, "res.compact_starting", workerAgent))
 	} else {
-		parts = append(parts, fmt.Sprintf("%s: 💤 <i>idle</i>", workerAgent))
+		parts = append(parts, i18n.Tf(lang, "res.compact_idle", workerAgent))
 	}
 
 	for _, p := range parts {
@@ -994,9 +995,9 @@ func FormatCompactResourceSnippet(r ResourcesReport) string {
 	if r.CGroup.Available && r.CGroup.MemoryCurrentBytes > 0 {
 		peakStr := ""
 		if r.CGroup.MemoryPeakBytes > 0 {
-			peakStr = fmt.Sprintf(" (пик %s)", formatBytes(r.CGroup.MemoryPeakBytes))
+			peakStr = i18n.Tf(lang, "res.compact_peak", formatBytes(r.CGroup.MemoryPeakBytes))
 		}
-		sb.WriteString(fmt.Sprintf("• CGroup всего: RAM <b>%s</b>%s\n",
+		sb.WriteString(i18n.Tf(lang, "res.compact_cgroup",
 			formatBytes(r.CGroup.MemoryCurrentBytes), peakStr))
 	}
 

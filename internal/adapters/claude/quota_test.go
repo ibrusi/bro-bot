@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bro-bot/internal/i18n"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -68,12 +69,12 @@ func TestCaptureClaudeRateLimitsReadsHeaders(t *testing.T) {
 		t.Error("время снимка не проставлено")
 	}
 
-	byName := map[string]claudeRateLimitBucket{}
+	byKey := map[string]claudeRateLimitBucket{}
 	for _, b := range snapshot.Buckets {
-		byName[b.Name] = b
+		byKey[b.NameKey] = b
 	}
 
-	requests, ok := byName["Запросы"]
+	requests, ok := byKey["quota.bucket_requests"]
 	if !ok {
 		t.Fatalf("нет корзины запросов: %+v", snapshot.Buckets)
 	}
@@ -87,7 +88,7 @@ func TestCaptureClaudeRateLimitsReadsHeaders(t *testing.T) {
 		t.Errorf("время сброса = %q", requests.Reset)
 	}
 
-	if frac := byName["Выходные токены"].Fraction(); frac == nil || *frac != 0 {
+	if frac := byKey["quota.bucket_output_tokens"].Fraction(); frac == nil || *frac != 0 {
 		t.Errorf("исчерпанная корзина должна давать 0, получили %v", frac)
 	}
 }
@@ -129,7 +130,7 @@ func TestGetQuotaBuildsGroupsFromSnapshot(t *testing.T) {
 	resetClaudeRateLimits(t)
 	captureClaudeRateLimits(rateLimitHeaders())
 
-	raw, err := (&ClaudeAPIAdapter{}).GetQuota(context.Background())
+	raw, err := (&ClaudeAPIAdapter{}).GetQuota(context.Background(), i18n.Default)
 	if err != nil {
 		t.Fatalf("GetQuota: %v", err)
 	}
@@ -173,7 +174,7 @@ func TestGetQuotaBuildsGroupsFromSnapshot(t *testing.T) {
 func TestGetQuotaWithoutSnapshotHasNoGroups(t *testing.T) {
 	resetClaudeRateLimits(t)
 
-	raw, err := (&ClaudeAPIAdapter{}).GetQuota(context.Background())
+	raw, err := (&ClaudeAPIAdapter{}).GetQuota(context.Background(), i18n.Default)
 	if err != nil {
 		t.Fatalf("GetQuota: %v", err)
 	}
@@ -186,13 +187,13 @@ func TestGetQuotaTextExplainsMissingSnapshot(t *testing.T) {
 	resetClaudeRateLimits(t)
 	resetClaudeModelCache(t)
 
-	raw, err := (&ClaudeAPIAdapter{}).GetQuotaText(context.Background())
+	raw, err := (&ClaudeAPIAdapter{}).GetQuotaText(context.Background(), i18n.Default)
 	if err != nil {
 		t.Fatalf("GetQuotaText: %v", err)
 	}
 
 	text := string(raw)
-	if !strings.Contains(text, "после первого ответа") {
+	if !strings.Contains(text, "after the agent's first answer") {
 		t.Errorf("текст не объясняет, откуда возьмутся лимиты: %s", text)
 	}
 	if strings.Contains(text, "SUCCESS") || strings.Contains(text, "{") {
@@ -210,13 +211,13 @@ func TestGetQuotaTextShowsLimitsAndModel(t *testing.T) {
 		withLimits(parseClaudeModelName("claude-opus-5"), 200000, 32000),
 	})
 
-	raw, err := (&ClaudeAPIAdapter{}).GetQuotaText(context.Background())
+	raw, err := (&ClaudeAPIAdapter{}).GetQuotaText(context.Background(), i18n.Default)
 	if err != nil {
 		t.Fatalf("GetQuotaText: %v", err)
 	}
 
 	text := string(raw)
-	for _, want := range []string{"Запросы", "claude-sonnet-5", "контекст 200K", "/tokens"} {
+	for _, want := range []string{"Requests", "claude-sonnet-5", "context 200K", "/tokens"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("в сводке нет %q: %s", want, text)
 		}

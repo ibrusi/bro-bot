@@ -3,6 +3,7 @@ package handlers
 import (
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
 	"context"
@@ -19,6 +20,7 @@ import (
 
 // handleUsage — общий обработчик нескольких команд.
 func handleUsage(s ports.Session) error {
+	lang := uiLang()
 	m := s.Messenger()
 	chat := s.Chat()
 	// Адаптер снимаем один раз здесь: горутины ниже не должны читать активного агента,
@@ -27,12 +29,12 @@ func handleUsage(s ports.Session) error {
 	execMode := config.ProjectState.GetExecutionMode()
 	loadingAgent := agentName
 	if loadingAgent == "" {
-		loadingAgent = "агента"
+		loadingAgent = i18n.T(lang, "usage.loading_fallback")
 	}
 	if framework == nil {
-		return s.Send("❌ Агент не сконфигурирован. Переключите агента: /agent", ports.Rich())
+		return s.Send(i18n.T(lang, "usage.not_configured"), ports.Rich())
 	}
-	statusRef, _ := m.Send(context.Background(), chat, fmt.Sprintf("⏳ <i>Запрашиваю актуальные лимиты и квоты из %s...</i>", html.EscapeString(loadingAgent)), ports.Rich())
+	statusRef, _ := m.Send(context.Background(), chat, i18n.Tf(lang, "usage.loading", html.EscapeString(loadingAgent)), ports.Rich())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -51,7 +53,7 @@ func handleUsage(s ports.Session) error {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		out, err := framework.GetQuota(ctx)
+		out, err := framework.GetQuota(ctx, lang)
 		cleanOut := utils.AnsiRegex.ReplaceAllString(string(out), "")
 		quotaRaw = strings.TrimSpace(cleanOut)
 		if err != nil {
@@ -73,7 +75,7 @@ func handleUsage(s ports.Session) error {
 			quotaText = text
 			return
 		}
-		textOut, textErr := framework.GetQuotaText(ctx)
+		textOut, textErr := framework.GetQuotaText(ctx, lang)
 		if textErr != nil {
 			return
 		}
@@ -105,19 +107,19 @@ func handleUsage(s ports.Session) error {
 		lastModel = activeModel
 	}
 
-	lastTokens := domain.GlobalTokenTracker.FormatShortLastTask()
+	lastTokens := domain.GlobalTokenTracker.FormatShortLastTask(lang)
 	if lastTokens == "" {
 		config.Session.Lock()
 		lastTokens = config.Session.LastTokensUsed
 		config.Session.Unlock()
 		if lastTokens == "" {
-			lastTokens = "нет данных (запустите хотя бы одну задачу)"
+			lastTokens = i18n.T(lang, "usage.no_data")
 		}
 	}
 
 	var bldr strings.Builder
-	bldr.WriteString(fmt.Sprintf("📊 <b>Лимиты и квоты аккаунта (%s)</b>\n\n",
-		html.EscapeString(usageSourceTitle(agentName, execMode))))
+	bldr.WriteString(i18n.Tf(lang, "usage.header",
+		html.EscapeString(usageSourceTitle(agentName, execMode, lang))))
 
 	if quotaErr == nil && len(quotaResp.Command.Data.Groups) > 0 {
 		for _, g := range quotaResp.Command.Data.Groups {
@@ -126,7 +128,7 @@ func handleUsage(s ports.Session) error {
 				bldr.WriteString(fmt.Sprintf("<i>%s</i>\n", html.EscapeString(g.Description)))
 			}
 			for _, b := range g.Buckets {
-				bucketLabel := formatBucketName(b.Name, b.Window)
+				bucketLabel := formatBucketName(b.Name, b.Window, lang)
 				if b.RemainingFraction != nil {
 					frac := *b.RemainingFraction
 					pct := frac * 100
@@ -135,11 +137,11 @@ func handleUsage(s ports.Session) error {
 					bldr.WriteString(fmt.Sprintf("• <b>%s:</b> %.1f%% %s\n", html.EscapeString(bucketLabel), pct, emoji))
 					bldr.WriteString(fmt.Sprintf("  <code>[%s]</code> %.1f%%\n", bar, pct))
 				} else {
-					bldr.WriteString(fmt.Sprintf("• <b>%s:</b> <i>доступно</i>\n", html.EscapeString(bucketLabel)))
+					bldr.WriteString(i18n.Tf(lang, "usage.bucket_available", html.EscapeString(bucketLabel)))
 				}
 				if b.ResetTime != "" {
-					resetInfo := formatResetDuration(b.ResetTime)
-					bldr.WriteString(fmt.Sprintf("  ⏳ <i>Сброс: %s</i>\n", html.EscapeString(resetInfo)))
+					resetInfo := formatResetDuration(b.ResetTime, lang)
+					bldr.WriteString(i18n.Tf(lang, "usage.bucket_reset", html.EscapeString(resetInfo)))
 				}
 			}
 			bldr.WriteString("\n")
@@ -157,21 +159,21 @@ func handleUsage(s ports.Session) error {
 	} else if quotaRaw != "" {
 		// Запасная ветка для CLI: вывод терминала показываем как есть.
 		bldr.WriteString(fmt.Sprintf("<b>%s:</b>\n<pre>%s</pre>\n\n",
-			html.EscapeString(fmt.Sprintf("Ответ %s", loadingAgent)), html.EscapeString(quotaRaw)))
+			html.EscapeString(i18n.Tf(lang, "usage.raw_answer", loadingAgent)), html.EscapeString(quotaRaw)))
 	} else if quotaErr != nil {
-		bldr.WriteString(fmt.Sprintf("⚠️ <i>Не удалось получить актуальные лимиты из %s: %s</i>\n\n", html.EscapeString(loadingAgent), html.EscapeString(quotaErr.Error())))
+		bldr.WriteString(i18n.Tf(lang, "usage.quota_failed", html.EscapeString(loadingAgent), html.EscapeString(quotaErr.Error())))
 	}
 
 	if creditsErr == nil && creditsResp.Command.Name == "credits" {
-		bldr.WriteString(fmt.Sprintf("💳 <b>Дополнительные кредиты:</b> <code>%.0f</code>\n\n", creditsResp.Command.Data.RemainingCredits))
+		bldr.WriteString(i18n.Tf(lang, "usage.credits", creditsResp.Command.Data.RemainingCredits))
 	}
 
-	bldr.WriteString("⚙️ <b>Сессия и модель:</b>\n")
-	bldr.WriteString(fmt.Sprintf("• Выбранная модель: <code>%s</code>\n", html.EscapeString(activeModel)))
-	bldr.WriteString(fmt.Sprintf("• Модель в сессии: <code>%s</code>\n", html.EscapeString(lastModel)))
-	bldr.WriteString(fmt.Sprintf("• Использовано токенов: <code>%s</code>\n\n", html.EscapeString(lastTokens)))
+	bldr.WriteString(i18n.T(lang, "usage.session_header"))
+	bldr.WriteString(i18n.Tf(lang, "usage.session_model", html.EscapeString(activeModel)))
+	bldr.WriteString(i18n.Tf(lang, "usage.session_last_model", html.EscapeString(lastModel)))
+	bldr.WriteString(i18n.Tf(lang, "usage.session_tokens", html.EscapeString(lastTokens)))
 
-	bldr.WriteString(usageFooter(execMode))
+	bldr.WriteString(usageFooter(execMode, lang))
 
 	resultMsg := bldr.String()
 	if statusRef.ID != "" {
@@ -210,11 +212,11 @@ func quotaStatusEmoji(fraction float64) string {
 
 // usageFooter подбирает подпись под режим: окна 5 часов и недели — это семантика
 // подписки CLI, к ключу API она не относится.
-func usageFooter(execMode string) string {
+func usageFooter(execMode, lang string) string {
 	if strings.EqualFold(execMode, "api") {
-		return "💡 <i>Лимиты ключа API восполняются непрерывно. Расход токенов ботом: /tokens.</i>"
+		return i18n.T(lang, "usage.footer_api")
 	}
-	return "💡 <i>Лимиты 5-часового окна и недели сглаживают общую нагрузку и обновляются автоматически.</i>"
+	return i18n.T(lang, "usage.footer_cli")
 }
 
 // firstNonEmpty возвращает первое непустое значение после обрезки пробелов.
@@ -227,19 +229,19 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func formatBucketName(name, window string) string {
+func formatBucketName(name, window, lang string) string {
 	lower := strings.ToLower(name)
 	switch {
 	case strings.Contains(lower, "week") || window == "weekly":
-		return "Недельный лимит"
+		return i18n.T(lang, "usage.bucket_weekly")
 	case strings.Contains(lower, "five hour") || strings.Contains(lower, "5 hour") || window == "5h":
-		return "5-часовой лимит"
+		return i18n.T(lang, "usage.bucket_five_hour")
 	default:
 		return name
 	}
 }
 
-func formatResetDuration(resetTimeStr string) string {
+func formatResetDuration(resetTimeStr, lang string) string {
 	if resetTimeStr == "" {
 		return ""
 	}
@@ -250,7 +252,7 @@ func formatResetDuration(resetTimeStr string) string {
 	remaining := time.Until(t)
 	formattedTime := t.UTC().Format("02.01 15:04 UTC")
 	if remaining <= 0 {
-		return fmt.Sprintf("сейчас (%s)", formattedTime)
+		return i18n.Tf(lang, "usage.reset_now", formattedTime)
 	}
 
 	var parts []string
@@ -259,19 +261,19 @@ func formatResetDuration(resetTimeStr string) string {
 	mins := int(remaining.Minutes()) % 60
 
 	if days > 0 {
-		parts = append(parts, fmt.Sprintf("%d д.", days))
+		parts = append(parts, i18n.Tf(lang, "usage.reset_days", days))
 	}
 	if hours > 0 || (days > 0 && mins > 0) {
-		parts = append(parts, fmt.Sprintf("%d ч.", hours))
+		parts = append(parts, i18n.Tf(lang, "usage.reset_hours", hours))
 	}
 	if days == 0 && mins > 0 {
-		parts = append(parts, fmt.Sprintf("%d мин.", mins))
+		parts = append(parts, i18n.Tf(lang, "usage.reset_minutes", mins))
 	}
 	if len(parts) == 0 {
-		parts = append(parts, "< 1 мин.")
+		parts = append(parts, i18n.T(lang, "usage.reset_under_minute"))
 	}
 
-	return fmt.Sprintf("через %s (%s)", strings.Join(parts, " "), formattedTime)
+	return i18n.Tf(lang, "usage.reset_in", strings.Join(parts, " "), formattedTime)
 }
 
 type AgyQuotaResponse struct {

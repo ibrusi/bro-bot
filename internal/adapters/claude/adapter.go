@@ -73,7 +73,7 @@ func (a *ClaudeAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка запуска PTY (Claude): %w", err)
+		return nil, fmt.Errorf("claude-cli: start PTY: %w", err)
 	}
 
 	return &ClaudeProcess{
@@ -85,9 +85,9 @@ func (a *ClaudeAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 // claudeCLIAliases — псевдонимы, которые принимает флаг --model CLI («alias for the
 // latest model»). Они не протухают по построению: CLI сам сопоставляет их с актуальной
 // версией. Это запасной список на случай, когда ключа API нет и живой список недоступен.
-const claudeCLIAliases = "sonnet Claude Sonnet (актуальная версия)\n" +
-	"opus Claude Opus (актуальная версия)\n" +
-	"fable Claude Fable (актуальная версия)\n"
+const claudeCLIAliases = "sonnet Claude Sonnet (current version)\n" +
+	"opus Claude Opus (current version)\n" +
+	"fable Claude Fable (current version)\n"
 
 // GetModels возвращает список моделей для cli-режима. Раньше здесь был зашитый список
 // конкретных версий, который устаревал так же, как устарели claude-3-*: теперь при
@@ -106,11 +106,11 @@ func (a *ClaudeAdapter) GetModels(ctx context.Context) ([]byte, error) {
 	return []byte(claudeCLIAliases), nil
 }
 
-func (a *ClaudeAdapter) GetQuota(ctx context.Context) ([]byte, error) {
+func (a *ClaudeAdapter) GetQuota(ctx context.Context, _ string) ([]byte, error) {
 	return exec.CommandContext(ctx, "claude", "--dangerously-skip-permissions", "--output-format", "json", "-p", "/usage").CombinedOutput()
 }
 
-func (a *ClaudeAdapter) GetQuotaText(ctx context.Context) ([]byte, error) {
+func (a *ClaudeAdapter) GetQuotaText(ctx context.Context, _ string) ([]byte, error) {
 	return exec.CommandContext(ctx, "claude", "--dangerously-skip-permissions", "-p", "/usage").CombinedOutput()
 }
 

@@ -168,7 +168,7 @@ func TestBuildQuestionMarkup(t *testing.T) {
 		QuestionOptions: []string{"Вариант 1", "Вариант 2", "Вариант 3"},
 	}
 
-	menu := buildQuestionMarkup(task)
+	menu := buildQuestionMarkup(task, "ru")
 	if menu == nil || len(menu.Rows) == 0 {
 		t.Fatalf("expected inline keyboard to be generated")
 	}
@@ -206,7 +206,7 @@ func TestBuildQuestionMarkup(t *testing.T) {
 }
 
 func TestBuildResumeMarkup(t *testing.T) {
-	menu := buildResumeMarkup(99)
+	menu := buildResumeMarkup(99, "ru")
 	if menu == nil || len(menu.Rows) == 0 {
 		t.Fatalf("expected resume markup")
 	}
@@ -546,7 +546,7 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	tm.SaveTask(task)
 
 	// 1. Проверяем перевод задачи в статус paused при таймауте
-	handleTaskStepTimeout(nil, testChatID, task, "proj-timeout", config.ProjectsRoot, task.Snapshot().ID, false)
+	handleTaskStepTimeout(nil, testChatID, task, "proj-timeout", config.ProjectsRoot, task.Snapshot().ID, false, "ru")
 
 	view := task.Snapshot()
 	st := view.Status
@@ -567,7 +567,7 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	})
 	tm.SaveTask(task2)
 
-	handleTaskStepError(nil, testChatID, task2, "proj-err", config.ProjectsRoot, task2.Snapshot().ID, fmt.Errorf("exit status 127"))
+	handleTaskStepError(nil, testChatID, task2, "proj-err", config.ProjectsRoot, task2.Snapshot().ID, fmt.Errorf("exit status 127"), "ru")
 
 	task2View := task2.Snapshot()
 	st2 := task2View.Status
@@ -1315,7 +1315,7 @@ func TestSwitchActiveAgent(t *testing.T) {
 }
 
 func TestBuildAgentConflictMarkup(t *testing.T) {
-	kb := buildAgentConflictMarkup(42, "claude")
+	kb := buildAgentConflictMarkup(42, "claude", "ru")
 	if kb == nil || len(kb.Rows) != 1 || len(kb.Rows[0]) != 2 {
 		t.Fatalf("expected 1 row with 2 buttons, got %v", kb)
 	}
@@ -1353,13 +1353,13 @@ func TestSendAgentConflictDialog(t *testing.T) {
 	if last == nil {
 		t.Fatalf("expected message to be sent")
 	}
-	if !strings.Contains(last.Text, "была начата агентом claude") {
+	if !strings.Contains(last.Text, "was started by agent claude") {
 		t.Errorf("expected message to mention claude: %s", last.Text)
 	}
 	if !strings.Contains(last.Text, "conv-claude-99") {
 		t.Errorf("expected message to mention session id: %s", last.Text)
 	}
-	if !strings.Contains(last.Text, "Текущий активный агент бота: <b>agy</b>") {
+	if !strings.Contains(last.Text, "current active agent is <b>agy</b>") {
 		t.Errorf("expected message to mention active agent agy: %s", last.Text)
 	}
 	if last.Opts == nil || last.Opts.Keyboard == nil {
@@ -1385,13 +1385,13 @@ func TestSendAgentConflictDialogWithMessenger(t *testing.T) {
 	if last == nil {
 		t.Fatalf("expected message to be sent")
 	}
-	if !strings.Contains(last.Text, "была начата агентом agy") {
+	if !strings.Contains(last.Text, "was started by agent agy") {
 		t.Errorf("expected message to mention agy: %s", last.Text)
 	}
 	if !strings.Contains(last.Text, "conv-agy-100") {
 		t.Errorf("expected message to mention session id: %s", last.Text)
 	}
-	if !strings.Contains(last.Text, "Текущий активный агент бота: <b>claude</b>") {
+	if !strings.Contains(last.Text, "current active agent is <b>claude</b>") {
 		t.Errorf("expected message to mention active agent claude: %s", last.Text)
 	}
 }
@@ -1465,7 +1465,7 @@ func TestResumeAgentConflictDialog(t *testing.T) {
 	if last == nil {
 		t.Fatalf("expected conflict dialog message to be sent")
 	}
-	if !strings.Contains(last.Text, "была начата агентом claude") {
+	if !strings.Contains(last.Text, "was started by agent claude") {
 		t.Errorf("expected message to mention agent claude, got: %s", last.Text)
 	}
 	if !strings.Contains(last.Text, "session-uuid-1234") {
@@ -1527,7 +1527,7 @@ func TestTaskAgentRestartCallback(t *testing.T) {
 	if agent != "agy" {
 		t.Errorf("expected Agent to be updated to agy, got: %s", agent)
 	}
-	if len(sess.Edits) == 0 || !strings.Contains(sess.Edits[0], "Начать заново с агентом agy") {
+	if len(sess.Edits) == 0 || !strings.Contains(sess.Edits[0], "start over with agent agy") {
 		t.Errorf("expected callback message to be edited with choice, got: %v", sess.Edits)
 	}
 }
@@ -1569,7 +1569,7 @@ func TestTaskAgentSwitchCallback(t *testing.T) {
 	if ActiveAgentName() != "claude" {
 		t.Errorf("expected ActiveAgentName to be claude after switch, got: %s", ActiveAgentName())
 	}
-	if len(sess.Edits) == 0 || !strings.Contains(sess.Edits[0], "Переключиться на claude") {
+	if len(sess.Edits) == 0 || !strings.Contains(sess.Edits[0], "switch to claude") {
 		t.Errorf("expected callback message to be edited with choice, got: %v", sess.Edits)
 	}
 }
@@ -1752,8 +1752,8 @@ func TestNewCommandWithAgent(t *testing.T) {
 		t.Fatalf("newHandler failed on empty args: %v", err)
 	}
 	last := mt.LastSent()
-	if last == nil || !strings.Contains(last.Text, "[проект] [агент]") {
-		t.Fatalf("expected usage message mentioning [проект] [агент], got: %v", last)
+	if last == nil || !strings.Contains(last.Text, "[project] [agent]") {
+		t.Fatalf("expected usage message mentioning [project] [agent], got: %v", last)
 	}
 
 	// 2. Only agent given with no prompt -> returns usage message
@@ -1767,7 +1767,7 @@ func TestNewCommandWithAgent(t *testing.T) {
 		t.Fatalf("newHandler failed on only agent: %v", err)
 	}
 	last = mt.LastSent()
-	if last == nil || !strings.Contains(last.Text, "[проект] [агент]") {
+	if last == nil || !strings.Contains(last.Text, "[project] [agent]") {
 		t.Fatalf("expected usage message when only agent is given, got: %v", last)
 	}
 
@@ -1876,7 +1876,7 @@ func TestStartCommandAndMenuNewDescription(t *testing.T) {
 	if last == nil {
 		t.Fatalf("expected message from /start")
 	}
-	expectedStartSnippet := "• /new [проект] [агент]"
+	expectedStartSnippet := "• /new [project] [agent]"
 	if !strings.Contains(last.Text, expectedStartSnippet) {
 		t.Errorf("expected /start text to contain %q, got:\n%s", expectedStartSnippet, last.Text)
 	}
@@ -1925,7 +1925,7 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 	if lastAgy == nil {
 		t.Fatalf("expected message from /models refresh (agy)")
 	}
-	if !strings.Contains(lastAgy.Text, "gemini") && !strings.Contains(lastAgy.Text, "Ошибка синхронизации") {
+	if !strings.Contains(lastAgy.Text, "gemini") && !strings.Contains(lastAgy.Text, "Failed to sync") {
 		t.Errorf("expected agy models message to contain gemini or sync error, got: %s", lastAgy.Text)
 	}
 
@@ -1979,7 +1979,7 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 	if lastAgy2 == nil {
 		t.Fatalf("expected message from /models refresh (agy back)")
 	}
-	if !strings.Contains(lastAgy2.Text, "gemini") && !strings.Contains(lastAgy2.Text, "Ошибка синхронизации") {
+	if !strings.Contains(lastAgy2.Text, "gemini") && !strings.Contains(lastAgy2.Text, "Failed to sync") {
 		t.Errorf("expected agy back models message to contain gemini or sync error, got: %s", lastAgy2.Text)
 	}
 }

@@ -3,6 +3,7 @@ package handlers
 import (
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
 	"bufio"
@@ -40,6 +41,11 @@ func runAgentPipeline(m ports.Messenger, chat ports.ChatID, workDir, projectName
 // снимок конфигурации, который переписывается при старте бота. Читать его по ходу
 // работы значит гонку, которую видит детектор гонок в тестах, перезапускающих бота.
 func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir, projectsRoot string) {
+	// Язык интерфейса снимаем один раз на весь прогон: пайплайн живёт минутами,
+	// и сообщения одной задачи не должны оказаться на разных языках, если
+	// пользователь переключит язык по ходу работы.
+	lang := i18n.Active()
+
 	// Имя активного агента читаем до снимка задачи: activeAgentMu остаётся листовым
 	// мьютексом и никогда не берётся внутри чужих блокировок.
 	fallbackAgent := ActiveAgentName()
@@ -90,11 +96,11 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		pendingSection := ""
 		if len(pendingFollowups) > 0 {
 			var pbldr strings.Builder
-			pbldr.WriteString("\n\nДОПОЛНИТЕЛЬНЫЕ ТРЕБОВАНИЯ И ПРАВКИ ИЗ ОЧЕРЕДИ:\n")
+			pbldr.WriteString(i18n.T(lang, "pipeline.plan_pending_section"))
 			for i, pf := range pendingFollowups {
 				pbldr.WriteString(fmt.Sprintf("%d. %s\n", i+1, pf))
 			}
-			pbldr.WriteString("Обязательно включи эти требования в план реализации.")
+			pbldr.WriteString(i18n.T(lang, "pipeline.plan_pending_footer"))
 			pendingSection = pbldr.String()
 		}
 
@@ -103,35 +109,15 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			if view.ConversationID != "" && curPrompt != "" && curPrompt != view.InitialPrompt {
 				planningPrompt = curPrompt
 			} else {
-				planningPrompt = fmt.Sprintf(
-					"Задача пользователя: %s%s\n\n"+
-						"ВНИМАНИЕ: Сейчас выполняется ЭТАП ПЛАНИРОВАНИЯ.\n"+
-						"НЕ создавай git-ветку, НЕ модифицируй файлы проекта, НЕ делай git commit, НЕ делай git push и НЕ открывай PR.\n"+
-						"Твоя цель сейчас:\n"+
-						"1. Тщательно исследуй кодовую базу и архитектуру проекта.\n"+
-						"2. Сформируй чёткий, пошаговый и структурированный план реализации задачи.\n"+
-						"3. Опиши:\n"+
-						"   - Какие файлы и компоненты будут созданы или изменены.\n"+
-						"   - Ключевые архитектурные решения и интерфейсы.\n"+
-						"   - План тестирования и проверки работоспособности.\n"+
-						"   - Возможные риски, краевые случаи и пути их решения.\n"+
-						"4. Выведи итоговый план в понятном и структурированном виде для пользователя.",
-					view.InitialPrompt, pendingSection,
-				)
+				planningPrompt = i18n.Tf(lang, "pipeline.plan_prompt", view.InitialPrompt, pendingSection)
 			}
 		} else {
 			feedback := curPrompt
 			if feedback == "" {
 				feedback = view.InitialPrompt
 			}
-			planningPrompt = fmt.Sprintf(
-				"Задача пользователя: %s\n\n"+
-					"ПРЕДЫДУЩИЙ ПЛАН РЕАЛИЗАЦИИ:\n%s\n\n"+
-					"ЗАМЕЧАНИЯ И ДОПОЛНЕНИЯ ПОЛЬЗОВАТЕЛЯ К ПЛАНУ:\n%s%s\n\n"+
-					"ВНИМАНИЕ: Это этап планирования. НЕ вноси изменения в файлы проекта, НЕ делай commit и НЕ создавай PR.\n"+
-					"Обнови и скорректируй план реализации с учётом всех замечаний пользователя и выведи обновлённый план.",
-				view.InitialPrompt, existingPlan, feedback, pendingSection,
-			)
+			planningPrompt = i18n.Tf(lang, "pipeline.plan_revise_prompt",
+				view.InitialPrompt, existingPlan, feedback, pendingSection)
 		}
 
 		for {
@@ -154,7 +140,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 
 			syncLegacySession(task)
 
-			res := executeStepForTask(m, chat, task, workDir, planningPrompt, activeModel)
+			res := executeStepForTask(m, chat, task, workDir, planningPrompt, activeModel, lang)
 
 			stepView := task.Snapshot()
 			if stepView.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
@@ -164,7 +150,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			st := stepView.Status
 
 			if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
-				answer, ok := waitForTaskInput(m, chat, task, projectName, projectsRoot, taskID)
+				answer, ok := waitForTaskInput(m, chat, task, projectName, projectsRoot, taskID, lang)
 				if !ok {
 					return
 				}
@@ -173,12 +159,12 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			}
 
 			if res.Outcome == StepOutcomeTimeout {
-				handleTaskStepTimeout(m, chat, task, projectName, projectsRoot, taskID, true)
+				handleTaskStepTimeout(m, chat, task, projectName, projectsRoot, taskID, true, lang)
 				return
 			}
 
 			if res.Outcome == StepOutcomeError {
-				handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, res.Error)
+				handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, res.Error, lang)
 				return
 			}
 
@@ -187,11 +173,11 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 
 		planText := strings.TrimSpace(task.Snapshot().Output)
 		if isLikelyErrorMessage(planText) {
-			handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, errors.New(planText))
+			handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, errors.New(planText), lang)
 			return
 		}
 		if planText == "" {
-			planText = "Агент не сформировал подробный план. Вы можете дополнить задачу замечаниями или утвердить её."
+			planText = i18n.T(lang, "plan.empty_fallback")
 		}
 		task.Update(func(t *domain.TaskSession) {
 			t.Plan = planText
@@ -202,7 +188,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 
 		syncLegacySession(task)
 
-		sendPlanForApproval(m, chat, task)
+		sendPlanForApproval(m, chat, task, lang)
 		return
 	}
 
@@ -231,7 +217,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 
 		syncLegacySession(task)
 
-		res := executeStepForTask(m, chat, task, workDir, currentPrompt, activeModel)
+		res := executeStepForTask(m, chat, task, workDir, currentPrompt, activeModel, lang)
 
 		stepView := task.Snapshot()
 		if stepView.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
@@ -241,7 +227,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		st := stepView.Status
 
 		if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
-			answer, ok := waitForTaskInput(m, chat, task, projectName, projectsRoot, taskID)
+			answer, ok := waitForTaskInput(m, chat, task, projectName, projectsRoot, taskID, lang)
 			if !ok {
 				return
 			}
@@ -250,12 +236,12 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		}
 
 		if res.Outcome == StepOutcomeTimeout {
-			handleTaskStepTimeout(m, chat, task, projectName, projectsRoot, taskID, false)
+			handleTaskStepTimeout(m, chat, task, projectName, projectsRoot, taskID, false, lang)
 			return
 		}
 
 		if res.Outcome == StepOutcomeError {
-			handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, res.Error)
+			handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, res.Error, lang)
 			return
 		}
 
@@ -294,22 +280,22 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			})
 			domain.GlobalTaskManager.SaveTaskMetrics(taskID, &metrics)
 			domain.GlobalTaskManager.SaveTask(task)
-			statsSummary := metrics.FormatCompletionSummary()
+			statsSummary := metrics.FormatCompletionSummary(lang)
 
 			var compBldr strings.Builder
 			if prURL != "" {
-				compBldr.WriteString(fmt.Sprintf("🎉 <b>Задача #%d выполнена!</b>\n📁 Проект: <code>%s</code>\n🔗 <a href=\"%s\">Открыть Pull Request</a>\n", taskID, html.EscapeString(projectName), html.EscapeString(prURL)))
+				compBldr.WriteString(i18n.Tf(lang, "pipeline.completed_with_pr", taskID, html.EscapeString(projectName), html.EscapeString(prURL)))
 			} else {
-				compBldr.WriteString(fmt.Sprintf("✅ <b>Задача #%d завершена!</b> (<code>%s</code>)\n", taskID, html.EscapeString(projectName)))
+				compBldr.WriteString(i18n.Tf(lang, "pipeline.completed", taskID, html.EscapeString(projectName)))
 			}
 
 			if initialPrompt != "" {
-				compBldr.WriteString(fmt.Sprintf("📝 <b>Задача:</b> <i>«%s»</i>\n",
+				compBldr.WriteString(i18n.Tf(lang, "pipeline.completed_prompt",
 					html.EscapeString(utils.TruncateString(initialPrompt, 200))))
 			}
 
 			if hasPlan {
-				compBldr.WriteString(fmt.Sprintf("📄 <b>План реализации:</b> /planfile_%d\n", taskID))
+				compBldr.WriteString(i18n.Tf(lang, "pipeline.completed_plan_link", taskID))
 			}
 
 			compBldr.WriteString("\n" + statsSummary)
@@ -317,10 +303,10 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			var compMenu *ports.Keyboard
 			var actButtons []ports.Button
 			if prURL != "" {
-				actButtons = append(actButtons, ports.Button{Text: "🔗 Открыть PR", URL: prURL})
+				actButtons = append(actButtons, ports.Button{Text: i18n.T(lang, "btn.open_pr"), URL: prURL})
 			}
 			if hasPlan {
-				actButtons = append(actButtons, ports.Button{Text: "📄 Скачать план (.md)", Action: "plan_doc", Payload: strconv.Itoa(taskID)})
+				actButtons = append(actButtons, ports.Button{Text: i18n.T(lang, "btn.download_plan"), Action: "plan_doc", Payload: strconv.Itoa(taskID)})
 			}
 			if len(actButtons) > 0 {
 				compMenu = &ports.Keyboard{Rows: [][]ports.Button{actButtons}}
@@ -337,13 +323,12 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 				if len(reportRunes) > 1500 {
 					summary := utils.ExtractPlanSummary(finalReport, 1200)
 					summaryHTML := utils.MarkdownToTelegramHTML(summary)
-					_, _ = m.Send(context.Background(), chat, fmt.Sprintf("📑 <b>Отчет о выполнении задачи #%d:</b>\n\n%s\n\n📄 <i>Полный отчет (%d знаков) прикреплен файлом.</i>", taskID, summaryHTML, len(reportRunes)), ports.Rich())
+					_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.report_summary", taskID, summaryHTML, len(reportRunes)), ports.Rich())
 
-					docName := fmt.Sprintf("report_task_%d.md", taskID)
 					doc := ports.Document{
-						FileName: docName,
+						FileName: fmt.Sprintf("report_task_%d.md", taskID),
 						MIME:     "text/markdown",
-						Caption:  fmt.Sprintf("📄 Полный отчет выполнения задачи #%d (%s)", taskID, projectName),
+						Caption:  i18n.Tf(lang, "pipeline.report_doc_caption", taskID, projectName),
 						Content:  []byte(finalReport),
 					}
 					docRef, docErr := m.SendDocument(context.Background(), chat, doc)
@@ -365,12 +350,11 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		task.ClearPendingFollowups()
 
 		var bldr strings.Builder
-		bldr.WriteString("ВНИМАНИЕ: Продолжай работу в ТЕКУЩЕЙ ветке git (НЕ создавай новую ветку, НЕ делай checkout в main). ")
-		bldr.WriteString("Пользователь прислал следующие дополнения к задаче:\n")
+		bldr.WriteString(i18n.T(lang, "pipeline.followup_prompt_header"))
 		for i, f := range followups {
 			bldr.WriteString(fmt.Sprintf("%d. %s\n", i+1, f))
 		}
-		bldr.WriteString("Внеси необходимые изменения, запусти тесты/линтеры, закоммить изменения и запушь в текущую ветку. Если PR уже открыт, обнови его.")
+		bldr.WriteString(i18n.T(lang, "pipeline.followup_prompt_footer"))
 
 		currentPrompt = bldr.String()
 		task.Update(func(t *domain.TaskSession) {
@@ -381,7 +365,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 
 		domain.GlobalTokenTracker.StartNextStep(activeModel)
 
-		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("🔄 <b>Задача #%d: Беру в работу дополнения (%d шт.)...</b>", taskID, len(followups)), ports.Rich())
+		_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.followups_taken", taskID, len(followups)), ports.Rich())
 	}
 }
 
@@ -442,7 +426,7 @@ func extractStepErrorMessage(task *domain.TaskSession, resultError string, waitE
 	if waitErr != nil {
 		return waitErr.Error()
 	}
-	return "неизвестная ошибка выполнения"
+	return i18n.T(i18n.Active(), "err.step_unknown")
 }
 
 // isAgyPrintTimeoutLine проверяет, является ли строка системным терминальным сообщением CLI agy о таймауте print mode,
@@ -498,7 +482,7 @@ func evaluateStepCompletion(
 	return StepOutcomeSuccess, false, "", nil
 }
 
-func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir, prompt, modelName string) StepResult {
+func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir, prompt, modelName, lang string) StepResult {
 	view := task.Snapshot()
 	projectName := view.Project
 	taskID := view.ID
@@ -508,12 +492,11 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}
 	isPlanning := view.Status == domain.TaskStatusPlanning
 
-	var statusMsgText string
+	statusKey := "pipeline.step_running_status"
 	if isPlanning {
-		statusMsgText = fmt.Sprintf("📝 <b>Составление плана задачи #%d:</b> <code>%s</code> [<code>%s</code>]\n<i>Исследование репозитория и формирование плана...</i>", taskID, html.EscapeString(projectName), html.EscapeString(modelName))
-	} else {
-		statusMsgText = fmt.Sprintf("🚀 <b>Шаг задачи #%d в работе:</b> <code>%s</code> [<code>%s</code>]\n<i>Инициализация сессии агента...</i>", taskID, html.EscapeString(projectName), html.EscapeString(modelName))
+		statusKey = "pipeline.step_planning_status"
 	}
+	statusMsgText := i18n.Tf(lang, statusKey, taskID, html.EscapeString(projectName), html.EscapeString(modelName))
 
 	statusRef, _ := m.Send(context.Background(), chat, statusMsgText, ports.Rich())
 	if statusRef.ID != "" {
@@ -539,8 +522,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	currentAgentName := ActiveAgentName()
 
 	if convID != "" && !strings.EqualFold(taskAgent, currentAgentName) {
-		err := fmt.Errorf("конфликт агентов: сессия задачи принадлежит %s, а текущий агент %s", taskAgent, currentAgentName)
-		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, err), nil)
+		err := fmt.Errorf("pipeline: agent conflict: the task session belongs to %s while the current agent is %s", taskAgent, currentAgentName)
+		_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.agent_start_failed", taskID,
+			i18n.Tf(lang, "err.agent_conflict", taskAgent, currentAgentName)), nil)
 		task.Update(func(t *domain.TaskSession) {
 			t.Status = domain.TaskStatusPaused
 		})
@@ -565,7 +549,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 
 	framework, frameworkErr := agentFrameworkFor(taskAgent)
 	if frameworkErr != nil {
-		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, frameworkErr), ports.Rich())
+		_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.agent_start_failed", taskID, ErrorText(frameworkErr, lang)), ports.Rich())
 		task.Update(func(t *domain.TaskSession) {
 			t.Status = domain.TaskStatusFailed
 		})
@@ -574,7 +558,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}
 	agentProcess, err := framework.ExecuteTask(stepCtx, args)
 	if err != nil {
-		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("❌ Ошибка запуска агента для задачи #%d: %v", taskID, err), nil)
+		_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.agent_start_failed", taskID, ErrorText(err, lang)), nil)
 		task.Update(func(t *domain.TaskSession) {
 			t.Status = domain.TaskStatusFailed
 		})
@@ -619,36 +603,35 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 				taskStatus := liveView.Status
 				dur := liveView.Duration
 
-				tokenSnippet := domain.GlobalTokenTracker.GetLiveStatusSnippet()
+				tokenSnippet := domain.GlobalTokenTracker.GetLiveStatusSnippet(lang)
 
 				if statusRef.ID != "" {
 					queueInfo := ""
 					if followupsCount > 0 {
-						queueInfo = fmt.Sprintf(" | Правок в очереди: %d", followupsCount)
+						queueInfo = i18n.Tf(lang, "pipeline.live_queue", followupsCount)
 					}
-					statusPrefix := "⏳ <b>Задача"
+					statusPrefix := i18n.T(lang, "pipeline.live_prefix_running")
 					if taskStatus == domain.TaskStatusPlanning {
-						statusPrefix = "📝 <b>Планирование задачи"
+						statusPrefix = i18n.T(lang, "pipeline.live_prefix_planning")
 					}
 					var bldr strings.Builder
-					bldr.WriteString(fmt.Sprintf(
-						"%s #%d:</b> <code>%s</code> [<code>%s</code>] (<code>%s</code>%s)\n\n",
+					bldr.WriteString(i18n.Tf(lang, "pipeline.live_header",
 						statusPrefix,
 						taskID,
 						html.EscapeString(projectName),
 						html.EscapeString(modelName),
-						domain.FormatDurationHuman(dur),
+						domain.FormatDuration(dur, lang),
 						queueInfo,
 					))
 					if lastLine != "" {
-						bldr.WriteString(fmt.Sprintf("📍 <b>Действие:</b>\n<code>%s</code>\n\n", html.EscapeString(utils.TruncateString(lastLine, 80))))
+						bldr.WriteString(i18n.Tf(lang, "pipeline.live_action", html.EscapeString(utils.TruncateString(lastLine, 80))))
 					} else {
-						bldr.WriteString("📍 <b>Действие:</b>\n<code>Инициализация сессии агента...</code>\n\n")
+						bldr.WriteString(i18n.T(lang, "pipeline.live_action_init"))
 					}
 					if tokenSnippet != "" {
 						bldr.WriteString(tokenSnippet + "\n\n")
 					}
-					bldr.WriteString(fmt.Sprintf("<i>(Лог: /status %d | Дополнить: /add %d | Стоп: /cancel %d)</i>", taskID, taskID, taskID))
+					bldr.WriteString(i18n.Tf(lang, "pipeline.live_footer", taskID, taskID, taskID))
 
 					_ = m.Edit(context.Background(), statusRef, bldr.String(), ports.Rich())
 				}
@@ -710,7 +693,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 					if u.ToolName == "ask_question" || (u.ToolInfo != nil && u.ToolInfo.Name == "ask_question") {
 						hasAskQuestionToolCall = true
 						if u.ToolInfo != nil && u.ToolInfo.Parameters != nil {
-							qText := utils.FormatAskQuestionParams(u.ToolInfo.Parameters)
+							qText := utils.FormatAskQuestionParams(u.ToolInfo.Parameters, lang)
 							qOpts := utils.ExtractAskQuestionOptions(u.ToolInfo.Parameters)
 							if qText != "" {
 								pendingQuestionText = qText
@@ -770,7 +753,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 			})
 		}
 		if scanErr := scanner.Err(); scanErr != nil {
-			log.Printf("Предупреждение: ошибка сканера вывода agy для задачи #%d: %v", taskID, scanErr)
+			log.Printf("warning: output scanner error for task #%d: %v", taskID, scanErr)
 		}
 		close(done)
 	}()
@@ -828,13 +811,13 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		})
 		syncLegacySession(task)
 
-		menu := buildQuestionMarkup(task)
+		menu := buildQuestionMarkup(task, lang)
 		formattedQ := utils.MarkdownToTelegramHTML(qText)
-		header := "❓ <b>Вопрос по задаче #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или выберите вариант кнопкой.</i>"
+		headerKey := "pipeline.question_header"
 		if isPlanning {
-			header = "❓ <b>Вопрос по плану задачи #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или выберите вариант кнопкой.</i>"
+			headerKey = "pipeline.question_header_planning"
 		}
-		msgText := fmt.Sprintf(header, taskID, html.EscapeString(projectName), formattedQ)
+		msgText := i18n.Tf(lang, headerKey, taskID, html.EscapeString(projectName), formattedQ)
 		qRef, _ := m.Send(context.Background(), chat, msgText, ports.RichWith(menu))
 		if qRef.ID != "" {
 			domain.GlobalTaskManager.RegisterMessageTask(qRef, taskID)
@@ -856,7 +839,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}
 }
 
-func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, isPlanning bool) {
+func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, isPlanning bool, lang string) {
 	var convID string
 	var tAgent string
 	task.Update(func(t *domain.TaskSession) {
@@ -875,21 +858,17 @@ func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.Ta
 		stepTimeout = 30 * time.Minute
 	}
 
-	phaseName := "выполнения"
+	phaseName := i18n.T(lang, "pipeline.phase_running")
 	if isPlanning {
-		phaseName = "планирования"
+		phaseName = i18n.T(lang, "pipeline.phase_planning")
 	}
 
-	task.AppendLog(fmt.Sprintf("⏸ Превышен таймаут %s (%v). Сессия %s сохранена.", phaseName, stepTimeout, convID))
+	task.AppendLog(i18n.Tf(lang, "pipeline.timeout_log", phaseName, stepTimeout, convID))
 
-	resumeMenu := buildResumeMarkup(taskID)
-	timeoutMsg := fmt.Sprintf(
-		"⏸ <b>Задача #%d (<code>%s</code>) приостановлена по таймауту %s (%v).</b>\n\n"+
-			"🧵 <b>Сессия %s:</b> <code>%s</code> (сохранена)\n"+
-			"Очередь проекта освобождена для других задач.\n\n"+
-			"Контекст не потерян! Чтобы продолжить с этого места, нажмите <b>«▶️ Возобновить задачу»</b> или введите <code>/resume %d [указания]</code>.",
+	resumeMenu := buildResumeMarkup(taskID, lang)
+	timeoutMsg := i18n.Tf(lang, "pipeline.timeout_message",
 		taskID, html.EscapeString(projectName), phaseName, stepTimeout,
-		html.EscapeString(tAgent), html.EscapeString(convID), taskID,
+		html.EscapeString(tAgent), html.EscapeString(convID), i18n.T(lang, "btn.resume"), taskID,
 	)
 
 	if m != nil && chat != "" {
@@ -903,7 +882,7 @@ func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.Ta
 	checkAndStartQueuedTask(m, projectName, projectsRoot)
 }
 
-func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, err error) {
+func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, err error, lang string) {
 	var convID string
 	task.Update(func(t *domain.TaskSession) {
 		t.Status = domain.TaskStatusFailed
@@ -913,22 +892,18 @@ func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.Task
 
 	syncLegacySession(task)
 
-	errText := "неизвестная ошибка"
+	errText := i18n.T(lang, "pipeline.error_unknown")
 	if err != nil && strings.TrimSpace(err.Error()) != "" {
-		errText = strings.TrimSpace(err.Error())
+		errText = strings.TrimSpace(ErrorText(err, lang))
 	}
 	if len([]rune(errText)) > 1200 {
 		errText = string([]rune(errText)[:1200]) + "..."
 	}
 
-	task.AppendLog(fmt.Sprintf("❌ Ошибка выполнения шага: %s", errText))
+	task.AppendLog(i18n.Tf(lang, "pipeline.error_log", errText))
 
-	retryMenu := buildResumeMarkup(taskID)
-	msg := fmt.Sprintf(
-		"❌ <b>Ошибка выполнения задачи #%d (<code>%s</code>):</b>\n\n"+
-			"<code>%s</code>\n\n"+
-			"🧵 <b>Сессия agy:</b> <code>%s</code>\n\n"+
-			"Попробуйте возобновить: <code>/resume %d</code> или перезапустить с чистого листа: <code>/retry %d</code>.",
+	retryMenu := buildResumeMarkup(taskID, lang)
+	msg := i18n.Tf(lang, "pipeline.error_message",
 		taskID, html.EscapeString(projectName), html.EscapeString(errText),
 		html.EscapeString(convID), taskID, taskID,
 	)
@@ -944,7 +919,7 @@ func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.Task
 	checkAndStartQueuedTask(m, projectName, projectsRoot)
 }
 
-func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int) (string, bool) {
+func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, lang string) (string, bool) {
 	timeout := config.QuestionTimeout
 
 	select {
@@ -962,7 +937,7 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 		})
 		syncLegacySession(task)
 
-		_, _ = m.Send(context.Background(), chat, fmt.Sprintf("▶️ <b>Задача #%d: Ответ получен, продолжаю выполнение...</b>", taskID), ports.Rich())
+		_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.answer_received", taskID), ports.Rich())
 		return answer, true
 
 	case <-task.PauseChannel():
@@ -988,12 +963,9 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 		})
 		syncLegacySession(task)
 
-		resumeMenu := buildResumeMarkup(taskID)
-		timeoutMsg := fmt.Sprintf(
-			"⏸ <b>Задача #%d (<code>%s</code>) приостановлена по таймауту ожидания ответа (%v).</b>\n\n"+
-				"Очередь проекта освобождена для других задач.\n"+
-				"Чтобы возобновить с места вопроса, нажмите <b>«▶️ Возобновить задачу»</b> или введите <code>/resume %d &lt;ответ&gt;</code>.",
-			taskID, html.EscapeString(projectName), timeout, taskID,
+		resumeMenu := buildResumeMarkup(taskID, lang)
+		timeoutMsg := i18n.Tf(lang, "pipeline.answer_timeout_message",
+			taskID, html.EscapeString(projectName), timeout, i18n.T(lang, "btn.resume"), taskID,
 		)
 		tRef, _ := m.Send(context.Background(), chat, timeoutMsg, ports.RichWith(resumeMenu))
 		if tRef.ID != "" {

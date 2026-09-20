@@ -1,10 +1,12 @@
 package models
 
 import (
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -17,7 +19,22 @@ import (
 type ModelInfo struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
-	Description string `json:"description"`
+	// DescriptionKey — ключ каталога i18n для описания известной модели. Пустой,
+	// если модель пришла из CLI-агента и своего описания у бота для неё нет:
+	// тогда описание собирается из DisplayName.
+	DescriptionKey string `json:"description_key"`
+}
+
+// Description возвращает описание модели на языке lang.
+func (m ModelInfo) Description(lang string) string {
+	if m.DescriptionKey != "" {
+		return i18n.T(lang, m.DescriptionKey)
+	}
+	name := m.DisplayName
+	if name == "" {
+		name = m.ID
+	}
+	return i18n.Tf(lang, "models.desc_generic", name)
 }
 
 // agentMu защищает ссылку на активный агент: её меняют команды /agent и /mode,
@@ -55,43 +72,45 @@ var (
 	GlobalModelRegistry *ModelRegistry
 
 	fallbackModels = []ModelInfo{
-		{ID: "gemini-3.1-pro-high", DisplayName: "Gemini 3.1 Pro (High)", Description: "🧠 По умолчанию: флагман, глубокий рефакторинг, архитектура, сложные алгоритмы"},
-		{ID: "gemini-3.1-pro-low", DisplayName: "Gemini 3.1 Pro (Low)", Description: "🧠 Gemini 3.1 Pro: быстрый режим для средних задач"},
-		{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)", Description: "⚡ Gemini 3.8 Flash с глубоким рассуждением (High effort)"},
-		{ID: "gemini-3.8-flash-medium", DisplayName: "Gemini 3.8 Flash (Medium)", Description: "⚡ Максимальная скорость и свежая база"},
-		{ID: "gemini-3.8-flash-low", DisplayName: "Gemini 3.8 Flash (Low)", Description: "⚡ Gemini 3.8 Flash в ультрабыстром режиме (Low effort)"},
-		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6 (Thinking)", Description: "🎯 Claude Sonnet 4.6 (Thinking): сильный агентный кодинг с пошаговым рассуждением"},
-		{ID: "claude-opus-4-6-thinking", DisplayName: "Claude Opus 4.6 (Thinking)", Description: "👑 Claude Opus 4.6 (Thinking): максимальный уровень рассуждений для сложных багов"},
-		{ID: "gpt-oss-120b-medium", DisplayName: "GPT-OSS 120B (Medium)", Description: "🌐 GPT-OSS 120B (Medium): открытая весовая архитектура"},
-		{ID: "gemini-3.7-flash-high", DisplayName: "Gemini 3.7 Flash (High)", Description: "⚡ Gemini 3.7 Flash с повышенным рассуждением"},
-		{ID: "gemini-3.7-flash-medium", DisplayName: "Gemini 3.7 Flash (Medium)", Description: "⚡ Предыдущая быстрая версия"},
-		{ID: "gemini-3.7-flash-low", DisplayName: "Gemini 3.7 Flash (Low)", Description: "⚡ Gemini 3.7 Flash в ультрабыстром режиме"},
-		{ID: "gemini-3.6-flash-high", DisplayName: "Gemini 3.6 Flash (High)", Description: "⚡ Gemini 3.6 Flash с повышенным рассуждением"},
-		{ID: "gemini-3.6-flash-medium", DisplayName: "Gemini 3.6 Flash (Medium)", Description: "⚡ Базовая быстрая модель"},
-		{ID: "gemini-3.6-flash-low", DisplayName: "Gemini 3.6 Flash (Low)", Description: "⚡ Gemini 3.6 Flash в ультрабыстром режиме"},
+		{ID: "gemini-3.1-pro-high", DisplayName: "Gemini 3.1 Pro (High)", DescriptionKey: "models.desc_gemini_pro_high"},
+		{ID: "gemini-3.1-pro-low", DisplayName: "Gemini 3.1 Pro (Low)", DescriptionKey: "models.desc_gemini_pro_low"},
+		{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)", DescriptionKey: "models.desc_flash_38_high"},
+		{ID: "gemini-3.8-flash-medium", DisplayName: "Gemini 3.8 Flash (Medium)", DescriptionKey: "models.desc_flash_38_medium"},
+		{ID: "gemini-3.8-flash-low", DisplayName: "Gemini 3.8 Flash (Low)", DescriptionKey: "models.desc_flash_38_low"},
+		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6 (Thinking)", DescriptionKey: "models.desc_claude_sonnet_46"},
+		{ID: "claude-opus-4-6-thinking", DisplayName: "Claude Opus 4.6 (Thinking)", DescriptionKey: "models.desc_claude_opus_46"},
+		{ID: "gpt-oss-120b-medium", DisplayName: "GPT-OSS 120B (Medium)", DescriptionKey: "models.desc_gpt_oss_120b"},
+		{ID: "gemini-3.7-flash-high", DisplayName: "Gemini 3.7 Flash (High)", DescriptionKey: "models.desc_flash_37_high"},
+		{ID: "gemini-3.7-flash-medium", DisplayName: "Gemini 3.7 Flash (Medium)", DescriptionKey: "models.desc_flash_37_medium"},
+		{ID: "gemini-3.7-flash-low", DisplayName: "Gemini 3.7 Flash (Low)", DescriptionKey: "models.desc_flash_37_low"},
+		{ID: "gemini-3.6-flash-high", DisplayName: "Gemini 3.6 Flash (High)", DescriptionKey: "models.desc_flash_36_high"},
+		{ID: "gemini-3.6-flash-medium", DisplayName: "Gemini 3.6 Flash (Medium)", DescriptionKey: "models.desc_flash_36_medium"},
+		{ID: "gemini-3.6-flash-low", DisplayName: "Gemini 3.6 Flash (Low)", DescriptionKey: "models.desc_flash_36_low"},
 	}
 
-	knownDescriptions = map[string]string{
-		"gemini-3.8-flash-medium":  "⚡ Максимальная скорость и свежая база",
-		"gemini-3.8-flash-high":    "⚡ Максимальная точность Flash с повышенным рассуждением",
-		"gemini-3.8-flash-low":     "⚡ Ультрабыстрый режим Flash с минимальной задержкой",
-		"gemini-3.8-flash":         "⚡ Максимальная скорость и свежая база",
-		"gemini-3.7-flash-medium":  "⚡ Предыдущая быстрая версия",
-		"gemini-3.7-flash-high":    "⚡ Gemini 3.7 Flash с повышенным рассуждением",
-		"gemini-3.7-flash-low":     "⚡ Gemini 3.7 Flash в ультрабыстром режиме",
-		"gemini-3.7-flash":         "⚡ Предыдущая быстрая версия",
-		"gemini-3.6-flash-medium":  "⚡ Базовая быстрая модель",
-		"gemini-3.6-flash-high":    "⚡ Gemini 3.6 Flash с повышенным рассуждением",
-		"gemini-3.6-flash-low":     "⚡ Gemini 3.6 Flash в ультрабыстром режиме",
-		"gemini-3.6-flash":         "⚡ Базовая быстрая модель",
-		"gemini-3.1-pro-high":      "🧠 По умолчанию: флагман, глубокий рефакторинг, архитектура, сложные алгоритмы",
-		"gemini-3.1-pro-low":       "🧠 Gemini 3.1 Pro с быстрым рассуждением",
-		"gemini-3.1-pro":           "🧠 По умолчанию: флагман, глубокий рефакторинг, архитектура, сложные алгоритмы",
-		"claude-sonnet-5":          "🎯 Claude Sonnet 5 (Hybrid Reasoning): новое поколение с гибридным рассуждением",
-		"claude-sonnet-4-6":        "🎯 Claude Sonnet 4.6 (Thinking): сильный агентный кодинг с пошаговым рассуждением",
-		"claude-opus-4-6-thinking": "👑 Claude Opus 4.6 (Thinking): максимальный уровень рассуждений для сложных багов",
-		"claude-haiku-4-5":         "⚡ Claude Haiku 4.5: легкая и сверхбыстрая модель",
-		"gpt-oss-120b-medium":      "🌐 GPT-OSS 120B (Medium): открытая весовая архитектура",
+	// knownDescriptionKeys — описания моделей, которые бот знает сам: ключи каталога,
+	// а не готовый текст, поэтому список моделей переводится вместе с интерфейсом.
+	knownDescriptionKeys = map[string]string{
+		"gemini-3.8-flash-medium":  "models.desc_flash_38_medium",
+		"gemini-3.8-flash-high":    "models.desc_flash_38_high_alt",
+		"gemini-3.8-flash-low":     "models.desc_flash_38_low_alt",
+		"gemini-3.8-flash":         "models.desc_flash_38_medium",
+		"gemini-3.7-flash-medium":  "models.desc_flash_37_medium",
+		"gemini-3.7-flash-high":    "models.desc_flash_37_high",
+		"gemini-3.7-flash-low":     "models.desc_flash_37_low",
+		"gemini-3.7-flash":         "models.desc_flash_37_medium",
+		"gemini-3.6-flash-medium":  "models.desc_flash_36_medium",
+		"gemini-3.6-flash-high":    "models.desc_flash_36_high",
+		"gemini-3.6-flash-low":     "models.desc_flash_36_low",
+		"gemini-3.6-flash":         "models.desc_flash_36_medium",
+		"gemini-3.1-pro-high":      "models.desc_gemini_pro_high",
+		"gemini-3.1-pro-low":       "models.desc_gemini_pro_low_alt",
+		"gemini-3.1-pro":           "models.desc_gemini_pro_high",
+		"claude-sonnet-5":          "models.desc_claude_sonnet_5",
+		"claude-sonnet-4-6":        "models.desc_claude_sonnet_46",
+		"claude-opus-4-6-thinking": "models.desc_claude_opus_46",
+		"claude-haiku-4-5":         "models.desc_claude_haiku_45",
+		"gpt-oss-120b-medium":      "models.desc_gpt_oss_120b",
 	}
 
 	modelOrder = map[string]int{
@@ -201,7 +220,7 @@ func NewModelRegistry(cacheTTL time.Duration) *ModelRegistry {
 
 	go func() {
 		if _, err := reg.RefreshModels(true); err != nil {
-			log.Printf("Предупреждение: начальная синхронизация моделей: %v", err)
+			log.Printf("warning: initial model sync: %v", err)
 		}
 	}()
 
@@ -249,15 +268,10 @@ func parseAgyModelsOutput(raw string) []ModelInfo {
 			displayName = strings.TrimSpace(line[len(id):])
 		}
 
-		desc := knownDescriptions[id]
-		if desc == "" {
-			desc = fmt.Sprintf("✨ %s", displayName)
-		}
-
 		items = append(items, ModelInfo{
-			ID:          id,
-			DisplayName: displayName,
-			Description: desc,
+			ID:             id,
+			DisplayName:    displayName,
+			DescriptionKey: knownDescriptionKeys[id],
 		})
 	}
 	return items
@@ -304,7 +318,7 @@ func (m *ModelRegistry) RefreshModels(force bool) ([]ModelInfo, error) {
 		m.RLock()
 		cached := m.models
 		m.RUnlock()
-		return cached, fmt.Errorf("вызов получения моделей завершился с ошибкой: %w", err)
+		return cached, fmt.Errorf("models: fetching the model list failed: %w", err)
 	}
 
 	cleanOut := utils.AnsiRegex.ReplaceAllString(string(out), "")
@@ -313,7 +327,7 @@ func (m *ModelRegistry) RefreshModels(force bool) ([]ModelInfo, error) {
 		m.RLock()
 		cached := m.models
 		m.RUnlock()
-		return cached, fmt.Errorf("получен пустой список моделей")
+		return cached, errors.New("models: the model list came back empty")
 	}
 
 	m.setModels(parsed)
@@ -384,17 +398,18 @@ func (m *ModelRegistry) IsActive(modelID, currentModel string) bool {
 	return false
 }
 
-func (m *ModelRegistry) FormatModelsMessage(currentModel string) string {
+func (m *ModelRegistry) FormatModelsMessage(currentModel, lang string) string {
 	models := m.GetModels()
 	var bldr strings.Builder
-	bldr.WriteString("🤖 <b>Доступные модели:</b>\n\n")
+	bldr.WriteString(i18n.T(lang, "models.header"))
 
 	for _, mod := range models {
+		desc := html.EscapeString(mod.Description(lang))
 		if m.IsActive(mod.ID, currentModel) {
-			bldr.WriteString(fmt.Sprintf("👉 <b>%s</b> <i>(активна)</i>\n%s\n\n", html.EscapeString(mod.ID), html.EscapeString(mod.Description)))
+			bldr.WriteString(i18n.Tf(lang, "models.active_item", html.EscapeString(mod.ID), desc))
 		} else {
-			bldr.WriteString(fmt.Sprintf("• <code>%s</code>\n%s\n<i>Переключить:</i> <code>/model %s</code>\n\n",
-				html.EscapeString(mod.ID), html.EscapeString(mod.Description), html.EscapeString(mod.ID)))
+			bldr.WriteString(i18n.Tf(lang, "models.item",
+				html.EscapeString(mod.ID), desc, html.EscapeString(mod.ID)))
 		}
 	}
 
@@ -406,7 +421,7 @@ func (m *ModelRegistry) FormatModelsMessage(currentModel string) string {
 		}
 	}
 
-	bldr.WriteString("💡 <i>Короткие алиасы:</i>\n")
+	bldr.WriteString(i18n.T(lang, "models.aliases_header"))
 	if hasGemini {
 		bldr.WriteString("• <code>/model flash</code> — Gemini 3.8 Flash\n")
 		bldr.WriteString("• <code>/model pro</code> — Gemini 3.1 Pro\n")
@@ -419,7 +434,7 @@ func (m *ModelRegistry) FormatModelsMessage(currentModel string) string {
 		bldr.WriteString("• <code>/model haiku</code> — Claude Haiku 4.5\n")
 		bldr.WriteString("• <code>/model sonnet-5</code> — Claude Sonnet 5\n\n")
 	}
-	bldr.WriteString("🔄 <i>Список моделей синхронизируется динамически с CLI агентом (обновить: <code>/models refresh</code>)</i>")
+	bldr.WriteString(i18n.T(lang, "models.footer"))
 
 	return bldr.String()
 }

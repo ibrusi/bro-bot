@@ -401,7 +401,7 @@ func TestStorageRecovery(t *testing.T) {
 	}
 
 	logs1, _ := s.GetRecentLogs(ctx, t1, 5)
-	if len(logs1) == 0 || !strings.Contains(logs1[0], "перезапуском бота") {
+	if len(logs1) == 0 || !strings.Contains(logs1[0], "interrupted by a bot restart") {
 		t.Fatalf("expected recovery log entry for t1, got %+v", logs1)
 	}
 }
@@ -485,7 +485,6 @@ func TestStorageUpdateTaskAgent(t *testing.T) {
 		t.Fatalf("expected Agent 'agy', got %q", got2.Agent)
 	}
 }
-
 
 func TestChatSessionsCRUD(t *testing.T) {
 	s := newTestStorage(t)

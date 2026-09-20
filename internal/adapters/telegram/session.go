@@ -1,7 +1,7 @@
 package telegram
 
 import (
-	"fmt"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -118,7 +118,7 @@ func (s *session) Reply(text string, opts *ports.SendOptions) error {
 func (s *session) Edit(text string, opts *ports.SendOptions) error {
 	m := s.c.Message()
 	if m == nil {
-		return fmt.Errorf("нет сообщения для редактирования")
+		return errors.New("telegram: no message to edit")
 	}
 	ref := msgRef(m)
 	ed, err := editable(ref)

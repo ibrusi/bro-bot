@@ -29,6 +29,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 - [⚙️ Configuration (.env)](#️-configuration-env)
 - [🛠 Systemd Setup & Autostart](#-systemd-setup--autostart)
 - [💬 Bot Command Reference](#-bot-command-reference)
+- [🌍 Interface Language & Localization](#-interface-language--localization)
 - [📋 Agent Guidelines (AGENT.md)](#-agent-guidelines-agentmd)
 - [🤖 Bot System Instructions (GEMINI.md / AGENTS.md)](#-bot-system-instructions-geminimd--agentsmd)
 - [🧪 Development & Testing](#-development--testing)
@@ -69,6 +70,10 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - `/tokens` (or `/stats`) — granular token statistics for the current/completed task: Input, Output, Thinking, Cache Read, and Cache Hit Rate.
   - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
   - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, and active `agy`/`claude` processes.
+- **Multilingual Interface**:
+  - Every bot reply, button, command description and agent prompt comes from a message catalog — English and Russian ship out of the box.
+  - English is the default until a language is picked; the choice is made with `/language` and survives restarts.
+  - A new language is one JSON file in `internal/i18n/locales/` — no Go code changes (see [Interface Language & Localization](#-interface-language--localization)).
 - **Hot-Rebuild & In-Bot CI/CD**:
   - `/restart` — clean, non-blocking systemd service restart.
   - `/rebuild [branch] [--pull] [--force]` — pulls latest code from Git, compiles a fresh Go binary, atomically replaces the executable, restarts the service, and sends a Telegram notification with the new commit hash upon startup.
@@ -98,6 +103,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 │  internal/domain/    ──► Task Queue, Sessions & Tokens   │
 │  internal/storage/   ──► SQLite Persistence & Migrations │
 │  internal/models/    ──► Model Registry & Aliases        │
+│  internal/i18n/      ──► Message catalogs (locales/*.json)│
 │  internal/system/    ──► Hot-Rebuild, Systemd & Top/PS   │
 │  internal/utils/     ──► Rich-text (HTML subset) &       │
 │                           Markdown parser                │
@@ -374,7 +380,50 @@ so the conversation continues. Reset it with `/chat new`.
 |---|---|---|
 | `/restart` | Safely restart the bot service via `systemctl`. | `/restart` |
 | `/rebuild [branch] [--pull] [--force]` | Pull Git updates, rebuild the Go binary, and restart the bot. | `/rebuild main --pull` |
+| `/language` | Choose the interface language (buttons are built from the installed catalogs). | `/language` |
 | `/script <name>` | Execute a custom script from `SCRIPTS_DIR` and print output. | `/script deploy.sh` |
+
+---
+
+## 🌍 Interface Language & Localization
+
+Every user-facing string — replies, inline buttons, command descriptions in the messenger menu, error messages and the prompts sent to the coding agent — is looked up in a message catalog instead of being hardcoded.
+
+### Switching the language
+
+- `/language` shows one button per installed catalog; the active language is marked with a check mark.
+- The choice is stored in SQLite under the `bot_language` setting and restored on the next start.
+- Until a language is chosen, the bot answers in **English** (`i18n.Default`). An unknown or removed language code falls back to English instead of leaving the bot without one.
+- Switching the language also re-registers the messenger command menu for every installed catalog, so `/`-hints follow the interface.
+
+The agent prompts are localized too: planning, implementation and chat-mode instructions are taken from the same catalog, so the agent writes its plans and reports in the selected language.
+
+### Adding a new language
+
+Adding a language requires **no Go code changes** — drop one file into `internal/i18n/locales/`:
+
+1. Copy `internal/i18n/locales/en.json` to `internal/i18n/locales/<code>.json`, where `<code>` is the two-letter language code (`de`, `fr`, `es`, …). The file name and `meta.code` must match.
+2. Fill in `meta`:
+
+   ```json
+   {
+     "meta": { "code": "de", "name": "Deutsch", "flag": "🇩🇪" },
+     "messages": { "...": "..." }
+   }
+   ```
+
+   `name` is the native language name and `flag` is the emoji — together they become the button label in `/language`.
+3. Translate every value under `messages`. Keep the placeholders (`%s`, `%d`, `%.1f`) in the same order as in `en.json`, and keep the HTML tags (`<b>`, `<code>`, `<a href="…">`) intact.
+4. Run the catalog tests:
+
+   ```bash
+   go test ./internal/i18n/
+   ```
+
+   They fail with an explicit list of problems if a key is missing, a key was invented that the default catalog does not have, or the placeholders diverge from the English original.
+5. Rebuild the bot. The catalogs are embedded with `go:embed`, so the new language appears in `/language`, in the command menu and in the fallback chain automatically.
+
+A partially translated catalog still works: a missing key falls back to English rather than breaking the message — but the tests will point it out.
 
 ---
 

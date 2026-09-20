@@ -20,7 +20,7 @@ func authMiddleware(admin ports.ChatID) func(ports.Handler) ports.Handler {
 	return func(next ports.Handler) ports.Handler {
 		return func(s ports.Session) error {
 			if !isAdminSession(s, admin) {
-				log.Printf("Апдейт отклонён: отправитель %q, чат %q", s.SenderID(), s.Chat())
+				log.Printf("update rejected: sender %q, chat %q", s.SenderID(), s.Chat())
 				return nil
 			}
 			return next(s)

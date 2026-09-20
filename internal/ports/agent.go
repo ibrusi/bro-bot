@@ -11,17 +11,19 @@ type AgentFramework interface {
 	ExecuteTask(ctx context.Context, args ExecuteArgs) (AgentProcess, error)
 	// GetModels возвращает сырой JSON или строку со списком моделей
 	GetModels(ctx context.Context) ([]byte, error)
-	// GetQuota возвращает сырой JSON для квоты
-	GetQuota(ctx context.Context) ([]byte, error)
-	// GetQuotaText возвращает текстовое представление квоты
-	GetQuotaText(ctx context.Context) ([]byte, error)
+	// GetQuota возвращает сырой JSON для квоты. lang — язык интерфейса: API-адаптеры
+	// собирают сводку сами, и её текст должен быть на языке пользователя; CLI-адаптеры
+	// показывают ответ своего инструмента и параметр игнорируют.
+	GetQuota(ctx context.Context, lang string) ([]byte, error)
+	// GetQuotaText возвращает текстовое представление квоты на языке lang.
+	GetQuotaText(ctx context.Context, lang string) ([]byte, error)
 	// GetCredits возвращает сырой JSON для кредитов
 	GetCredits(ctx context.Context) ([]byte, error)
 }
 
 // ChatMessage — одна реплика диалога, передаваемая агенту для восстановления контекста.
 type ChatMessage struct {
-	Role    string // "user" или "assistant"
+	Role    string // "user" or "assistant"
 	Content string
 }
 

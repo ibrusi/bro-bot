@@ -15,13 +15,13 @@ import (
 
 // Turn — одна реплика диалога: сообщение пользователя или ответ агента.
 type Turn struct {
-	Role      string // "user" или "assistant"
+	Role      string // "user" or "assistant"
 	Text      string
 	Timestamp string
 }
 
 // ErrSessionNotFound возвращается, если файл сессии с таким ID не найден на диске.
-var ErrSessionNotFound = errors.New("файл сессии не найден")
+var ErrSessionNotFound = errors.New("transcript: session file not found")
 
 // sessionEntry — минимальный набор полей одной строки JSONL-файла сессии.
 type sessionEntry struct {
@@ -47,11 +47,11 @@ type contentBlock struct {
 func SessionFilePath(workDir, conversationID string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("не удалось определить домашнюю директорию: %w", err)
+		return "", fmt.Errorf("transcript: resolve home directory: %w", err)
 	}
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
-		return "", fmt.Errorf("не удалось определить абсолютный путь проекта: %w", err)
+		return "", fmt.Errorf("transcript: resolve project path: %w", err)
 	}
 	return filepath.Join(home, ".claude", "projects", projectSlug(absWorkDir), conversationID+".jsonl"), nil
 }
@@ -86,7 +86,7 @@ func ReadSession(workDir, conversationID string) ([]Turn, error) {
 		if os.IsNotExist(err) {
 			return nil, ErrSessionNotFound
 		}
-		return nil, fmt.Errorf("не удалось открыть файл сессии: %w", err)
+		return nil, fmt.Errorf("transcript: open session file: %w", err)
 	}
 	defer f.Close()
 
@@ -126,7 +126,7 @@ func ReadSession(workDir, conversationID string) ([]Turn, error) {
 		turns = append(turns, Turn{Role: entry.Type, Text: text, Timestamp: entry.Timestamp})
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("ошибка чтения файла сессии: %w", err)
+		return nil, fmt.Errorf("transcript: read session file: %w", err)
 	}
 
 	return turns, nil

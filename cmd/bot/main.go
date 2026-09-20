@@ -33,7 +33,7 @@ func buildTransport(messenger string) ports.Transport {
 		}
 		return t
 	default:
-		log.Fatalf("неизвестный мессенджер в MESSENGER: %s", messenger)
+		log.Fatalf("unknown messenger in MESSENGER: %s", messenger)
 		return nil
 	}
 }

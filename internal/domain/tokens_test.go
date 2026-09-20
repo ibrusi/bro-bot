@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"bro-bot/internal/i18n"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -53,25 +54,44 @@ func TestFormatCompact(t *testing.T) {
 	}
 }
 
-func TestFormatDurationHuman(t *testing.T) {
+func TestFormatDuration(t *testing.T) {
 	tests := []struct {
-		input    time.Duration
-		expected string
+		input time.Duration
+		en    string
+		ru    string
 	}{
-		{0 * time.Second, "0с"},
-		{15 * time.Second, "15с"},
-		{59 * time.Second, "59с"},
-		{60 * time.Second, "1м"},
-		{65 * time.Second, "1м 05с"},
-		{3600 * time.Second, "1ч 00м"},
-		{3665 * time.Second, "1ч 01м"},
+		{0 * time.Second, "0s", "0с"},
+		{15 * time.Second, "15s", "15с"},
+		{59 * time.Second, "59s", "59с"},
+		{60 * time.Second, "1m", "1м"},
+		{65 * time.Second, "1m 05s", "1м 05с"},
+		{3600 * time.Second, "1h 00m", "1ч 00м"},
+		{3665 * time.Second, "1h 01m", "1ч 01м"},
 	}
 
 	for _, tc := range tests {
-		actual := FormatDurationHuman(tc.input)
-		if actual != tc.expected {
-			t.Errorf("FormatDurationHuman(%v) = %q, expected %q", tc.input, actual, tc.expected)
+		if actual := FormatDuration(tc.input, i18n.Default); actual != tc.en {
+			t.Errorf("FormatDuration(%v, en) = %q, expected %q", tc.input, actual, tc.en)
 		}
+		if actual := FormatDuration(tc.input, "ru"); actual != tc.ru {
+			t.Errorf("FormatDuration(%v, ru) = %q, expected %q", tc.input, actual, tc.ru)
+		}
+	}
+}
+
+// TestFormatDurationHumanUsesActiveLanguage: обёртка без параметра берёт язык из
+// i18n.Active() — на нём держатся статусы задач в глубине пайплайна.
+func TestFormatDurationHumanUsesActiveLanguage(t *testing.T) {
+	previous := i18n.Active()
+	t.Cleanup(func() { i18n.SetActive(previous) })
+
+	i18n.SetActive("ru")
+	if got := FormatDurationHuman(65 * time.Second); got != "1м 05с" {
+		t.Errorf("на русском получили %q", got)
+	}
+	i18n.SetActive(i18n.Default)
+	if got := FormatDurationHuman(65 * time.Second); got != "1m 05s" {
+		t.Errorf("на английском получили %q", got)
 	}
 }
 
@@ -139,7 +159,7 @@ func TestTokenTrackerLifecycle(t *testing.T) {
 	tracker := NewTokenTracker()
 
 	// 1. Initial state
-	msg := tracker.GetTokensCommandMessage()
+	msg := tracker.GetTokensCommandMessage("ru")
 	if !strings.Contains(msg, "Задачи ещё не запускались") {
 		t.Errorf("Expected initial empty message, got %s", msg)
 	}
@@ -156,7 +176,7 @@ func TestTokenTrackerLifecycle(t *testing.T) {
 		TotalTokens:     1100,
 	})
 
-	snippet := tracker.GetLiveStatusSnippet()
+	snippet := tracker.GetLiveStatusSnippet("ru")
 	if snippet == "" || !strings.Contains(snippet, "Токены:") {
 		t.Errorf("Expected live status snippet, got %q", snippet)
 	}
@@ -171,7 +191,7 @@ func TestTokenTrackerLifecycle(t *testing.T) {
 	}, 2.0, 1)
 
 	// 5. Check active /tokens message
-	activeMsg := tracker.GetTokensCommandMessage()
+	activeMsg := tracker.GetTokensCommandMessage("ru")
 	if !strings.Contains(activeMsg, "Активная задача в работе") {
 		t.Errorf("Expected active task message, got %s", activeMsg)
 	}
@@ -189,7 +209,7 @@ func TestTokenTrackerLifecycle(t *testing.T) {
 	}
 
 	// 7. Check idle /tokens message with history and session totals
-	idleMsg := tracker.GetTokensCommandMessage()
+	idleMsg := tracker.GetTokensCommandMessage("ru")
 	if !strings.Contains(idleMsg, "Статистика последней задачи:") {
 		t.Errorf("Expected last task stats, got %s", idleMsg)
 	}
@@ -201,7 +221,7 @@ func TestTokenTrackerLifecycle(t *testing.T) {
 	}
 
 	// 8. Short last task for /usage
-	shortLast := tracker.FormatShortLastTask()
+	shortLast := tracker.FormatShortLastTask("ru")
 	if !strings.Contains(shortLast, "1 100") {
 		t.Errorf("Expected 1 100 in short last, got %q", shortLast)
 	}
@@ -316,9 +336,9 @@ func TestRenderContextBar(t *testing.T) {
 
 func TestGetContextCommandMessageIdle(t *testing.T) {
 	tracker := NewTokenTracker()
-	msg := tracker.GetContextCommandMessage(nil, "my-project", "flash")
+	msg := tracker.GetContextCommandMessage(nil, "my-project", "flash", "ru")
 
-	if !strings.Contains(msg, "Контекстное окно модели agy") {
+	if !strings.Contains(msg, "Контекстное окно модели") {
 		t.Errorf("Expected header in idle context message, got:\n%s", msg)
 	}
 	if !strings.Contains(msg, "1.0M") {
@@ -352,7 +372,7 @@ func TestGetContextCommandMessageActiveAndCompleted(t *testing.T) {
 	}
 
 	// 1. Active task
-	activeMsg := tracker.GetContextCommandMessage(task, "bro-bot", "flash")
+	activeMsg := tracker.GetContextCommandMessage(task, "bro-bot", "flash", "ru")
 	if !strings.Contains(activeMsg, "Контекст активной задачи #1") {
 		t.Errorf("Expected active task header, got:\n%s", activeMsg)
 	}
@@ -377,7 +397,7 @@ func TestGetContextCommandMessageActiveAndCompleted(t *testing.T) {
 	task.Status = TaskStatusCompleted
 	task.TokenMetrics = &completed
 
-	compMsg := tracker.GetContextCommandMessage(task, "bro-bot", "flash")
+	compMsg := tracker.GetContextCommandMessage(task, "bro-bot", "flash", "ru")
 	if !strings.Contains(compMsg, "Контекст задачи #1") {
 		t.Errorf("Expected completed task header, got:\n%s", compMsg)
 	}
@@ -420,7 +440,7 @@ func TestGetContextCommandMessage_Task4Scenario(t *testing.T) {
 		},
 	}
 
-	msg := tracker.GetContextCommandMessage(task, "bro-bot", "gemini-3.8-flash-high")
+	msg := tracker.GetContextCommandMessage(task, "bro-bot", "gemini-3.8-flash-high", "ru")
 
 	// Verify that the context window reflects the 123.5k tokens (11.8%), NOT 25.4M / 2418%!
 	if strings.Contains(msg, "2418") || strings.Contains(msg, "25.4M") {
@@ -463,7 +483,7 @@ func TestGetContextCommandMessage_FallbackNeverExceeds100(t *testing.T) {
 		},
 	}
 
-	msg := tracker.GetContextCommandMessage(task, "bro-bot", "gemini-3.8-flash-high")
+	msg := tracker.GetContextCommandMessage(task, "bro-bot", "gemini-3.8-flash-high", "ru")
 
 	if strings.Contains(msg, "30.0M") || strings.Contains(msg, "32.0M") {
 		t.Errorf("Fallback summed cumulative cache into context window:\n%s", msg)
@@ -601,28 +621,28 @@ func TestFormatToolAction_ClaudeTools(t *testing.T) {
 		expected string
 	}{
 		{
-			name: "Bash",
-			info: &StreamToolInfo{Name: "Bash", Parameters: map[string]interface{}{"command": "git status"}},
+			name:     "Bash",
+			info:     &StreamToolInfo{Name: "Bash", Parameters: map[string]interface{}{"command": "git status"}},
 			expected: "⚡ git status",
 		},
 		{
-			name: "Edit",
-			info: &StreamToolInfo{Name: "Edit", Parameters: map[string]interface{}{"file_path": "/home/deploy/bro-bot/main.go"}},
+			name:     "Edit",
+			info:     &StreamToolInfo{Name: "Edit", Parameters: map[string]interface{}{"file_path": "/home/deploy/bro-bot/main.go"}},
 			expected: "✏️ edit: main.go",
 		},
 		{
-			name: "Write",
-			info: &StreamToolInfo{Name: "Write", Parameters: map[string]interface{}{"file_path": "/home/deploy/bro-bot/test.txt"}},
+			name:     "Write",
+			info:     &StreamToolInfo{Name: "Write", Parameters: map[string]interface{}{"file_path": "/home/deploy/bro-bot/test.txt"}},
 			expected: "📝 write: test.txt",
 		},
 		{
-			name: "Read",
-			info: &StreamToolInfo{Name: "Read", Parameters: map[string]interface{}{"file_path": "/home/deploy/bro-bot/config.json"}},
+			name:     "Read",
+			info:     &StreamToolInfo{Name: "Read", Parameters: map[string]interface{}{"file_path": "/home/deploy/bro-bot/config.json"}},
 			expected: "👁 view: config.json",
 		},
 		{
-			name: "WebSearch",
-			info: &StreamToolInfo{Name: "WebSearch", Parameters: map[string]interface{}{"query": "golang pty"}},
+			name:     "WebSearch",
+			info:     &StreamToolInfo{Name: "WebSearch", Parameters: map[string]interface{}{"query": "golang pty"}},
 			expected: "🔍 search: golang pty",
 		},
 	}
@@ -636,4 +656,3 @@ func TestFormatToolAction_ClaudeTools(t *testing.T) {
 		})
 	}
 }
-

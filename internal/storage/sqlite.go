@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bro-bot/internal/i18n"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -902,7 +903,7 @@ func (s *SQLiteStorage) AppendChatMessage(ctx context.Context, sessionID int, ro
 }
 
 // GetChatMessages возвращает последние limit реплик разговора в хронологическом порядке.
-// limit <= 0 означает "все реплики".
+// limit <= 0 означает «все реплики».
 func (s *SQLiteStorage) GetChatMessages(ctx context.Context, sessionID int, limit int) ([]*ChatMessageRecord, error) {
 	query := `SELECT id, session_id, role, content, created_at FROM chat_messages WHERE session_id = ? ORDER BY id`
 	args := []interface{}{sessionID}
@@ -1049,7 +1050,7 @@ func (s *SQLiteStorage) RecoverInterruptedTasks(ctx context.Context) ([]int, err
 	for _, id := range recoveredIDs {
 		_, _ = s.db.ExecContext(ctx, `UPDATE tasks SET status = 'paused' WHERE id = ?`, id)
 		_, _ = s.db.ExecContext(ctx, `INSERT INTO task_logs (task_id, log_line) VALUES (?, ?)`,
-			id, "⚠️ Выполнение прервано перезапуском бота. Задача переведена на паузу. Возобновить: /resume")
+			id, i18n.T(i18n.Active(), "task.interrupted_by_restart"))
 	}
 
 	return recoveredIDs, nil

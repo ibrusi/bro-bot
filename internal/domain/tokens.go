@@ -1,10 +1,10 @@
 package domain
 
 import (
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/models"
 	"bro-bot/internal/storage"
 	"bro-bot/internal/utils"
-	"bro-bot/internal/i18n"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -329,14 +329,14 @@ func (m TaskTokenMetrics) TotalTokensPerSecond() float64 {
 }
 
 // FormatCompletionSummary формирует блок статистики для завершающего сообщения.
-func (m TaskTokenMetrics) FormatCompletionSummary() string {
+func (m TaskTokenMetrics) FormatCompletionSummary(lang string) string {
 	dur := m.EffectiveDuration()
 	durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 	tps := m.TokensPerSecond()
 
 	var bldr strings.Builder
-	bldr.WriteString("📊 <b>Статистика использования токенов:</b>\n")
-	bldr.WriteString(fmt.Sprintf("• 🔢 <b>Всего:</b> <code>%s</code> (📥 %s | 📤 %s",
+	bldr.WriteString(i18n.T(lang, "tokens.summary_header"))
+	bldr.WriteString(i18n.Tf(lang, "tokens.summary_total",
 		formatThousands(m.Usage.TotalTokens),
 		formatCompact(m.Usage.InputTokens),
 		formatCompact(m.Usage.OutputTokens),
@@ -349,13 +349,13 @@ func (m TaskTokenMetrics) FormatCompletionSummary() string {
 	}
 	bldr.WriteString(")\n")
 
-	bldr.WriteString(fmt.Sprintf("• ⚡ <b>Скорость генерации:</b> <code>%.1f токенов/сек</code>\n", tps))
-	bldr.WriteString(fmt.Sprintf("• ⏱ <b>Время работы:</b> <code>%s</code>\n", durStr))
+	bldr.WriteString(i18n.Tf(lang, "tokens.summary_speed", tps))
+	bldr.WriteString(i18n.Tf(lang, "tokens.summary_elapsed", durStr))
 	if m.Model != "" {
-		bldr.WriteString(fmt.Sprintf("• 🧠 <b>Модель:</b> <code>%s</code>\n", html.EscapeString(m.Model)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.summary_model", html.EscapeString(m.Model)))
 	}
 	if m.Usage.CacheReadTokens > 0 {
-		bldr.WriteString(fmt.Sprintf("• 💾 <b>Кэш промпта:</b> <code>%s</code> (%.1f%% экономии)\n",
+		bldr.WriteString(i18n.Tf(lang, "tokens.summary_cache",
 			formatThousands(m.Usage.CacheReadTokens), m.Usage.CacheHitRate()))
 	}
 	if m.LastStepUsage.InputTokens > 0 || m.LastStepUsage.OutputTokens > 0 {
@@ -363,7 +363,7 @@ func (m TaskTokenMetrics) FormatCompletionSummary() string {
 		actCtx := m.LastStepUsage.InputTokens + m.LastStepUsage.CacheReadTokens + m.LastStepUsage.OutputTokens
 		if window > 0 && actCtx > 0 {
 			pct := (float64(actCtx) / float64(window)) * 100.0
-			bldr.WriteString(fmt.Sprintf("• 📏 <b>Окно контекста:</b> <code>%s / %s</code> (<b>%.1f%%</b>)\n",
+			bldr.WriteString(i18n.Tf(lang, "tokens.summary_window",
 				formatCompact(actCtx), FormatContextLimit(window), pct))
 		}
 	}
@@ -586,7 +586,7 @@ func (t *TokenTracker) CancelTask() {
 }
 
 // GetLiveStatusSnippet возвращает компактную строчку для живого обновления статуса.
-func (t *TokenTracker) GetLiveStatusSnippet() string {
+func (t *TokenTracker) GetLiveStatusSnippet(lang string) string {
 	t.RLock()
 	defer t.RUnlock()
 
@@ -613,12 +613,11 @@ func (t *TokenTracker) GetLiveStatusSnippet() string {
 		cacheStr = formatCompact(cache)
 	}
 
-	return fmt.Sprintf("⚡ <b>Токены:</b> <code>%s</code> (⚡ %.1f т/с | 💾 кэш: %s)",
-		formatCompact(total), tps, cacheStr)
+	return i18n.Tf(lang, "tokens.live_snippet", formatCompact(total), tps, cacheStr)
 }
 
 // GetCurrentTaskStatusBlock возвращает блок статистики токенов для команды /status.
-func (t *TokenTracker) GetCurrentTaskStatusBlock() string {
+func (t *TokenTracker) GetCurrentTaskStatusBlock(lang string) string {
 	t.RLock()
 	defer t.RUnlock()
 
@@ -634,8 +633,8 @@ func (t *TokenTracker) GetCurrentTaskStatusBlock() string {
 	}
 
 	var bldr strings.Builder
-	bldr.WriteString("📊 <b>Токены задачи:</b>\n")
-	bldr.WriteString(fmt.Sprintf("• Использовано: <code>%s</code> (📥 %s | 📤 %s",
+	bldr.WriteString(i18n.T(lang, "tokens.task_block_header"))
+	bldr.WriteString(i18n.Tf(lang, "tokens.task_block_used",
 		formatThousands(u.TotalTokens),
 		formatCompact(u.InputTokens),
 		formatCompact(u.OutputTokens),
@@ -646,19 +645,19 @@ func (t *TokenTracker) GetCurrentTaskStatusBlock() string {
 	bldr.WriteString(")\n")
 
 	if u.CacheReadTokens > 0 {
-		bldr.WriteString(fmt.Sprintf("• 💾 Кэш токенов: <code>%s</code> (%.1f%% экономии)\n",
+		bldr.WriteString(i18n.Tf(lang, "tokens.task_block_cache",
 			formatThousands(u.CacheReadTokens), u.CacheHitRate()))
 	} else {
-		bldr.WriteString("• 💾 Кэш токенов: <code>0</code> (0.0%)\n")
+		bldr.WriteString(i18n.T(lang, "tokens.task_block_cache_empty"))
 	}
 
-	bldr.WriteString(fmt.Sprintf("• ⚡ Скорость генерации: <code>%.1f токенов/сек</code>", tps))
+	bldr.WriteString(i18n.Tf(lang, "tokens.task_block_speed", tps))
 
 	return bldr.String()
 }
 
 // GetLastTaskStatusBlock возвращает компактный блок о последней завершенной задаче.
-func (t *TokenTracker) GetLastTaskStatusBlock() string {
+func (t *TokenTracker) GetLastTaskStatusBlock(lang string) string {
 	t.RLock()
 	defer t.RUnlock()
 
@@ -671,9 +670,7 @@ func (t *TokenTracker) GetLastTaskStatusBlock() string {
 	durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 	tps := t.lastTask.TokensPerSecond()
 
-	return fmt.Sprintf("📊 <b>Последняя задача (<code>%s</code>):</b>\n"+
-		"• Токены: <code>%s</code> (📥 %s | 📤 %s | 💾 %s)\n"+
-		"• Скорость: <code>%.1f т/с</code> | Время: <code>%s</code>",
+	return i18n.Tf(lang, "tokens.last_task_block",
 		html.EscapeString(t.lastTask.Project),
 		formatThousands(u.TotalTokens),
 		formatCompact(u.InputTokens),
@@ -707,38 +704,38 @@ func (t *TokenTracker) RecordChatUsage(model string, usage UsageStats, durationS
 }
 
 // ChatSummary возвращает блок статистики диалогового режима для /tokens (пусто, если диалогов не было).
-func (t *TokenTracker) ChatSummary() string {
+func (t *TokenTracker) ChatSummary(lang string) string {
 	t.RLock()
 	defer t.RUnlock()
-	return t.chatSummaryLocked()
+	return t.chatSummaryLocked(lang)
 }
 
-func (t *TokenTracker) chatSummaryLocked() string {
+func (t *TokenTracker) chatSummaryLocked(lang string) string {
 	if t.chatTurns == 0 {
 		return ""
 	}
 
 	var bldr strings.Builder
-	bldr.WriteString("💬 <b>Диалоговый режим</b>\n")
-	bldr.WriteString(fmt.Sprintf("• Ответов в чате: <code>%d</code>\n", t.chatTurns))
+	bldr.WriteString(i18n.T(lang, "tokens.chat_header"))
+	bldr.WriteString(i18n.Tf(lang, "tokens.chat_turns", t.chatTurns))
 	if t.lastChatModel != "" {
-		bldr.WriteString(fmt.Sprintf("• Модель: <code>%s</code>\n", html.EscapeString(t.lastChatModel)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.chat_model", html.EscapeString(t.lastChatModel)))
 	}
 	if t.chatUsage.TotalTokens > 0 {
-		bldr.WriteString(fmt.Sprintf("• Токенов: <code>%s</code> (📥 %s | 📤 %s)\n",
+		bldr.WriteString(i18n.Tf(lang, "tokens.chat_tokens",
 			formatThousands(t.chatUsage.TotalTokens),
 			formatCompact(t.chatUsage.InputTokens),
 			formatCompact(t.chatUsage.OutputTokens)))
 	}
 	if t.chatDuration > 0 {
-		bldr.WriteString(fmt.Sprintf("• Время ответов: <code>%s</code>\n",
+		bldr.WriteString(i18n.Tf(lang, "tokens.chat_duration",
 			FormatDurationHuman(time.Duration(t.chatDuration*float64(time.Second)))))
 	}
 	return bldr.String()
 }
 
 // GetTokensCommandMessage формирует полное сообщение для команды /tokens.
-func (t *TokenTracker) GetTokensCommandMessage() string {
+func (t *TokenTracker) GetTokensCommandMessage(lang string) string {
 	t.RLock()
 	defer t.RUnlock()
 
@@ -752,28 +749,28 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 		tps := cur.TokensPerSecond()
 		totalTps := cur.TotalTokensPerSecond()
 
-		bldr.WriteString("⚡ <b>Активная задача в работе</b>\n\n")
-		bldr.WriteString(fmt.Sprintf("📁 Проект: <code>%s</code>\n", html.EscapeString(cur.Project)))
-		bldr.WriteString(fmt.Sprintf("🧠 Модель: <code>%s</code>\n", html.EscapeString(cur.Model)))
-		bldr.WriteString(fmt.Sprintf("⏱ Время в работе: <code>%s</code>\n\n", durStr))
+		bldr.WriteString(i18n.T(lang, "tokens.active_header"))
+		bldr.WriteString(i18n.Tf(lang, "tokens.active_project", html.EscapeString(cur.Project)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.active_model", html.EscapeString(cur.Model)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.active_elapsed", durStr))
 
-		bldr.WriteString("📊 <b>Расход токенов:</b>\n")
-		bldr.WriteString(fmt.Sprintf("• 🔢 Всего: <code>%s</code>\n", formatThousands(cur.Usage.TotalTokens)))
-		bldr.WriteString(fmt.Sprintf("• 📥 Входные (промпт): <code>%s</code>\n", formatThousands(cur.Usage.InputTokens)))
-		bldr.WriteString(fmt.Sprintf("• 📤 Выходные (ответ): <code>%s</code>\n", formatThousands(cur.Usage.OutputTokens)))
+		bldr.WriteString(i18n.T(lang, "tokens.spend_header"))
+		bldr.WriteString(i18n.Tf(lang, "tokens.spend_total", formatThousands(cur.Usage.TotalTokens)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.spend_input", formatThousands(cur.Usage.InputTokens)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.spend_output", formatThousands(cur.Usage.OutputTokens)))
 		if cur.Usage.ThinkingTokens > 0 {
-			bldr.WriteString(fmt.Sprintf("• 💭 Рассуждения (thinking): <code>%s</code>\n", formatThousands(cur.Usage.ThinkingTokens)))
+			bldr.WriteString(i18n.Tf(lang, "tokens.spend_thinking", formatThousands(cur.Usage.ThinkingTokens)))
 		}
-		bldr.WriteString(fmt.Sprintf("• 💾 Из кэша (cache read): <code>%s</code> (%.1f%% попаданий)\n\n",
+		bldr.WriteString(i18n.Tf(lang, "tokens.spend_cache_hits",
 			formatThousands(cur.Usage.CacheReadTokens), cur.Usage.CacheHitRate()))
 
-		bldr.WriteString("🚀 <b>Производительность:</b>\n")
-		bldr.WriteString(fmt.Sprintf("• ⚡ Скорость генерации: <code>%.1f токенов/сек</code>\n", tps))
+		bldr.WriteString(i18n.T(lang, "tokens.performance_header"))
+		bldr.WriteString(i18n.Tf(lang, "tokens.performance_speed", tps))
 		if totalTps > 0 {
-			bldr.WriteString(fmt.Sprintf("• 🏎 Общая скорость (вход+выход): <code>%.1f т/с</code>\n", totalTps))
+			bldr.WriteString(i18n.Tf(lang, "tokens.performance_total_speed", totalTps))
 		}
 		if cur.Turns > 0 {
-			bldr.WriteString(fmt.Sprintf("• 🔄 Итераций (turns): <code>%d</code>\n", cur.Turns))
+			bldr.WriteString(i18n.Tf(lang, "tokens.performance_turns", cur.Turns))
 		}
 		return bldr.String()
 	}
@@ -785,22 +782,22 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 		durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 		tps := last.TokensPerSecond()
 
-		bldr.WriteString("💤 <i>Сейчас нет активных задач.</i>\n\n")
-		bldr.WriteString("📊 <b>Статистика последней задачи:</b>\n")
-		bldr.WriteString(fmt.Sprintf("• 📁 Проект: <code>%s</code>\n", html.EscapeString(last.Project)))
-		bldr.WriteString(fmt.Sprintf("• 🧠 Модель: <code>%s</code>\n", html.EscapeString(last.Model)))
-		bldr.WriteString(fmt.Sprintf("• ⏱ Время работы: <code>%s</code>\n", durStr))
-		bldr.WriteString(fmt.Sprintf("• 🔢 Всего токенов: <code>%s</code>\n", formatThousands(last.Usage.TotalTokens)))
-		bldr.WriteString(fmt.Sprintf("• 📥 Входные (промпт): <code>%s</code>\n", formatThousands(last.Usage.InputTokens)))
-		bldr.WriteString(fmt.Sprintf("• 📤 Выходные (ответ): <code>%s</code>\n", formatThousands(last.Usage.OutputTokens)))
+		bldr.WriteString(i18n.T(lang, "tokens.no_active"))
+		bldr.WriteString(i18n.T(lang, "tokens.last_header"))
+		bldr.WriteString(i18n.Tf(lang, "tokens.last_project", html.EscapeString(last.Project)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.last_model", html.EscapeString(last.Model)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.last_elapsed", durStr))
+		bldr.WriteString(i18n.Tf(lang, "tokens.last_total", formatThousands(last.Usage.TotalTokens)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.spend_input", formatThousands(last.Usage.InputTokens)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.spend_output", formatThousands(last.Usage.OutputTokens)))
 		if last.Usage.ThinkingTokens > 0 {
-			bldr.WriteString(fmt.Sprintf("• 💭 Рассуждения (thinking): <code>%s</code>\n", formatThousands(last.Usage.ThinkingTokens)))
+			bldr.WriteString(i18n.Tf(lang, "tokens.spend_thinking", formatThousands(last.Usage.ThinkingTokens)))
 		}
-		bldr.WriteString(fmt.Sprintf("• 💾 Из кэша (cache read): <code>%s</code> (%.1f%%)\n",
+		bldr.WriteString(i18n.Tf(lang, "tokens.last_cache",
 			formatThousands(last.Usage.CacheReadTokens), last.Usage.CacheHitRate()))
-		bldr.WriteString(fmt.Sprintf("• ⚡ Скорость генерации: <code>%.1f токенов/сек</code>\n", tps))
+		bldr.WriteString(i18n.Tf(lang, "tokens.performance_speed", tps))
 		if last.PRURL != "" {
-			bldr.WriteString(fmt.Sprintf("• 🔗 PR: <a href=\"%s\">Открыть Pull Request</a>\n", html.EscapeString(last.PRURL)))
+			bldr.WriteString(i18n.Tf(lang, "tokens.last_pr", html.EscapeString(last.PRURL)))
 		}
 		bldr.WriteString("\n")
 	}
@@ -812,18 +809,18 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 		}
 		totalDurStr := FormatDurationHuman(time.Duration(t.totalDuration * float64(time.Second)))
 
-		bldr.WriteString("📈 <b>Общая статистика сессии бота:</b>\n")
-		bldr.WriteString(fmt.Sprintf("• Выполнено задач: <code>%d</code>\n", t.totalTasksRun))
-		bldr.WriteString(fmt.Sprintf("• Всего токенов: <code>%s</code>\n", formatThousands(t.sessionUsage.TotalTokens)))
-		bldr.WriteString(fmt.Sprintf("  ├ 📥 Промпт: <code>%s</code>\n", formatCompact(t.sessionUsage.InputTokens)))
-		bldr.WriteString(fmt.Sprintf("  ├ 📤 Ответы: <code>%s</code>", formatCompact(t.sessionUsage.OutputTokens)))
+		bldr.WriteString(i18n.T(lang, "tokens.session_header"))
+		bldr.WriteString(i18n.Tf(lang, "tokens.session_tasks", t.totalTasksRun))
+		bldr.WriteString(i18n.Tf(lang, "tokens.session_total", formatThousands(t.sessionUsage.TotalTokens)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.session_prompt", formatCompact(t.sessionUsage.InputTokens)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.session_answers", formatCompact(t.sessionUsage.OutputTokens)))
 		if t.sessionUsage.ThinkingTokens > 0 {
-			bldr.WriteString(fmt.Sprintf(" (💭 %s thinking)", formatCompact(t.sessionUsage.ThinkingTokens)))
+			bldr.WriteString(i18n.Tf(lang, "tokens.session_thinking", formatCompact(t.sessionUsage.ThinkingTokens)))
 		}
 		bldr.WriteString("\n")
-		bldr.WriteString(fmt.Sprintf("  └ 💾 Кэш: <code>%s</code>\n", formatCompact(t.sessionUsage.CacheReadTokens)))
-		bldr.WriteString(fmt.Sprintf("• Общее время работы: <code>%s</code>\n", totalDurStr))
-		bldr.WriteString(fmt.Sprintf("• Средняя скорость: <code>%.1f токенов/сек</code>\n", avgSpeed))
+		bldr.WriteString(i18n.Tf(lang, "tokens.session_cache", formatCompact(t.sessionUsage.CacheReadTokens)))
+		bldr.WriteString(i18n.Tf(lang, "tokens.session_duration", totalDurStr))
+		bldr.WriteString(i18n.Tf(lang, "tokens.session_avg_speed", avgSpeed))
 	} else if GlobalTaskManager != nil && GlobalTaskManager.Storage() != nil {
 		if agg, err := GlobalTaskManager.Storage().GetAggregateMetrics(context.Background()); err == nil && agg != nil && agg.TotalTasks > 0 {
 			var avgSpeed float64
@@ -832,40 +829,36 @@ func (t *TokenTracker) GetTokensCommandMessage() string {
 			}
 			totalDurStr := FormatDurationHuman(time.Duration(agg.TotalDuration * float64(time.Second)))
 
-			bldr.WriteString("📈 <b>Общая статистика всех задач (из базы данных):</b>\n")
-			bldr.WriteString(fmt.Sprintf("• Всего выполнено задач: <code>%d</code>\n", agg.TotalTasks))
-			bldr.WriteString(fmt.Sprintf("• Всего токенов: <code>%s</code>\n", formatThousands(agg.TotalTokens)))
-			bldr.WriteString(fmt.Sprintf("  ├ 📥 Промпт: <code>%s</code>\n", formatCompact(agg.InputTokens)))
-			bldr.WriteString(fmt.Sprintf("  ├ 📤 Ответы: <code>%s</code>", formatCompact(agg.OutputTokens)))
+			bldr.WriteString(i18n.T(lang, "tokens.db_header"))
+			bldr.WriteString(i18n.Tf(lang, "tokens.db_tasks", agg.TotalTasks))
+			bldr.WriteString(i18n.Tf(lang, "tokens.session_total", formatThousands(agg.TotalTokens)))
+			bldr.WriteString(i18n.Tf(lang, "tokens.session_prompt", formatCompact(agg.InputTokens)))
+			bldr.WriteString(i18n.Tf(lang, "tokens.session_answers", formatCompact(agg.OutputTokens)))
 			if agg.ThinkingTokens > 0 {
-				bldr.WriteString(fmt.Sprintf(" (💭 %s thinking)", formatCompact(agg.ThinkingTokens)))
+				bldr.WriteString(i18n.Tf(lang, "tokens.session_thinking", formatCompact(agg.ThinkingTokens)))
 			}
 			bldr.WriteString("\n")
-			bldr.WriteString(fmt.Sprintf("  └ 💾 Кэш: <code>%s</code>\n", formatCompact(agg.CacheReadTokens)))
-			bldr.WriteString(fmt.Sprintf("• Общее время работы: <code>%s</code>\n", totalDurStr))
-			bldr.WriteString(fmt.Sprintf("• Средняя скорость: <code>%.1f токенов/сек</code>\n", avgSpeed))
+			bldr.WriteString(i18n.Tf(lang, "tokens.session_cache", formatCompact(agg.CacheReadTokens)))
+			bldr.WriteString(i18n.Tf(lang, "tokens.session_duration", totalDurStr))
+			bldr.WriteString(i18n.Tf(lang, "tokens.session_avg_speed", avgSpeed))
 		} else {
-			bldr.WriteString("📊 <b>Статистика использования токенов</b>\n\n")
-			bldr.WriteString("💤 Задачи ещё не запускались в этой сессии.\n")
-			bldr.WriteString("Отправьте задачу боту сообщением в чат, чтобы начать работу!")
+			bldr.WriteString(i18n.T(lang, "tokens.empty"))
 		}
 	} else {
-		bldr.WriteString("📊 <b>Статистика использования токенов</b>\n\n")
-		bldr.WriteString("💤 Задачи ещё не запускались в этой сессии.\n")
-		bldr.WriteString("Отправьте задачу боту сообщением в чат, чтобы начать работу!")
+		bldr.WriteString(i18n.T(lang, "tokens.empty"))
 	}
 
-	if chatBlock := t.chatSummaryLocked(); chatBlock != "" {
+	if chatBlock := t.chatSummaryLocked(lang); chatBlock != "" {
 		bldr.WriteString("\n\n")
 		bldr.WriteString(chatBlock)
 	}
 
-	bldr.WriteString("\n\n💡 <i>Детализация контекстного окна модели: /context</i>")
+	bldr.WriteString(i18n.T(lang, "tokens.footer"))
 	return bldr.String()
 }
 
 // FormatShortLastTask возвращает компактную строчку для команды /usage.
-func (t *TokenTracker) FormatShortLastTask() string {
+func (t *TokenTracker) FormatShortLastTask(lang string) string {
 	t.RLock()
 	defer t.RUnlock()
 
@@ -875,7 +868,7 @@ func (t *TokenTracker) FormatShortLastTask() string {
 
 	u := t.lastTask.Usage
 	tps := t.lastTask.TokensPerSecond()
-	return fmt.Sprintf("%s (📥 %s, 📤 %s, ⚡ %.1f т/с)",
+	return i18n.Tf(lang, "tokens.short_last_task",
 		formatThousands(u.TotalTokens),
 		formatCompact(u.InputTokens),
 		formatCompact(u.OutputTokens),
@@ -1001,7 +994,7 @@ func resolveStepUsageForContext(metrics TaskTokenMetrics, convID string, windowL
 }
 
 // GetContextCommandMessage формирует подробный отчёт об использовании контекстного окна agy.
-func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProject, defaultModel string) string {
+func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProject, defaultModel, lang string) string {
 	var (
 		taskID       int
 		taskProj     string
@@ -1061,13 +1054,13 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		windowLimitStr := FormatContextLimit(windowLimit)
 
 		if !hasMetrics || (metrics.Usage.TotalTokens == 0 && metrics.LastStepUsage.TotalTokens == 0) {
-			bldr.WriteString(fmt.Sprintf("📋 <b>Контекст задачи #%d</b> [%s]\n\n", taskID, i18n.TaskStatusTitle(string(taskStatus), "ru"))) // TODO
-			bldr.WriteString(fmt.Sprintf("📁 <b>Проект:</b> <code>%s</code>\n", html.EscapeString(taskProj)))
-			bldr.WriteString(fmt.Sprintf("🧠 <b>Модель:</b> <code>%s</code>\n", html.EscapeString(taskMod)))
-			bldr.WriteString(fmt.Sprintf("📏 <b>Окно контекста:</b> <code>%s</code> токенов (%s)\n\n", windowLimitStr, formatThousands(windowLimit)))
+			bldr.WriteString(i18n.Tf(lang, "context.task_header", taskID, i18n.TaskStatusTitle(string(taskStatus), lang)))
+			bldr.WriteString(i18n.Tf(lang, "context.project", html.EscapeString(taskProj)))
+			bldr.WriteString(i18n.Tf(lang, "context.model", html.EscapeString(taskMod)))
+			bldr.WriteString(i18n.Tf(lang, "context.window_limit", windowLimitStr, formatThousands(windowLimit)))
 			bldr.WriteString(fmt.Sprintf("<code>[%s]</code> <b>0.0%%</b>\n\n", renderContextBar(0, 20)))
-			bldr.WriteString("⏳ <i>Метрики контекста ещё не поступили от agy. Они появятся после первого шага выполнения.</i>\n\n")
-			bldr.WriteString("💡 <i>Окно контекста модели определяет максимальный объём промпта, истории и файлов (1.0M для Gemini, 200k для Claude).</i>")
+			bldr.WriteString(i18n.T(lang, "context.no_metrics"))
+			bldr.WriteString(i18n.T(lang, "context.window_hint"))
 			return bldr.String()
 		}
 
@@ -1084,60 +1077,60 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		}
 
 		if taskIsActive {
-			bldr.WriteString(fmt.Sprintf("⚡ <b>Контекст активной задачи #%d</b>\n\n", taskID))
+			bldr.WriteString(i18n.Tf(lang, "context.active_header", taskID))
 		} else {
-			bldr.WriteString(fmt.Sprintf("📊 <b>Контекст задачи #%d</b> [%s]\n\n", taskID, i18n.TaskStatusTitle(string(taskStatus), "ru"))) // TODO
+			bldr.WriteString(i18n.Tf(lang, "context.task_status_header", taskID, i18n.TaskStatusTitle(string(taskStatus), lang)))
 		}
 
-		bldr.WriteString(fmt.Sprintf("📁 <b>Проект:</b> <code>%s</code>\n", html.EscapeString(taskProj)))
-		bldr.WriteString(fmt.Sprintf("🧠 <b>Модель:</b> <code>%s</code>\n", html.EscapeString(taskMod)))
-		bldr.WriteString(fmt.Sprintf("📏 <b>Окно контекста:</b> <code>%s / %s</code> токенов (<b>%.1f%%</b>)\n",
+		bldr.WriteString(i18n.Tf(lang, "context.project", html.EscapeString(taskProj)))
+		bldr.WriteString(i18n.Tf(lang, "context.model", html.EscapeString(taskMod)))
+		bldr.WriteString(i18n.Tf(lang, "context.window_usage",
 			formatCompact(activeContextTokens), windowLimitStr, usedPercent))
 		bldr.WriteString(fmt.Sprintf("<code>[%s]</code> <b>%.1f%%</b>\n\n", renderContextBar(usedPercent, 20), usedPercent))
 
-		bldr.WriteString("📊 <b>Распределение контекста (Context Breakdown):</b>\n")
+		bldr.WriteString(i18n.T(lang, "context.breakdown_header"))
 		promptPercent := (float64(totalPromptTokens) / float64(windowLimit)) * 100.0
-		bldr.WriteString(fmt.Sprintf("• 📥 <b>Входной контекст (Prompt / Files):</b> <code>%s</code> (%.2f%% окна)\n",
+		bldr.WriteString(i18n.Tf(lang, "context.breakdown_input",
 			formatThousands(totalPromptTokens), promptPercent))
 		if cacheTokens > 0 {
 			hitRate := 0.0
 			if totalPromptTokens > 0 {
 				hitRate = (float64(cacheTokens) / float64(totalPromptTokens)) * 100.0
 			}
-			bldr.WriteString(fmt.Sprintf("  ├ 💾 <b>Кэш промпта:</b> <code>%s</code> (%.1f%% экономии)\n",
+			bldr.WriteString(i18n.Tf(lang, "context.breakdown_cache",
 				formatThousands(cacheTokens), hitRate))
-			bldr.WriteString("  └ ⚙️ <b>Системный контекст:</b> инструкции, правила, схемы инструментов\n")
+			bldr.WriteString(i18n.T(lang, "context.breakdown_system"))
 		} else {
-			bldr.WriteString("  └ ⚙️ <b>Системный контекст:</b> инструкции, правила, схемы инструментов\n")
+			bldr.WriteString(i18n.T(lang, "context.breakdown_system"))
 		}
 
 		respPercent := (float64(outputTokens) / float64(windowLimit)) * 100.0
-		bldr.WriteString(fmt.Sprintf("• 📤 <b>Ответы агента (Responses):</b> <code>%s</code> токенов (%.2f%%)\n",
+		bldr.WriteString(i18n.Tf(lang, "context.breakdown_output",
 			formatThousands(outputTokens), respPercent))
 		if thinkingTokens > 0 {
-			bldr.WriteString(fmt.Sprintf("  └ 💭 <b>Рассуждения (Thinking):</b> <code>%s</code> токенов\n",
+			bldr.WriteString(i18n.Tf(lang, "context.breakdown_thinking",
 				formatThousands(thinkingTokens)))
 		}
 
 		if metrics.ToolCallsCount > 0 {
-			bldr.WriteString(fmt.Sprintf("• 🔧 <b>Вызовы инструментов:</b> <code>%d</code> шагов\n", metrics.ToolCallsCount))
+			bldr.WriteString(i18n.Tf(lang, "context.breakdown_tools", metrics.ToolCallsCount))
 		}
 		if metrics.Turns > 0 {
-			bldr.WriteString(fmt.Sprintf("• 🔄 <b>Итераций диалога (Turns):</b> <code>%d</code>\n", metrics.Turns))
+			bldr.WriteString(i18n.Tf(lang, "context.breakdown_turns", metrics.Turns))
 		}
-		bldr.WriteString(fmt.Sprintf("• 🆓 <b>Свободно в окне контекста:</b> <code>%s</code> (<b>%.1f%%</b>)\n\n",
+		bldr.WriteString(i18n.Tf(lang, "context.breakdown_free",
 			formatThousands(freeTokens), freePercent))
 
 		dur := metrics.EffectiveDuration()
 		durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 		tps := metrics.TokensPerSecond()
 
-		bldr.WriteString("🚀 <b>Динамика сессии:</b>\n")
-		bldr.WriteString(fmt.Sprintf("• 🔢 Кумулятивно за задачу: <code>%s</code> токенов\n", formatThousands(metrics.Usage.TotalTokens)))
-		bldr.WriteString(fmt.Sprintf("• ⚡ Скорость генерации: <code>%.1f токенов/сек</code>\n", tps))
-		bldr.WriteString(fmt.Sprintf("• ⏱ Время работы: <code>%s</code>\n", durStr))
+		bldr.WriteString(i18n.T(lang, "context.session_header"))
+		bldr.WriteString(i18n.Tf(lang, "context.session_cumulative", formatThousands(metrics.Usage.TotalTokens)))
+		bldr.WriteString(i18n.Tf(lang, "context.session_speed", tps))
+		bldr.WriteString(i18n.Tf(lang, "context.session_elapsed", durStr))
 		if metrics.PRURL != "" {
-			bldr.WriteString(fmt.Sprintf("• 🔗 <b>PR:</b> <a href=\"%s\">Открыть Pull Request</a>\n", html.EscapeString(metrics.PRURL)))
+			bldr.WriteString(i18n.Tf(lang, "context.session_pr", html.EscapeString(metrics.PRURL)))
 		}
 		if taskConvID != "" {
 			agentName := metrics.Agent
@@ -1149,10 +1142,10 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 			if agentName == "" {
 				agentName = "agy"
 			}
-			bldr.WriteString(fmt.Sprintf("• 🧵 <b>Сессия %s:</b> <code>%s</code>\n", html.EscapeString(agentName), html.EscapeString(taskConvID)))
+			bldr.WriteString(i18n.Tf(lang, "context.session_id", html.EscapeString(agentName), html.EscapeString(taskConvID)))
 		}
 
-		bldr.WriteString("\n💡 <i>В agy команда /context визуализирует распределение контекстного окна. Бот получает эту статистику в реальном времени из потока событий agy.</i>")
+		bldr.WriteString(i18n.T(lang, "context.agent_hint"))
 		return bldr.String()
 	}
 
@@ -1178,65 +1171,65 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 			freePercent = 0
 		}
 
-		bldr.WriteString("💤 <i>Сейчас нет активных задач.</i>\n\n")
-		bldr.WriteString(fmt.Sprintf("📊 <b>Контекст последней задачи</b> (<code>%s</code>)\n\n", html.EscapeString(last.Project)))
-		bldr.WriteString(fmt.Sprintf("🧠 <b>Модель:</b> <code>%s</code>\n", html.EscapeString(mod)))
-		bldr.WriteString(fmt.Sprintf("📏 <b>Окно контекста:</b> <code>%s / %s</code> токенов (<b>%.1f%%</b>)\n",
+		bldr.WriteString(i18n.T(lang, "tokens.no_active"))
+		bldr.WriteString(i18n.Tf(lang, "context.last_task_header", html.EscapeString(last.Project)))
+		bldr.WriteString(i18n.Tf(lang, "context.model", html.EscapeString(mod)))
+		bldr.WriteString(i18n.Tf(lang, "context.window_usage",
 			formatCompact(activeContextTokens), windowLimitStr, usedPercent))
 		bldr.WriteString(fmt.Sprintf("<code>[%s]</code> <b>%.1f%%</b>\n\n", renderContextBar(usedPercent, 20), usedPercent))
 
-		bldr.WriteString("📊 <b>Распределение контекста (Context Breakdown):</b>\n")
+		bldr.WriteString(i18n.T(lang, "context.breakdown_header"))
 		promptPercent := (float64(totalPromptTokens) / float64(windowLimit)) * 100.0
-		bldr.WriteString(fmt.Sprintf("• 📥 <b>Входной контекст (Prompt / Files):</b> <code>%s</code> (%.2f%% окна)\n",
+		bldr.WriteString(i18n.Tf(lang, "context.breakdown_input",
 			formatThousands(totalPromptTokens), promptPercent))
 		if cacheTokens > 0 {
 			hitRate := 0.0
 			if totalPromptTokens > 0 {
 				hitRate = (float64(cacheTokens) / float64(totalPromptTokens)) * 100.0
 			}
-			bldr.WriteString(fmt.Sprintf("  ├ 💾 <b>Кэш промпта:</b> <code>%s</code> (%.1f%% экономии)\n",
+			bldr.WriteString(i18n.Tf(lang, "context.breakdown_cache",
 				formatThousands(cacheTokens), hitRate))
-			bldr.WriteString("  └ ⚙️ <b>Системный контекст:</b> инструкции, правила, схемы инструментов\n")
+			bldr.WriteString(i18n.T(lang, "context.breakdown_system"))
 		} else {
-			bldr.WriteString("  └ ⚙️ <b>Системный контекст:</b> инструкции, правила, схемы инструментов\n")
+			bldr.WriteString(i18n.T(lang, "context.breakdown_system"))
 		}
 
 		respPercent := (float64(outputTokens) / float64(windowLimit)) * 100.0
-		bldr.WriteString(fmt.Sprintf("• 📤 <b>Ответы агента (Responses):</b> <code>%s</code> токенов (%.2f%%)\n",
+		bldr.WriteString(i18n.Tf(lang, "context.breakdown_output",
 			formatThousands(outputTokens), respPercent))
 		if thinkingTokens > 0 {
-			bldr.WriteString(fmt.Sprintf("  └ 💭 <b>Рассуждения (Thinking):</b> <code>%s</code> токенов\n",
+			bldr.WriteString(i18n.Tf(lang, "context.breakdown_thinking",
 				formatThousands(thinkingTokens)))
 		}
 		if last.ToolCallsCount > 0 {
-			bldr.WriteString(fmt.Sprintf("• 🔧 <b>Вызовы инструментов:</b> <code>%d</code> шагов\n", last.ToolCallsCount))
+			bldr.WriteString(i18n.Tf(lang, "context.breakdown_tools", last.ToolCallsCount))
 		}
 		if last.Turns > 0 {
-			bldr.WriteString(fmt.Sprintf("• 🔄 <b>Итераций диалога (Turns):</b> <code>%d</code>\n", last.Turns))
+			bldr.WriteString(i18n.Tf(lang, "context.breakdown_turns", last.Turns))
 		}
-		bldr.WriteString(fmt.Sprintf("• 🆓 <b>Свободно в окне:</b> <code>%s</code> (<b>%.1f%%</b>)\n\n",
+		bldr.WriteString(i18n.Tf(lang, "context.breakdown_free_short",
 			formatThousands(freeTokens), freePercent))
 
 		dur := last.EffectiveDuration()
 		durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 		tps := last.TokensPerSecond()
 
-		bldr.WriteString("🚀 <b>Итоги:</b>\n")
-		bldr.WriteString(fmt.Sprintf("• 🔢 Всего токенов за задачу: <code>%s</code>\n", formatThousands(last.Usage.TotalTokens)))
-		bldr.WriteString(fmt.Sprintf("• ⚡ Скорость генерации: <code>%.1f токенов/сек</code>\n", tps))
-		bldr.WriteString(fmt.Sprintf("• ⏱ Время выполнения: <code>%s</code>\n", durStr))
+		bldr.WriteString(i18n.T(lang, "context.totals_header"))
+		bldr.WriteString(i18n.Tf(lang, "context.totals_tokens", formatThousands(last.Usage.TotalTokens)))
+		bldr.WriteString(i18n.Tf(lang, "context.session_speed", tps))
+		bldr.WriteString(i18n.Tf(lang, "context.totals_elapsed", durStr))
 		if last.PRURL != "" {
-			bldr.WriteString(fmt.Sprintf("• 🔗 <b>PR:</b> <a href=\"%s\">Открыть Pull Request</a>\n", html.EscapeString(last.PRURL)))
+			bldr.WriteString(i18n.Tf(lang, "context.session_pr", html.EscapeString(last.PRURL)))
 		}
 		if last.ConversationID != "" {
 			agentName := last.Agent
 			if agentName == "" {
 				agentName = "agy"
 			}
-			bldr.WriteString(fmt.Sprintf("• 🧵 <b>Сессия %s:</b> <code>%s</code>\n", html.EscapeString(agentName), html.EscapeString(last.ConversationID)))
+			bldr.WriteString(i18n.Tf(lang, "context.session_id", html.EscapeString(agentName), html.EscapeString(last.ConversationID)))
 		}
 
-		bldr.WriteString("\n💡 <i>Контекст конкретной задачи: /context &lt;id&gt; (список: /tasks).</i>")
+		bldr.WriteString(i18n.T(lang, "context.task_hint"))
 		return bldr.String()
 	}
 
@@ -1248,26 +1241,26 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 	windowLimit := ModelContextWindow(mod)
 	windowLimitStr := FormatContextLimit(windowLimit)
 
-	bldr.WriteString("🧠 <b>Контекстное окно модели agy</b>\n\n")
+	bldr.WriteString(i18n.T(lang, "context.idle_header"))
 	if defaultProject != "" {
-		bldr.WriteString(fmt.Sprintf("📁 <b>Текущий проект:</b> <code>%s</code>\n", html.EscapeString(defaultProject)))
+		bldr.WriteString(i18n.Tf(lang, "context.idle_project", html.EscapeString(defaultProject)))
 	}
-	bldr.WriteString(fmt.Sprintf("🧠 <b>Активная модель:</b> <code>%s</code>\n", html.EscapeString(mod)))
-	bldr.WriteString(fmt.Sprintf("📏 <b>Размер окна контекста:</b> <code>%s</code> токенов (%s)\n",
+	bldr.WriteString(i18n.Tf(lang, "context.idle_model", html.EscapeString(mod)))
+	bldr.WriteString(i18n.Tf(lang, "context.idle_window",
 		windowLimitStr, formatThousands(windowLimit)))
-	bldr.WriteString(fmt.Sprintf("• 📥 Использовано: <code>0</code> токенов (<b>0.0%%</b>)\n"))
-	bldr.WriteString(fmt.Sprintf("• 🆓 Свободно в окне: <code>%s</code> токенов (<b>100.0%%</b>)\n\n",
+	bldr.WriteString(i18n.T(lang, "context.idle_used"))
+	bldr.WriteString(i18n.Tf(lang, "context.idle_free",
 		formatThousands(windowLimit)))
 	bldr.WriteString(fmt.Sprintf("<code>[%s]</code> <b>0.0%%</b>\n\n", renderContextBar(0, 20)))
 
-	bldr.WriteString("📊 <b>Что загружается в контекст agy при старте задачи:</b>\n")
-	bldr.WriteString("• ⚙️ <b>Системные инструкции:</b> базовый промпт агента (~3-5k токенов)\n")
-	bldr.WriteString("• 📚 <b>Скиллы и правила:</b> AGENT.md, встроенные навыки agy (~5-10k токенов)\n")
-	bldr.WriteString("• 🔧 <b>Схемы инструментов:</b> run_command, view_file, write_to_file (~4-8k токенов)\n")
-	bldr.WriteString("• 💾 <b>Кэш промпта:</b> повторные префиксы автоматически кэшируются\n")
-	bldr.WriteString("• 💬 <b>История сообщений:</b> диалог и вызовы инструментов передаются на каждом шаге\n\n")
+	bldr.WriteString(i18n.T(lang, "context.idle_loaded_header"))
+	bldr.WriteString(i18n.T(lang, "context.idle_loaded_system"))
+	bldr.WriteString(i18n.T(lang, "context.idle_loaded_skills"))
+	bldr.WriteString(i18n.T(lang, "context.idle_loaded_tools"))
+	bldr.WriteString(i18n.T(lang, "context.idle_loaded_cache"))
+	bldr.WriteString(i18n.T(lang, "context.idle_loaded_history"))
 
-	bldr.WriteString("💡 <i>В agy команда /context визуализирует распределение контекстного окна модели. Бот собирает эти метрики в реальном времени из потока телеметрии agy.\nОтправьте задачу сообщением в чат, чтобы начать работу!</i>")
+	bldr.WriteString(i18n.T(lang, "context.idle_hint"))
 	return bldr.String()
 }
 
@@ -1365,21 +1358,29 @@ func formatCompact(n int64) string {
 	return fmt.Sprintf("%.1fM", val)
 }
 
+// FormatDurationHuman форматирует длительность на активном языке интерфейса.
+// Это низкоуровневый помощник: он вызывается из глубины отрисовки статусов, куда
+// язык параметром не дотянуть, поэтому берёт его из i18n.Active().
 func FormatDurationHuman(d time.Duration) string {
+	return FormatDuration(d, i18n.Active())
+}
+
+// FormatDuration форматирует длительность на заданном языке.
+func FormatDuration(d time.Duration, lang string) string {
 	d = d.Round(time.Second)
 	totalSec := int64(d.Seconds())
 	if totalSec < 60 {
-		return fmt.Sprintf("%dс", totalSec)
+		return i18n.Tf(lang, "duration.seconds", totalSec)
 	}
 	mins := totalSec / 60
 	secs := totalSec % 60
 	if mins < 60 {
 		if secs > 0 {
-			return fmt.Sprintf("%dм %02dс", mins, secs)
+			return i18n.Tf(lang, "duration.minutes_seconds", mins, secs)
 		}
-		return fmt.Sprintf("%dм", mins)
+		return i18n.Tf(lang, "duration.minutes", mins)
 	}
 	hours := mins / 60
 	remMins := mins % 60
-	return fmt.Sprintf("%dч %02dм", hours, remMins)
+	return i18n.Tf(lang, "duration.hours_minutes", hours, remMins)
 }

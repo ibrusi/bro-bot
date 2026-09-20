@@ -70,10 +70,10 @@ func TestUsageHeaderAndFooterMatchMode(t *testing.T) {
 		wantFooter string
 		notFooter  string
 	}{
-		{"claude", "cli", "Claude Code", "5-часового окна", "/tokens"},
-		{"claude", "api", "Claude API", "/tokens", "5-часового окна"},
-		{"agy", "cli", "Google Antigravity", "5-часового окна", "/tokens"},
-		{"agy", "api", "Gemini API", "/tokens", "5-часового окна"},
+		{"claude", "cli", "Claude Code", "5-hour and weekly windows", "/tokens"},
+		{"claude", "api", "Claude API", "/tokens", "5-hour and weekly windows"},
+		{"agy", "cli", "Google Antigravity", "5-hour and weekly windows", "/tokens"},
+		{"agy", "api", "Gemini API", "/tokens", "5-hour and weekly windows"},
 	}
 
 	for _, tc := range cases {
@@ -107,7 +107,7 @@ func TestUsageSourceTitle(t *testing.T) {
 		{"неизвестный", "cli", "CLI агента"},
 	}
 	for _, tc := range cases {
-		if got := usageSourceTitle(tc.agent, tc.mode); got != tc.want {
+		if got := usageSourceTitle(tc.agent, tc.mode, "ru"); got != tc.want {
 			t.Errorf("usageSourceTitle(%q, %q) = %q, ожидали %q", tc.agent, tc.mode, got, tc.want)
 		}
 	}

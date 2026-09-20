@@ -2,6 +2,7 @@ package agy
 
 import (
 	"bro-bot/internal/agents"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
 	"context"
@@ -19,6 +20,13 @@ import (
 	"google.golang.org/api/option"
 )
 
+// errMissingAPIKey — в окружении нет ключа для работы через Gemini API.
+// Тип общий с реестром агентов: обработчик переводит его в одном месте и не знает
+// про конкретные адаптеры.
+func errMissingAPIKey() error {
+	return &agents.MissingAPIKeyError{Agent: "agy", Vars: apiKeyEnv}
+}
+
 // AgyAPIAdapter реализует работу с Gemini API напрямую
 type AgyAPIAdapter struct {
 }
@@ -34,7 +42,7 @@ func (a *AgyAPIAdapter) AgentName() string {
 func (a *AgyAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
 	apiKey := agents.FirstEnv(apiKeyEnv...)
 	if apiKey == "" {
-		return nil, fmt.Errorf("API ключ не найден. Задайте GEMINI_API_KEY в .env для работы в режиме API")
+		return nil, errMissingAPIKey()
 	}
 
 	sessionID := args.ConversationID
@@ -60,7 +68,7 @@ func (a *AgyAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 func (a *AgyAPIAdapter) GetModels(ctx context.Context) ([]byte, error) {
 	apiKey := agents.FirstEnv(apiKeyEnv...)
 	if apiKey == "" {
-		return nil, fmt.Errorf("API ключ не найден. Задайте GEMINI_API_KEY в .env для работы в режиме API")
+		return nil, errMissingAPIKey()
 	}
 
 	available, err := availableGeminiModels(ctx, apiKey, false)
@@ -95,13 +103,13 @@ func formatGeminiModelsList(available []geminiModel) string {
 // GetQuota отдаёт ответ без групп: Gemini API не сообщает остаток квоты по ключу
 // ни в теле ответа, ни в заголовках. Рисовать проценты было бы враньём, поэтому
 // структурных данных нет, и обработчик покажет текст из GetQuotaText.
-func (a *AgyAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
+func (a *AgyAPIAdapter) GetQuota(_ context.Context, lang string) ([]byte, error) {
 	payload := map[string]interface{}{
 		"status": "SUCCESS",
 		"command": map[string]interface{}{
 			"name": "quota",
 			"data": map[string]interface{}{
-				"description": "Gemini API не отдаёт остаток квоты по ключу.",
+				"description": i18n.T(lang, "quota.gemini_description"),
 			},
 		},
 	}
@@ -110,22 +118,21 @@ func (a *AgyAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
 
 // GetQuotaText — человекочитаемая сводка: лимиты выбранной модели плюс указание,
 // где смотреть расход и квоты.
-func (a *AgyAPIAdapter) GetQuotaText(ctx context.Context) ([]byte, error) {
+func (a *AgyAPIAdapter) GetQuotaText(_ context.Context, lang string) ([]byte, error) {
 	var bldr strings.Builder
 
-	bldr.WriteString("Gemini API не сообщает остаток квоты по ключу — лимиты и биллинг видны ")
-	bldr.WriteString("в Google AI Studio и Google Cloud Console.\n")
+	bldr.WriteString(i18n.T(lang, "quota.gemini_text"))
 
 	if model, ok := currentGeminiModelLimits(); ok {
 		name := model.DisplayName
 		if name == "" {
 			name = model.ID
 		}
-		bldr.WriteString(fmt.Sprintf("Модель %s: контекст %s токенов, ответ до %s токенов.\n",
+		bldr.WriteString(i18n.Tf(lang, "quota.model_window",
 			name, utils.FormatCount(int64(model.InputTokenLimit)), utils.FormatCount(int64(model.OutputTokenLimit))))
 	}
 
-	bldr.WriteString("Расход токенов ботом: /tokens.")
+	bldr.WriteString(i18n.T(lang, "quota.gemini_footer"))
 	return []byte(bldr.String()), nil
 }
 
@@ -232,7 +239,7 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, args po
 		// Кэш моделей мог устареть (модель отключили): обновляем список и
 		// повторяем запрос на актуальной модели по умолчанию.
 		if fallback, ok := fallbackModelAfterFailure(ctx, client, modelName); ok {
-			log.Printf("agy-api: модель %q недоступна (%v), повторяем на %q", modelName, err, fallback)
+			log.Printf("agy-api: model %q is unavailable (%v), retrying with %q", modelName, err, fallback)
 			modelName = fallback
 			text, usage, err = p.streamOnce(ctx, client, modelName, args)
 		}
@@ -303,7 +310,7 @@ func usageFromMetadata(meta *genai.UsageMetadata) map[string]interface{} {
 
 // errStreamOutputClosed означает, что читатель закрыл канал вывода — ошибку
 // показывать не нужно, достаточно тихо завершиться.
-var errStreamOutputClosed = errors.New("поток вывода закрыт")
+var errStreamOutputClosed = errors.New("agy-api: output stream closed")
 
 // streamOnce выполняет один проход генерации и возвращает накопленный текст и счётчики токенов.
 func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, modelName string, args ports.ExecuteArgs) (string, map[string]interface{}, error) {

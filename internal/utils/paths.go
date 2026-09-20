@@ -1,39 +1,54 @@
 package utils
 
 import (
-	"fmt"
+	"errors"
 	"path/filepath"
 	"regexp"
 	"strings"
+)
+
+// Ошибки проверки пути. Текст здесь служебный и одинаковый для всех языков:
+// его читают логи и errors.Is, а пользователю показывается перевод, который
+// слой представления подбирает по этим значениям.
+var (
+	ErrNameEmpty       = errors.New("path: name must not be empty")
+	ErrNameControlChar = errors.New("path: name contains an invalid character")
+	ErrNameLeadingDash = errors.New("path: name must not start with a dash")
+	ErrNameReserved    = errors.New("path: reserved name")
+	ErrNameSeparators  = errors.New("path: name must not contain slashes, colons or spaces")
+	ErrNameCharset     = errors.New("path: name contains characters outside the allowed set")
+	ErrRootMissing     = errors.New("path: root directory is not set")
+	ErrPathAbsolute    = errors.New("path: absolute paths are not allowed")
+	ErrPathEscape      = errors.New("path: resolved path leaves the allowed directory")
 )
 
 // validSegmentRegex — символы, допустимые в имени файла или каталога, пришедшем от пользователя.
 var validSegmentRegex = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 
 // SanitizeSegment проверяет один сегмент пути, полученный от пользователя.
-// Возвращает очищенное имя либо ошибку с объяснением на русском — её можно
-// показывать пользователю как есть.
+// Возвращает очищенное имя либо одну из сентинел-ошибок пакета: показать её
+// пользователю на его языке — задача слоя представления.
 func SanitizeSegment(name string) (string, error) {
 	clean := strings.TrimSpace(name)
 
 	if clean == "" {
-		return "", fmt.Errorf("имя не может быть пустым")
+		return "", ErrNameEmpty
 	}
 	if strings.ContainsRune(clean, 0) {
-		return "", fmt.Errorf("имя содержит недопустимый символ")
+		return "", ErrNameControlChar
 	}
 	// Ведущий дефис превратил бы имя в опцию командной строки.
 	if strings.HasPrefix(clean, "-") {
-		return "", fmt.Errorf("имя не может начинаться с дефиса")
+		return "", ErrNameLeadingDash
 	}
 	if clean == "." || clean == ".." {
-		return "", fmt.Errorf("недопустимое имя")
+		return "", ErrNameReserved
 	}
 	if strings.ContainsAny(clean, "/\\: \t\r\n") {
-		return "", fmt.Errorf("имя не должно содержать слэши, двоеточия или пробелы")
+		return "", ErrNameSeparators
 	}
 	if !validSegmentRegex.MatchString(clean) {
-		return "", fmt.Errorf("имя содержит недопустимые символы. Разрешены только буквы, цифры, дефис, подчёркивание и точка")
+		return "", ErrNameCharset
 	}
 	return clean, nil
 }
@@ -47,15 +62,15 @@ func SanitizeSegment(name string) (string, error) {
 func SafeJoin(root, rel string) (string, error) {
 	cleanRoot := filepath.Clean(strings.TrimSpace(root))
 	if cleanRoot == "" || cleanRoot == "." {
-		return "", fmt.Errorf("корневой каталог не задан")
+		return "", ErrRootMissing
 	}
 
 	trimmed := strings.TrimSpace(rel)
 	if trimmed == "" {
-		return "", fmt.Errorf("имя не может быть пустым")
+		return "", ErrNameEmpty
 	}
 	if filepath.IsAbs(trimmed) {
-		return "", fmt.Errorf("абсолютные пути недопустимы")
+		return "", ErrPathAbsolute
 	}
 
 	segments := strings.Split(trimmed, "/")
@@ -73,7 +88,7 @@ func SafeJoin(root, rel string) (string, error) {
 	// Разделитель в префиксе обязателен: без него каталог-сосед вида
 	// "/opt/scripts-evil" прошёл бы проверку на корень "/opt/scripts".
 	if !strings.HasPrefix(joined, cleanRoot+string(filepath.Separator)) {
-		return "", fmt.Errorf("путь выходит за пределы разрешённого каталога")
+		return "", ErrPathEscape
 	}
 	return joined, nil
 }

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/storage"
 	"context"
@@ -12,7 +13,6 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
-	"bro-bot/internal/i18n"
 )
 
 const testChatID ports.ChatID = "12345"
@@ -741,7 +741,7 @@ func TestTaskManagerWithSQLiteStorage(t *testing.T) {
 	if restored2.Status != TaskStatusPaused {
 		t.Fatalf("expected task 2 to be recovered to paused, got %s", restored2.Status)
 	}
-	if len(restored2.RecentLogs) == 0 || !strings.Contains(restored2.RecentLogs[len(restored2.RecentLogs)-1], "перезапуском бота") {
+	if len(restored2.RecentLogs) == 0 || !strings.Contains(restored2.RecentLogs[len(restored2.RecentLogs)-1], "interrupted by a bot restart") {
 		t.Fatalf("expected recovery log entry in task 2, got %+v", restored2.RecentLogs)
 	}
 
@@ -818,7 +818,7 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 	if resumedPlan.Status != TaskStatusPlanning {
 		t.Fatalf("expected status Planning, got %s", resumedPlan.Status)
 	}
-	if !strings.Contains(resumedPlan.CurrentPrompt, "детального плана") {
+	if !strings.Contains(resumedPlan.CurrentPrompt, "detailed implementation plan") {
 		t.Fatalf("expected default planning prompt, got: %s", resumedPlan.CurrentPrompt)
 	}
 
@@ -837,7 +837,7 @@ func TestResumeTaskDefaultPrompts(t *testing.T) {
 	if resumedExec.Status != TaskStatusRunning {
 		t.Fatalf("expected status Running, got %s", resumedExec.Status)
 	}
-	if !strings.Contains(resumedExec.CurrentPrompt, "утвержденному плану") {
+	if !strings.Contains(resumedExec.CurrentPrompt, "according to the approved plan") {
 		t.Fatalf("expected default implementation prompt, got: %s", resumedExec.CurrentPrompt)
 	}
 
@@ -1184,13 +1184,14 @@ func TestAppendOutputLockedCapsSize(t *testing.T) {
 	if !task.OutputTruncated() {
 		t.Fatal("после 2.5 МиБ вывод должен быть помечен обрезанным")
 	}
-	if size > maxFullOutputBytes+len(outputTruncatedMarker) {
+	truncationMarker := i18n.T(i18n.Active(), "task.output_truncated")
+	if size > maxFullOutputBytes+len(truncationMarker) {
 		t.Errorf("размер %d превышает потолок %d", size, maxFullOutputBytes)
 	}
 	if !utf8.ValidString(out) {
 		t.Error("обрезка порвала руну: строка не является корректным UTF-8")
 	}
-	if !strings.HasSuffix(out, outputTruncatedMarker) {
+	if !strings.HasSuffix(out, truncationMarker) {
 		t.Error("в конце должна стоять пометка об обрезке")
 	}
 
