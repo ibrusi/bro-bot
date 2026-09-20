@@ -174,6 +174,40 @@ func TestHandleVoiceEmptyRecognition(t *testing.T) {
 	}
 }
 
+func TestHandleVoiceBlankAudioRecognition(t *testing.T) {
+	prevURL := config.WhisperServerURL
+	config.WhisperServerURL = "http://127.0.0.1:8080"
+	defer func() { config.WhisperServerURL = prevURL }()
+
+	SetTranscriber(&mockTranscriber{text: " [BLANK_AUDIO]\n"})
+
+	m := mock.New()
+	sess := &mock.Session{
+		M:           m,
+		ChatID:      "12345",
+		Sender:      "12345",
+		VoiceVal:    &ports.VoiceMessage{FileID: "v1", FileName: "voice.oga"},
+		VoiceReader: io.NopCloser(bytes.NewReader([]byte("dummy"))),
+	}
+
+	err := handleVoice(sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	all := m.AllTexts()
+	found := false
+	for _, text := range all {
+		if strings.Contains(text, i18n.T(i18n.Default, "voice.empty")) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected empty speech notice for [BLANK_AUDIO] in %v", all)
+	}
+}
+
 func TestHandleVoiceCommandExecution(t *testing.T) {
 	prevURL := config.WhisperServerURL
 	config.WhisperServerURL = "http://127.0.0.1:8080"

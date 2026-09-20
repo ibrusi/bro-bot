@@ -18,11 +18,14 @@ func TestNormalizeEndpoint(t *testing.T) {
 		want  string
 	}{
 		{"", ""},
-		{"http://localhost:8080", "http://localhost:8080/v1/audio/transcriptions"},
-		{"http://localhost:8080/", "http://localhost:8080/v1/audio/transcriptions"},
-		{"http://localhost:8080/v1/audio/transcriptions", "http://localhost:8080/v1/audio/transcriptions"},
+		{"http://localhost:8080", "http://localhost:8080/inference"},
+		{"http://localhost:8080/", "http://localhost:8080/inference"},
 		{"http://localhost:8080/inference", "http://localhost:8080/inference"},
 		{"http://localhost:8080/inference/", "http://localhost:8080/inference"},
+		{"http://localhost:8080/v1", "http://localhost:8080/v1/audio/transcriptions"},
+		{"http://localhost:8080/v1/", "http://localhost:8080/v1/audio/transcriptions"},
+		{"http://localhost:8080/v1/audio/transcriptions", "http://localhost:8080/v1/audio/transcriptions"},
+		{"http://localhost:8080/v1/audio/transcriptions/", "http://localhost:8080/v1/audio/transcriptions"},
 	}
 
 	for _, tt := range tests {
@@ -30,6 +33,76 @@ func TestNormalizeEndpoint(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("normalizeEndpoint(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestTranscribeFallback404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/inference" {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+		if r.URL.Path == "/v1/audio/transcriptions" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"text": "Распознано через fallback",
+			})
+			return
+		}
+		http.Error(w, "unexpected path: "+r.URL.Path, http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := New(Config{
+		BaseURL:    server.URL, // нормализуется в server.URL + "/inference"
+		ConvertWAV: false,
+	})
+
+	res, err := client.Transcribe(context.Background(), strings.NewReader("dummy"), "test.wav")
+	if err != nil {
+		t.Fatalf("Transcribe failed: %v", err)
+	}
+	if res != "Распознано через fallback" {
+		t.Errorf("got %q, want %q", res, "Распознано через fallback")
+	}
+
+	if client.getEndpoint() != server.URL+"/v1/audio/transcriptions" {
+		t.Errorf("endpoint not updated, got %q", client.getEndpoint())
+	}
+}
+
+func TestTranscribeFallbackReverse404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/audio/transcriptions" {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+		if r.URL.Path == "/inference" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"text": "Распознано через whisper.cpp",
+			})
+			return
+		}
+		http.Error(w, "unexpected path: "+r.URL.Path, http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := New(Config{
+		BaseURL:    server.URL + "/v1/audio/transcriptions",
+		ConvertWAV: false,
+	})
+
+	res, err := client.Transcribe(context.Background(), strings.NewReader("dummy"), "test.wav")
+	if err != nil {
+		t.Fatalf("Transcribe failed: %v", err)
+	}
+	if res != "Распознано через whisper.cpp" {
+		t.Errorf("got %q, want %q", res, "Распознано через whisper.cpp")
+	}
+
+	if client.getEndpoint() != server.URL+"/inference" {
+		t.Errorf("endpoint not updated, got %q", client.getEndpoint())
 	}
 }
 
