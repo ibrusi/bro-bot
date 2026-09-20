@@ -47,7 +47,7 @@ ifeq ($(ACTIVE_LANG),ru)
   MSG_HELP_DEPLOY_SECTION    := Развертывание на сервере (запускать под root на чистом сервере):
   MSG_HELP_INSTALL           := sudo make install           - Полное развертывание (все 5 шагов)
   MSG_HELP_STEP1             := sudo make step1-user        - Шаг 1: Создание пользователя $(DEPLOY_USER), окружения и пакетов
-  MSG_HELP_STEP2             := sudo make step2-agy         - Шаг 2: Проверка/откат agy и проверка сигнатур manager.py
+  MSG_HELP_STEP2             := sudo make step2-agents      - Шаг 2: Проверка agy, установка claude code cli и настройка MCP
   MSG_HELP_STEP3             := sudo make step3-service     - Шаг 3: Настройка и регистрация systemd-службы $(BOT_NAME)
   MSG_HELP_STEP4             := sudo make step4-clone-build - Шаг 4: Клонирование репозитория, настройка .env и сборка Go
   MSG_HELP_STEP5             := sudo make step5-start       - Шаг 5: Запуск и проверка статуса службы $(BOT_NAME).service
@@ -73,10 +73,13 @@ ifeq ($(ACTIVE_LANG),ru)
   MSG_STEP1_USER_EXISTS      := Пользователь $(DEPLOY_USER) уже существует.
   MSG_STEP1_USER_CREATED     := Пользователь $(DEPLOY_USER) создан и добавлен в sudoers.
 
-  MSG_STEP2_TITLE            := ==> [Шаг 2] Проверка agy и запуск manager.py...
+  MSG_STEP2_TITLE            := ==> [Шаг 2] Проверка agy, установка claude code cli и настройка MCP...
   MSG_STEP2_RESTORE_BAK      := Восстанавливаем agy из agy.bak...
   MSG_STEP2_RUN_MANAGER      := Запуск manager.py patch cli...
   MSG_STEP2_SKIP_PATCH       := Пропуск патча (уже пропатчен или не требуется)
+  MSG_STEP2_CLAUDE_EXISTS    := Claude Code CLI уже установлен.
+  MSG_STEP2_INSTALL_CLAUDE   := Установка Claude Code CLI...
+  MSG_STEP2_CONFIG_MCP       := Настройка MCP-сервера bro_bot для agy и claude...
 
   MSG_STEP3_TITLE            := ==> [Шаг 3] Настройка systemd-сервиса $(BOT_NAME)...
   MSG_STEP3_CREATING         := Создаем $(SERVICE_FILE)...
@@ -99,7 +102,7 @@ else
   MSG_HELP_DEPLOY_SECTION    := Server deployment (run as root on a clean server):
   MSG_HELP_INSTALL           := sudo make install           - Complete deployment (all 5 steps)
   MSG_HELP_STEP1             := sudo make step1-user        - Step 1: Create $(DEPLOY_USER) user, base tools, and directories
-  MSG_HELP_STEP2             := sudo make step2-agy         - Step 2: Restore/verify agy CLI and apply manager.py patch
+  MSG_HELP_STEP2             := sudo make step2-agents      - Step 2: Restore agy, install claude code cli, and configure MCP
   MSG_HELP_STEP3             := sudo make step3-service     - Step 3: Configure and register $(BOT_NAME) systemd service
   MSG_HELP_STEP4             := sudo make step4-clone-build - Step 4: Clone repository, configure .env, and build Go binary
   MSG_HELP_STEP5             := sudo make step5-start       - Step 5: Start and verify $(BOT_NAME).service status
@@ -125,10 +128,13 @@ else
   MSG_STEP1_USER_EXISTS      := User $(DEPLOY_USER) already exists.
   MSG_STEP1_USER_CREATED     := User $(DEPLOY_USER) created and added to sudoers.
 
-  MSG_STEP2_TITLE            := ==> [Step 2] Verifying agy and running manager.py...
+  MSG_STEP2_TITLE            := ==> [Step 2] Restoring agy, installing claude code cli, and configuring MCP...
   MSG_STEP2_RESTORE_BAK      := Restoring agy from agy.bak...
   MSG_STEP2_RUN_MANAGER      := Running manager.py patch cli...
   MSG_STEP2_SKIP_PATCH       := Skipping patch (already patched or not required)
+  MSG_STEP2_CLAUDE_EXISTS    := Claude Code CLI is already installed.
+  MSG_STEP2_INSTALL_CLAUDE   := Installing Claude Code CLI...
+  MSG_STEP2_CONFIG_MCP       := Configuring bro_bot MCP server for agy and claude...
 
   MSG_STEP3_TITLE            := ==> [Step 3] Configuring systemd service $(BOT_NAME)...
   MSG_STEP3_CREATING         := Creating $(SERVICE_FILE)...
@@ -148,7 +154,7 @@ else
   MSG_STEP5_FAILED           := ⚠️ Service failed to start (check settings in .env)
 endif
 
-.PHONY: all install step1-user step2-agy step3-service step4-clone-build step5-start help build test run clean
+.PHONY: all install step1-user step2-agents step2-agy step3-service step4-clone-build step5-start help build test run clean
 
 all: help
 
@@ -189,7 +195,7 @@ clean:
 	@echo "$(MSG_CLEAN)"
 	rm -f bot
 
-install: step1-user step2-agy step3-service step4-clone-build step5-start
+install: step1-user step2-agents step3-service step4-clone-build step5-start
 	@echo ""
 	@echo "=================================================="
 	@echo "$(MSG_INSTALL_DONE_TITLE)"
@@ -215,11 +221,12 @@ step1-user:
 	@chown -R $(DEPLOY_USER):$(DEPLOY_USER) /home/$(DEPLOY_USER)
 
 # -------------------------------------------------------------
-# Step 2 / Шаг 2: agy verification and manager.py patching
+# Step 2 / Шаг 2: agy, claude code cli, and MCP configuration
 # -------------------------------------------------------------
-step2-agy:
+step2-agents:
 	@echo "$(MSG_STEP2_TITLE)"
 	@sudo -u $(DEPLOY_USER) -i bash -c '\
+		export PATH=$$PATH:/home/$(DEPLOY_USER)/.local/bin; \
 		mkdir -p ~/.local/bin; \
 		if [ -f ~/.local/bin/agy.bak ]; then \
 			echo "$(MSG_STEP2_RESTORE_BAK)"; \
@@ -229,8 +236,37 @@ step2-agy:
 		if [ -f manager.py ]; then \
 			echo "$(MSG_STEP2_RUN_MANAGER)"; \
 			python3 manager.py --path-cli ~/.local/bin/agy patch cli || echo "$(MSG_STEP2_SKIP_PATCH)"; \
-		fi \
+		fi; \
+		if command -v claude &>/dev/null || [ -f ~/.local/bin/claude ]; then \
+			echo "$(MSG_STEP2_CLAUDE_EXISTS)"; \
+		else \
+			echo "$(MSG_STEP2_INSTALL_CLAUDE)"; \
+			CLAUDE_INSTALL_ALLOW_SUDO=true curl -fsSL https://claude.ai/install.sh | bash; \
+		fi; \
+		echo "$(MSG_STEP2_CONFIG_MCP)"; \
+		if command -v claude &>/dev/null || [ -f ~/.local/bin/claude ]; then \
+			~/.local/bin/claude mcp remove bro_bot -s user &>/dev/null || true; \
+			~/.local/bin/claude mcp add --scope user bro_bot $(REPO_DIR)/bot mcp-serve || true; \
+		fi; \
+		python3 -c '\''\
+import json, os\
+for path in [os.path.expanduser("~/.gemini/config/mcp_config.json"), os.path.expanduser("~/.gemini/antigravity-cli/mcp_config.json")]:\
+    os.makedirs(os.path.dirname(path), exist_ok=True)\
+    cfg = {}\
+    if os.path.exists(path):\
+        try:\
+            with open(path, "r") as f:\
+                cfg = json.load(f)\
+        except Exception:\
+            cfg = {}\
+    servers = cfg.setdefault("mcpServers", {})\
+    servers["bro_bot"] = {"command": "$(REPO_DIR)/bot", "args": ["mcp-serve"]}\
+    with open(path, "w") as f:\
+        json.dump(cfg, f, indent=2)\
+'\''; \
 	'
+
+step2-agy: step2-agents
 
 # -------------------------------------------------------------
 # Step 3 / Шаг 3: systemd service registration

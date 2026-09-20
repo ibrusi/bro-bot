@@ -1898,6 +1898,52 @@ func TestStartCommandAndMenuNewDescription(t *testing.T) {
 	}
 }
 
+func TestStartGreetingAndMenuModeDescription(t *testing.T) {
+	mt := setupTestApp(t)
+
+	// 1. Check /start description contains /mode and /agent
+	startHandler, ok := mt.commands["start"]
+	if !ok {
+		t.Fatalf("start command handler not registered")
+	}
+	sess := &mock.Session{
+		M:      mt.Messenger,
+		ChatID: testChatID,
+		Sender: string(testChatID),
+	}
+	if err := startHandler(sess); err != nil {
+		t.Fatalf("startHandler failed: %v", err)
+	}
+	last := mt.LastSent()
+	if last == nil {
+		t.Fatalf("expected message from /start")
+	}
+	if !strings.Contains(last.Text, "/mode [mcp|cli|api]") {
+		t.Errorf("expected /start text to contain '/mode [mcp|cli|api]', got:\n%s", last.Text)
+	}
+	if !strings.Contains(last.Text, "/agent") {
+		t.Errorf("expected /start text to contain '/agent', got:\n%s", last.Text)
+	}
+
+	// 2. Check getDefaultCommands menu description for mode in ru and en
+	for _, lang := range []string{"ru", "en"} {
+		cmds := getDefaultCommands(lang)
+		var foundModeCmd *ports.BotCommand
+		for i := range cmds {
+			if cmds[i].Name == "mode" {
+				foundModeCmd = &cmds[i]
+				break
+			}
+		}
+		if foundModeCmd == nil {
+			t.Fatalf("expected 'mode' command in getDefaultCommands(%s)", lang)
+		}
+		if !strings.Contains(foundModeCmd.Description, "[mcp|cli|api]") {
+			t.Errorf("expected 'mode' command description in %s to mention '[mcp|cli|api]', got %q", lang, foundModeCmd.Description)
+		}
+	}
+}
+
 func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 	mt := setupTestApp(t)
 

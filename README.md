@@ -176,7 +176,7 @@ sudo make install LANG=ru
 
 The `make install` command performs the following sequence:
 1. **`step1-user`**: Installs essential system dependencies (`git`, `curl`, `wget`, `build-essential`, `sudo`, `python3`, `python3-pip`), creates the `deploy` system user with passwordless `sudo`, and initializes workspace directories (`~/.local/bin`, `~/projects`).
-2. **`step2-agy`**: Checks and restores `agy` from `agy.bak` if present, and runs the `manager.py` patch script (if available).
+2. **`step2-agents`** (or **`step2-agy`**): Checks and restores `agy`, installs Claude Code CLI, and configures the `bro_bot` MCP server for both agents.
 3. **`step3-service`**: Generates systemd unit `/etc/systemd/system/bro-bot.service` with automatic restart and `.env` support, then registers and enables the service.
 4. **`step4-clone-build`**: Checks for Go 1.23+ (downloads and installs it if missing), clones or updates the repository at `/home/deploy/bro-bot`, prepares `.env` from `.env.example`, and compiles the `bot` binary.
 5. **`step5-start`**: Restarts `bro-bot.service`, checks that it is active, and prints the current status.
