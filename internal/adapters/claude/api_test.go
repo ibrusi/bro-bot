@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -298,3 +300,117 @@ func TestExecuteTaskRetriesWhenModelRejected(t *testing.T) {
 		t.Errorf("повтор ожидали на модели по умолчанию claude-sonnet-5, получили %q", models[1])
 	}
 }
+
+func TestClaudeAPI_ToolExecution(t *testing.T) {
+	tempDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tempDir, "hello.txt"), []byte("greeting from file"), 0644)
+
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	var (
+		mu           sync.Mutex
+		turnCount    int
+		toolResults  []string
+		toolsOffered int
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					{"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"},
+				},
+				"has_more": false,
+				"last_id":  "claude-sonnet-5",
+			})
+			return
+		}
+
+		var reqBody struct {
+			Messages []map[string]interface{} `json:"messages"`
+			Tools    []map[string]interface{} `json:"tools"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+
+		mu.Lock()
+		turnCount++
+		toolsOffered = len(reqBody.Tools)
+		currentTurn := turnCount
+		if len(reqBody.Messages) > 1 {
+			for _, m := range reqBody.Messages {
+				if contentList, ok := m["content"].([]interface{}); ok {
+					for _, b := range contentList {
+						if block, ok := b.(map[string]interface{}); ok && block["type"] == "tool_result" {
+							if c, ok := block["content"].(string); ok {
+								toolResults = append(toolResults, c)
+							}
+						}
+					}
+				}
+			}
+		}
+		mu.Unlock()
+
+		w.Header().Set("content-type", "text/event-stream")
+
+		if currentTurn == 1 {
+			// Отдаём вызов инструмента read_file
+			_, _ = w.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_test_1\",\"name\":\"read_file\"}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"hello.txt\\\"}\"}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
+			_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n"))
+			return
+		}
+
+		// Turn 2: отдаём финальный ответ
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Файл прочитан: greeting from file\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	adapter := &ClaudeAPIAdapter{HTTPClient: srv.Client(), BaseURL: srv.URL}
+	args := ports.ExecuteArgs{
+		Prompt:    "Прочитай hello.txt",
+		WorkDir:   tempDir,
+		ModelName: "claude-sonnet-5",
+	}
+
+	proc, err := adapter.ExecuteTask(context.Background(), args)
+	if err != nil {
+		t.Fatalf("ExecuteTask failed: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	outBytes, err := io.ReadAll(proc.Stdout())
+	if err != nil {
+		t.Fatalf("read stdout failed: %v", err)
+	}
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("proc wait failed: %v", err)
+	}
+
+	outStr := string(outBytes)
+
+	// Проверяем, что в потоке было событие tool_use
+	if !strings.Contains(outStr, `"tool_use"`) || !strings.Contains(outStr, `"read_file"`) {
+		t.Errorf("stdout missing tool_use event: %s", outStr)
+	}
+
+	// Проверяем финальный текст
+	if !strings.Contains(outStr, "Файл прочитан: greeting from file") {
+		t.Errorf("stdout missing expected answer: %s", outStr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if toolsOffered == 0 {
+		t.Errorf("expected tools to be offered to Claude API")
+	}
+	if len(toolResults) == 0 || !strings.Contains(toolResults[0], "greeting from file") {
+		t.Errorf("expected tool_result containing file content, got %v", toolResults)
+	}
+	if turnCount != 2 {
+		t.Errorf("expected 2 turns, got %d", turnCount)
+	}
+}
+

@@ -293,3 +293,23 @@ func TestDefaultModelUsesConfigSnapshot(t *testing.T) {
 		t.Errorf("defaultModel() без снимка = %q, ожидалось %q", got, fallbackDefaultModel)
 	}
 }
+
+func TestAgyAPIAdapter_ProcessExecutionFallback(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "")
+	_ = os.Unsetenv("GEMINI_API_KEY")
+
+	adapter := NewAgyAPIAdapter()
+	args := ports.ExecuteArgs{
+		Prompt:    "hello",
+		ModelName: "gemini-2.5-flash",
+	}
+
+	_, err := adapter.ExecuteTask(context.Background(), args)
+	if err == nil {
+		t.Fatal("expected error about missing GEMINI_API_KEY")
+	}
+	if !strings.Contains(err.Error(), "GEMINI_API_KEY") {
+		t.Errorf("expected error to mention GEMINI_API_KEY, got: %v", err)
+	}
+}
+

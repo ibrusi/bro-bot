@@ -1273,6 +1273,8 @@ func FormatToolAction(name string, info *StreamToolInfo) string {
 	case "run_command":
 		if cmd, ok := info.Parameters["CommandLine"].(string); ok && cmd != "" {
 			return fmt.Sprintf("⚡ %s", utils.TruncateString(cmd, 70))
+		} else if cmd, ok := info.Parameters["command"].(string); ok && cmd != "" {
+			return fmt.Sprintf("⚡ %s", utils.TruncateString(cmd, 70))
 		}
 	case "bash":
 		if cmd, ok := info.Parameters["command"].(string); ok && cmd != "" {
@@ -1280,8 +1282,12 @@ func FormatToolAction(name string, info *StreamToolInfo) string {
 		} else if cmd, ok := info.Parameters["CommandLine"].(string); ok && cmd != "" {
 			return fmt.Sprintf("⚡ %s", utils.TruncateString(cmd, 70))
 		}
-	case "replace_file_content":
+	case "replace_file_content", "edit_file":
 		if target, ok := info.Parameters["TargetFile"].(string); ok && target != "" {
+			return fmt.Sprintf("✏️ edit: %s", filepath.Base(target))
+		} else if target, ok := info.Parameters["file_path"].(string); ok && target != "" {
+			return fmt.Sprintf("✏️ edit: %s", filepath.Base(target))
+		} else if target, ok := info.Parameters["path"].(string); ok && target != "" {
 			return fmt.Sprintf("✏️ edit: %s", filepath.Base(target))
 		}
 	case "edit":
@@ -1289,19 +1295,30 @@ func FormatToolAction(name string, info *StreamToolInfo) string {
 			return fmt.Sprintf("✏️ edit: %s", filepath.Base(target))
 		} else if target, ok := info.Parameters["TargetFile"].(string); ok && target != "" {
 			return fmt.Sprintf("✏️ edit: %s", filepath.Base(target))
+		} else if target, ok := info.Parameters["path"].(string); ok && target != "" {
+			return fmt.Sprintf("✏️ edit: %s", filepath.Base(target))
 		}
-	case "write_to_file", "write":
+	case "write_to_file", "write", "write_file":
 		if target, ok := info.Parameters["TargetFile"].(string); ok && target != "" {
 			return fmt.Sprintf("📝 write: %s", filepath.Base(target))
 		} else if target, ok := info.Parameters["file_path"].(string); ok && target != "" {
 			return fmt.Sprintf("📝 write: %s", filepath.Base(target))
+		} else if target, ok := info.Parameters["path"].(string); ok && target != "" {
+			return fmt.Sprintf("📝 write: %s", filepath.Base(target))
 		}
-	case "view_file", "read":
+	case "view_file", "read", "read_file":
 		if path, ok := info.Parameters["AbsolutePath"].(string); ok && path != "" {
 			return fmt.Sprintf("👁 view: %s", filepath.Base(path))
 		} else if path, ok := info.Parameters["file_path"].(string); ok && path != "" {
 			return fmt.Sprintf("👁 view: %s", filepath.Base(path))
+		} else if path, ok := info.Parameters["path"].(string); ok && path != "" {
+			return fmt.Sprintf("👁 view: %s", filepath.Base(path))
 		}
+	case "list_dir", "list_directory":
+		if path, ok := info.Parameters["path"].(string); ok && path != "" {
+			return fmt.Sprintf("📁 list: %s", utils.TruncateString(path, 50))
+		}
+		return "📁 list: ."
 	case "grep_search":
 		if q, ok := info.Parameters["Query"].(string); ok && q != "" {
 			return fmt.Sprintf("🔍 grep: %s", utils.TruncateString(q, 50))

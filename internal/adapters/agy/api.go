@@ -4,6 +4,7 @@ import (
 	"bro-bot/internal/agents"
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/tools"
 	"bro-bot/internal/utils"
 	"context"
 	"encoding/json"
@@ -234,14 +235,14 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, args po
 	modelName := resolveGeminiModelWithClient(ctx, client, args.ModelName)
 
 	startedAt := time.Now()
-	text, usage, err := p.streamOnce(ctx, client, modelName, args)
+	text, usage, turns, err := p.streamOnce(ctx, client, modelName, args)
 	if err != nil && isModelUnavailableError(err) && text == "" {
 		// Кэш моделей мог устареть (модель отключили): обновляем список и
 		// повторяем запрос на актуальной модели по умолчанию.
 		if fallback, ok := fallbackModelAfterFailure(ctx, client, modelName); ok {
 			log.Printf("agy-api: model %q is unavailable (%v), retrying with %q", modelName, err, fallback)
 			modelName = fallback
-			text, usage, err = p.streamOnce(ctx, client, modelName, args)
+			text, usage, turns, err = p.streamOnce(ctx, client, modelName, args)
 		}
 	}
 	if err != nil {
@@ -260,7 +261,7 @@ func (p *AgyAPIProcess) runStreaming(ctx context.Context, apiKey string, args po
 		"is_error":    false,
 		"result":      text,
 		"duration_ms": float64(time.Since(startedAt).Milliseconds()),
-		"num_turns":   1,
+		"num_turns":   turns,
 	}
 	if usage != nil {
 		resEvt["usage"] = usage
@@ -312,70 +313,125 @@ func usageFromMetadata(meta *genai.UsageMetadata) map[string]interface{} {
 // показывать не нужно, достаточно тихо завершиться.
 var errStreamOutputClosed = errors.New("agy-api: output stream closed")
 
-// streamOnce выполняет один проход генерации и возвращает накопленный текст и счётчики токенов.
-func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, modelName string, args ports.ExecuteArgs) (string, map[string]interface{}, error) {
+const maxGeminiTurns = 30
+
+// streamOnce выполняет генерацию с поддержкой вызова инструментов и возвращает накопленный текст, счётчики и число ходов.
+func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, modelName string, args ports.ExecuteArgs) (string, map[string]interface{}, int, error) {
 	model := client.GenerativeModel(modelName)
 	if systemPrompt := strings.TrimSpace(args.SystemPrompt); systemPrompt != "" {
 		model.SystemInstruction = genai.NewUserContent(genai.Text(systemPrompt))
 	}
 
+	isReadOnly := args.ReadOnly || strings.Contains(args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(args.SystemPrompt, "CHAT MODE")
+	model.Tools = tools.GeminiToolDeclarations(isReadOnly)
+
+	executor := tools.NewExecutor(args.WorkDir)
+
 	// История диалога проигрывается на нашей стороне: Gemini API не хранит сессии.
 	chat := model.StartChat()
 	chat.History = geminiHistoryContents(args.History)
-	stream := chat.SendMessageStream(ctx, genai.Text(args.Prompt))
 
 	var textAccumulator strings.Builder
-	var usage map[string]interface{}
+	var lastUsage map[string]interface{}
+	var parts []genai.Part = []genai.Part{genai.Text(args.Prompt)}
+	turns := 0
 
-	for {
-		resp, err := stream.Next()
-		if err == iterator.Done {
+	for turn := 0; turn < maxGeminiTurns; turn++ {
+		turns++
+		stream := chat.SendMessageStream(ctx, parts...)
+
+		var fnCalls []genai.FunctionCall
+
+		for {
+			resp, err := stream.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				return textAccumulator.String(), lastUsage, turns, err
+			}
+			if resp.UsageMetadata != nil {
+				lastUsage = usageFromMetadata(resp.UsageMetadata)
+			}
+
+			for _, cand := range resp.Candidates {
+				if cand.Content == nil {
+					continue
+				}
+				for _, part := range cand.Content.Parts {
+					switch pVal := part.(type) {
+					case genai.Text:
+						text := string(pVal)
+						if text == "" {
+							continue
+						}
+						textAccumulator.WriteString(text)
+
+						msgEvt := map[string]interface{}{
+							"type":       "assistant",
+							"session_id": p.sessionID,
+							"message": map[string]interface{}{
+								"role": "assistant",
+								"content": []map[string]interface{}{
+									{
+										"type": "text",
+										"text": text,
+									},
+								},
+							},
+						}
+						msgBytes, _ := json.Marshal(msgEvt)
+						if _, err := fmt.Fprintf(p.wPipe, "%s\n", string(msgBytes)); err != nil {
+							return textAccumulator.String(), lastUsage, turns, errStreamOutputClosed
+						}
+
+					case genai.FunctionCall:
+						fnCalls = append(fnCalls, pVal)
+
+						toolEvt := map[string]interface{}{
+							"type":       "assistant",
+							"session_id": p.sessionID,
+							"message": map[string]interface{}{
+								"role": "assistant",
+								"content": []map[string]interface{}{
+									{
+										"type":  "tool_use",
+										"name":  pVal.Name,
+										"input": pVal.Args,
+									},
+								},
+							},
+						}
+						toolBytes, _ := json.Marshal(toolEvt)
+						if _, err := fmt.Fprintf(p.wPipe, "%s\n", string(toolBytes)); err != nil {
+							return textAccumulator.String(), lastUsage, turns, errStreamOutputClosed
+						}
+					}
+				}
+			}
+		}
+
+		if len(fnCalls) == 0 {
 			break
 		}
-		if err != nil {
-			return textAccumulator.String(), usage, err
-		}
-		if resp.UsageMetadata != nil {
-			usage = usageFromMetadata(resp.UsageMetadata)
-		}
 
-		for _, cand := range resp.Candidates {
-			if cand.Content == nil {
-				continue
+		var nextParts []genai.Part
+		for _, fc := range fnCalls {
+			out, execErr := executor.Execute(ctx, fc.Name, fc.Args, isReadOnly)
+			if execErr != nil {
+				out = fmt.Sprintf("Error: %v", execErr)
 			}
-			for _, part := range cand.Content.Parts {
-				textPart, ok := part.(genai.Text)
-				if !ok {
-					continue
-				}
-				text := string(textPart)
-				if text == "" {
-					continue
-				}
-				textAccumulator.WriteString(text)
-
-				msgEvt := map[string]interface{}{
-					"type":       "assistant",
-					"session_id": p.sessionID,
-					"message": map[string]interface{}{
-						"role": "assistant",
-						"content": []map[string]interface{}{
-							{
-								"type": "text",
-								"text": text,
-							},
-						},
-					},
-				}
-				msgBytes, _ := json.Marshal(msgEvt)
-				if _, err := fmt.Fprintf(p.wPipe, "%s\n", string(msgBytes)); err != nil {
-					return textAccumulator.String(), usage, errStreamOutputClosed
-				}
-			}
+			nextParts = append(nextParts, genai.FunctionResponse{
+				Name: fc.Name,
+				Response: map[string]any{
+					"result": out,
+				},
+			})
 		}
+		parts = nextParts
 	}
 
-	return textAccumulator.String(), usage, nil
+	return textAccumulator.String(), lastUsage, turns, nil
 }
 
 func (p *AgyAPIProcess) handleError(err error) {
