@@ -55,6 +55,7 @@ ifeq ($(ACTIVE_LANG),ru)
   MSG_HELP_STEP3             := sudo make step3-service     - Шаг 3: Настройка и регистрация systemd-службы $(BOT_NAME)
   MSG_HELP_STEP4             := sudo make step4-clone-build - Шаг 4: Клонирование репозитория, настройка .env и сборка Go
   MSG_HELP_STEP5             := sudo make step5-start       - Шаг 5: Запуск и проверка статуса службы $(BOT_NAME).service
+  MSG_HELP_FFMPEG            := sudo make install-ffmpeg    - Установка ffmpeg (для конвертации голосовых сообщений)
   MSG_HELP_WHISPER           := sudo make install-whisper   - Установка whisper-server, модели $(WHISPER_MODEL) и службы
   MSG_HELP_DEV_SECTION       := Разработка и сборка (для локальной работы):
   MSG_HELP_BUILD             := make build                  - Компиляция Go-бинарника (./cmd/bot)
@@ -103,6 +104,10 @@ ifeq ($(ACTIVE_LANG),ru)
   MSG_STEP5_ACTIVE           := ✅ Служба активна (running)
   MSG_STEP5_FAILED           := ⚠️ Служба не смогла запуститься (проверьте значения в .env)
 
+  MSG_FFMPEG_TITLE           := ==> Проверка и установка ffmpeg...
+  MSG_FFMPEG_EXISTS          := ffmpeg уже установлен.
+  MSG_FFMPEG_DONE            := ✅ ffmpeg успешно установлен!
+
   MSG_WHISPER_TITLE          := ==> Установка whisper-server и модели $(WHISPER_MODEL)...
   MSG_WHISPER_DEPS           := Установка зависимостей (cmake, ffmpeg, build-essential)...
   MSG_WHISPER_CLONE          := Клонирование репозитория whisper.cpp...
@@ -119,6 +124,7 @@ else
   MSG_HELP_STEP3             := sudo make step3-service     - Step 3: Configure and register $(BOT_NAME) systemd service
   MSG_HELP_STEP4             := sudo make step4-clone-build - Step 4: Clone repository, configure .env, and build Go binary
   MSG_HELP_STEP5             := sudo make step5-start       - Step 5: Start and verify $(BOT_NAME).service status
+  MSG_HELP_FFMPEG            := sudo make install-ffmpeg    - Install ffmpeg (for voice message conversion)
   MSG_HELP_WHISPER           := sudo make install-whisper   - Install whisper-server, $(WHISPER_MODEL) model, and service
   MSG_HELP_DEV_SECTION       := Development & build (local usage):
   MSG_HELP_BUILD             := make build                  - Compile Go binary (./cmd/bot)
@@ -167,6 +173,10 @@ else
   MSG_STEP5_ACTIVE           := ✅ Service is active (running)
   MSG_STEP5_FAILED           := ⚠️ Service failed to start (check settings in .env)
 
+  MSG_FFMPEG_TITLE           := ==> Checking and installing ffmpeg...
+  MSG_FFMPEG_EXISTS          := ffmpeg is already installed.
+  MSG_FFMPEG_DONE            := ✅ ffmpeg successfully installed!
+
   MSG_WHISPER_TITLE          := ==> Installing whisper-server and $(WHISPER_MODEL) model...
   MSG_WHISPER_DEPS           := Installing dependencies (cmake, ffmpeg, build-essential)...
   MSG_WHISPER_CLONE          := Cloning whisper.cpp repository...
@@ -176,7 +186,7 @@ else
   MSG_WHISPER_DONE           := ✅ whisper-server successfully installed and running on port $(WHISPER_PORT)!
 endif
 
-.PHONY: all install step1-user step2-agents step2-agy step3-service step4-clone-build step5-start install-whisper help build test run clean
+.PHONY: all install step1-user step2-agents step2-agy step3-service step4-clone-build step5-start install-ffmpeg install-whisper help build test run clean
 
 all: help
 
@@ -190,6 +200,7 @@ help:
 	@echo "    $(MSG_HELP_STEP3)"
 	@echo "    $(MSG_HELP_STEP4)"
 	@echo "    $(MSG_HELP_STEP5)"
+	@echo "    $(MSG_HELP_FFMPEG)"
 	@echo "    $(MSG_HELP_WHISPER)"
 	@echo ""
 	@echo "  $(MSG_HELP_DEV_SECTION)"
@@ -231,7 +242,7 @@ install: step1-user step2-agents step3-service step4-clone-build step5-start
 # -------------------------------------------------------------
 step1-user:
 	@echo "$(MSG_STEP1_TITLE)"
-	@apt-get update && apt-get install -y git curl wget build-essential sudo python3 python3-pip
+	@apt-get update && apt-get install -y git curl wget build-essential sudo python3 python3-pip ffmpeg
 	@if id "$(DEPLOY_USER)" &>/dev/null; then \
 		echo "$(MSG_STEP1_USER_EXISTS)"; \
 	else \
@@ -355,6 +366,18 @@ step5-start:
 	@systemctl restart $(BOT_NAME).service
 	@systemctl is-active --quiet $(BOT_NAME).service && echo "$(MSG_STEP5_ACTIVE)" || echo "$(MSG_STEP5_FAILED)"
 	@systemctl status $(BOT_NAME).service --no-pager
+
+# -------------------------------------------------------------
+# FFmpeg: installation for voice message conversion
+# -------------------------------------------------------------
+install-ffmpeg:
+	@echo "$(MSG_FFMPEG_TITLE)"
+	@if command -v ffmpeg &>/dev/null; then \
+		echo "$(MSG_FFMPEG_EXISTS)"; \
+	else \
+		apt-get update && apt-get install -y ffmpeg; \
+		echo "$(MSG_FFMPEG_DONE)"; \
+	fi
 
 # -------------------------------------------------------------
 # Whisper Server: installation, model download and systemd setup

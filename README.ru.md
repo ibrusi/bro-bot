@@ -212,7 +212,7 @@ sudo make install LANG=ru
 ```
 
 Команда `make install` последовательно выполняет:
-1. **`step1-user`**: Устанавливает базовые системные пакеты (`git`, `curl`, `wget`, `build-essential`, `sudo`, `python3`, `python3-pip`), создает системного пользователя `deploy` с беспарольным `sudo` и подготавливает рабочие директории (`~/.local/bin`, `~/projects`).
+1. **`step1-user`**: Устанавливает базовые системные пакеты (`git`, `curl`, `wget`, `build-essential`, `sudo`, `python3`, `python3-pip`, `ffmpeg`), создает системного пользователя `deploy` с беспарольным `sudo` и подготавливает рабочие директории (`~/.local/bin`, `~/projects`).
 2. **`step2-agents`** (или **`step2-agy`**): Проверяет и восстанавливает `agy`, устанавливает Claude Code CLI и настраивает подключение MCP-сервера `bro_bot` для обоих агентов.
 3. **`step3-service`**: Создает systemd unit `/etc/systemd/system/bro-bot.service` с автоперезапуском при сбоях и загрузкой `.env`, регистрирует и активирует службу в автозагрузке.
 4. **`step4-clone-build`**: Проверяет наличие Go 1.23+ (при необходимости скачивает и устанавливает), клонирует или обновляет репозиторий в `/home/deploy/bro-bot`, подготавливает `.env` из `.env.example` и компилирует бинарник `bot`.
@@ -225,6 +225,8 @@ sudo systemctl restart bro-bot.service
 
 #### Полезные команды Makefile для разработки:
 - `make help` — справка по всем доступным целям на английском языке (`make help LANG=ru` для вывода на русском);
+- `sudo make install-ffmpeg` — установка `ffmpeg` (необходим для конвертации голосовых сообщений);
+- `sudo make install-whisper` — компиляция сервера `whisper.cpp` и регистрация службы `whisper-server.service`;
 - `make build` — компиляция исполняемого файла `./bot` (`go build -o bot ./cmd/bot`);
 - `make test` — запуск всех тестов проекта (`go test ./...`);
 - `make run` — запуск бота напрямую из исходников (`go run ./cmd/bot`);
