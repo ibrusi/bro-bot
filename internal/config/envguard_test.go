@@ -38,6 +38,7 @@ var allowedEnvReaders = map[string]string{
 	"internal/handlers/clone.go":                 "HOME для поиска публичного ключа деплоя",
 	"internal/adapters/transcript/transcript.go": "HOME через os.UserHomeDir",
 	"internal/storage/sqlite.go":                 "HOME через os.UserHomeDir",
+	"internal/mcp/config.go":                     "HOME через os.UserHomeDir для mcp_config.json",
 }
 
 type envRead struct {

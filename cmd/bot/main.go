@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 	"time"
 
 	"bro-bot/internal/adapters/agy"
@@ -10,6 +11,7 @@ import (
 	"bro-bot/internal/agents"
 	"bro-bot/internal/config"
 	"bro-bot/internal/handlers"
+	"bro-bot/internal/mcp"
 	"bro-bot/internal/ports"
 )
 
@@ -51,6 +53,13 @@ func buildAgentRegistry() *agents.Registry {
 // main — корень композиции и единственное место, где бот завершает процесс: всё
 // остальное возвращает ошибку наверх.
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "mcp-serve" {
+		if err := mcp.RunStdioServer(); err != nil {
+			log.Fatalf("mcp server error: %v", err)
+		}
+		return
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)

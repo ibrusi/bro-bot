@@ -19,9 +19,11 @@ func testSpec(name string) Spec {
 		Name:      name,
 		CLITitle:  name + " CLI",
 		APITitle:  name + " API",
+		MCPTitle:  name + " MCP",
 		APIKeyEnv: []string{strings.ToUpper(name) + "_KEY"},
 		NewCLI:    func() ports.AgentFramework { return &fakeFramework{kind: "cli"} },
 		NewAPI:    func() ports.AgentFramework { return &fakeFramework{kind: "api"} },
+		NewMCP:    func() ports.AgentFramework { return &fakeFramework{kind: "mcp"} },
 	}
 }
 
@@ -71,9 +73,13 @@ func TestRegistryTitle(t *testing.T) {
 		{"alpha", "cli"}:   "alpha CLI",
 		{"alpha", "api"}:   "alpha API",
 		{"alpha", "API"}:   "alpha API",
-		{"alpha", ""}:      "alpha CLI",
+		{"alpha", "mcp"}:   "alpha MCP",
+		{"alpha", "MCP"}:   "alpha MCP",
+		{"alpha", ""}:      "alpha MCP",
 		{"unknown", "api"}: "agent API",
+		{"unknown", "mcp"}: "MCP channel",
 		{"", "cli"}:        "agent CLI",
+		{"", ""}:           "MCP channel",
 	}
 	for in, want := range cases {
 		if got := reg.Title(in[0], in[1], i18n.Default); got != want {
@@ -118,6 +124,14 @@ func TestRegistryBuildPicksModeAndChecksKey(t *testing.T) {
 	if fw.(*fakeFramework).kind != "api" {
 		t.Errorf("api: собран %s", fw.(*fakeFramework).kind)
 	}
+
+	fw, err = reg.Build("alpha", "mcp")
+	if err != nil {
+		t.Fatalf("mcp: %v", err)
+	}
+	if fw.(*fakeFramework).kind != "mcp" {
+		t.Errorf("mcp: собран %s", fw.(*fakeFramework).kind)
+	}
 }
 
 func TestRegistryBuildUnknownAgent(t *testing.T) {
@@ -139,7 +153,15 @@ func TestRegistryBuildUnknownAgent(t *testing.T) {
 }
 
 func TestNormalizeMode(t *testing.T) {
-	for in, want := range map[string]string{"api": "api", " API ": "api", "cli": "cli", "": "cli", "что-то": "cli"} {
+	for in, want := range map[string]string{
+		"api":    "api",
+		" API ":  "api",
+		"cli":    "cli",
+		"mcp":    "mcp",
+		" MCP ":  "mcp",
+		"":       "mcp",
+		"что-то": "mcp",
+	} {
 		if got := NormalizeMode(in); got != want {
 			t.Errorf("NormalizeMode(%q) = %q, ожидали %q", in, got, want)
 		}

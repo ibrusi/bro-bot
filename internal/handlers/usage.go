@@ -213,10 +213,14 @@ func quotaStatusEmoji(fraction float64) string {
 // usageFooter подбирает подпись под режим: окна 5 часов и недели — это семантика
 // подписки CLI, к ключу API она не относится.
 func usageFooter(execMode, lang string) string {
-	if strings.EqualFold(execMode, "api") {
+	switch strings.ToLower(execMode) {
+	case "api":
 		return i18n.T(lang, "usage.footer_api")
+	case "mcp":
+		return i18n.T(lang, "usage.footer_mcp")
+	default:
+		return i18n.T(lang, "usage.footer_cli")
 	}
-	return i18n.T(lang, "usage.footer_cli")
 }
 
 // firstNonEmpty возвращает первое непустое значение после обрезки пробелов.

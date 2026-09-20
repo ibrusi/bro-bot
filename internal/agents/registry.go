@@ -20,40 +20,57 @@ import (
 const (
 	ModeCLI = "cli"
 	ModeAPI = "api"
+	ModeMCP = "mcp"
 )
 
-// NormalizeMode приводит режим к каноническому виду: всё, что не api, считается cli.
+// NormalizeMode приводит режим к каноническому виду: по умолчанию используется mcp.
 func NormalizeMode(mode string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), ModeAPI) {
+	m := strings.ToLower(strings.TrimSpace(mode))
+	switch m {
+	case ModeAPI:
 		return ModeAPI
+	case ModeCLI:
+		return ModeCLI
+	case ModeMCP:
+		return ModeMCP
+	default:
+		return ModeMCP
 	}
-	return ModeCLI
 }
 
 // Spec описывает одного агента.
 type Spec struct {
 	// Name — каноническое имя в нижнем регистре, по которому агента выбирают командой /agent.
 	Name string
-	// CLITitle и APITitle — как называть источник данных в отчётах (/usage) в каждом режиме.
+	// CLITitle, APITitle и MCPTitle — как называть источник данных в отчётах (/usage) в каждом режиме.
 	CLITitle string
 	APITitle string
+	MCPTitle string
 	// APIKeyEnv — переменные окружения, любая из которых даёт ключ для api-режима.
 	APIKeyEnv []string
 	// DefaultModel — модель, на которую переключается бот, если текущая агенту не подходит.
 	DefaultModel func() string
 	// RejectsModel сообщает, что модель принадлежит другому семейству и агент её не запустит.
 	RejectsModel func(model string) bool
-	// NewCLI и NewAPI собирают адаптер для соответствующего режима.
+	// NewCLI, NewAPI и NewMCP собирают адаптер для соответствующего режима.
 	NewCLI func() ports.AgentFramework
 	NewAPI func() ports.AgentFramework
+	NewMCP func() ports.AgentFramework
 }
 
 // Title возвращает название источника для режима.
 func (s Spec) Title(mode string) string {
-	if NormalizeMode(mode) == ModeAPI {
+	switch NormalizeMode(mode) {
+	case ModeAPI:
 		return s.APITitle
+	case ModeCLI:
+		return s.CLITitle
+	default:
+		if s.MCPTitle != "" {
+			return s.MCPTitle
+		}
+		return s.CLITitle + " (MCP)"
 	}
-	return s.CLITitle
 }
 
 // MissingAPIKeyError — для api-режима не задан ни один из ключей.
@@ -163,10 +180,14 @@ func (r *Registry) Title(name, mode, lang string) string {
 	if spec, ok := r.Lookup(name); ok {
 		return spec.Title(mode)
 	}
-	if NormalizeMode(mode) == ModeAPI {
+	switch NormalizeMode(mode) {
+	case ModeAPI:
 		return i18n.T(lang, "agent.source_api")
+	case ModeCLI:
+		return i18n.T(lang, "agent.source_cli")
+	default:
+		return i18n.T(lang, "agent.source_mcp")
 	}
-	return i18n.T(lang, "agent.source_cli")
 }
 
 // Build собирает адаптер агента для режима. В api-режиме сначала проверяет наличие
@@ -177,7 +198,8 @@ func (r *Registry) Build(name, mode string) (ports.AgentFramework, error) {
 		return nil, &UnknownAgentError{Name: strings.TrimSpace(name), Known: r.Names()}
 	}
 
-	if NormalizeMode(mode) == ModeAPI {
+	switch NormalizeMode(mode) {
+	case ModeAPI:
 		if !anyEnvSet(spec.APIKeyEnv) {
 			return nil, &MissingAPIKeyError{Agent: spec.Name, Vars: spec.APIKeyEnv}
 		}
@@ -185,12 +207,20 @@ func (r *Registry) Build(name, mode string) (ports.AgentFramework, error) {
 			return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeAPI}
 		}
 		return spec.NewAPI(), nil
+	case ModeCLI:
+		if spec.NewCLI == nil {
+			return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeCLI}
+		}
+		return spec.NewCLI(), nil
+	default:
+		if spec.NewMCP != nil {
+			return spec.NewMCP(), nil
+		}
+		if spec.NewCLI != nil {
+			return spec.NewCLI(), nil
+		}
+		return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeMCP}
 	}
-
-	if spec.NewCLI == nil {
-		return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeCLI}
-	}
-	return spec.NewCLI(), nil
 }
 
 func canonical(name string) string {

@@ -36,7 +36,7 @@ func TestSwitchActiveAgentReturnsDataWithoutMarkup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SwitchActiveAgent: %v", err)
 	}
-	if res.Agent != "claude" || res.Mode != "cli" {
+	if res.Agent != "claude" || res.Mode != "mcp" {
 		t.Errorf("результат = %+v", res)
 	}
 	if !res.ModelSwitched() || res.Model != "sonnet" {

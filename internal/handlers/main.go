@@ -112,6 +112,8 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	if savedMode, err := sqliteStorage.GetSetting(ctx, "execution_mode"); err == nil && savedMode != "" {
 		config.ProjectState.SetExecutionMode(savedMode)
 		log.Printf("restored the execution mode from SQLite: %s", savedMode)
+	} else {
+		config.ProjectState.SetExecutionMode(agents.ModeMCP)
 	}
 	if savedInteraction, err := sqliteStorage.GetSetting(ctx, "interaction_mode"); err == nil && savedInteraction != "" {
 		config.ProjectState.SetInteractionMode(savedInteraction)

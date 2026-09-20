@@ -12,8 +12,8 @@ import (
 func TestExecutionModeState(t *testing.T) {
 	ps := &domain.ProjectState{}
 
-	if ps.GetExecutionMode() != "cli" {
-		t.Errorf("expected default execution mode to be 'cli', got: %s", ps.GetExecutionMode())
+	if ps.GetExecutionMode() != "mcp" {
+		t.Errorf("expected default execution mode to be 'mcp', got: %s", ps.GetExecutionMode())
 	}
 
 	ps.SetExecutionMode("api")
@@ -24,6 +24,11 @@ func TestExecutionModeState(t *testing.T) {
 	ps.SetExecutionMode("cli")
 	if ps.GetExecutionMode() != "cli" {
 		t.Errorf("expected execution mode to be 'cli', got: %s", ps.GetExecutionMode())
+	}
+
+	ps.SetExecutionMode("mcp")
+	if ps.GetExecutionMode() != "mcp" {
+		t.Errorf("expected execution mode to be 'mcp', got: %s", ps.GetExecutionMode())
 	}
 }
 
@@ -39,8 +44,18 @@ func TestModeCommandAndAgentSwitchWithMode(t *testing.T) {
 
 	t.Setenv("ANTHROPIC_API_KEY", "test-key-123")
 
-	config.ProjectState.SetExecutionMode("api")
+	config.ProjectState.SetExecutionMode("mcp")
 	res, err := SwitchActiveAgent("claude")
+	if err != nil {
+		t.Fatalf("unexpected error switching agent: %v", err)
+	}
+
+	if res.Mode != "mcp" {
+		t.Errorf("expected result to carry mcp mode, got: %+v", res)
+	}
+
+	config.ProjectState.SetExecutionMode("api")
+	res, err = SwitchActiveAgent("claude")
 	if err != nil {
 		t.Fatalf("unexpected error switching agent: %v", err)
 	}
