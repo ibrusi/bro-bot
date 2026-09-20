@@ -1980,6 +1980,9 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 	}
 
 	// 2. Переключаемся на claude и проверяем /models refresh
+	t.Setenv("CLAUDE_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
 	if _, err := SwitchActiveAgent("claude"); err != nil {
 		t.Fatalf("SwitchActiveAgent(claude) failed: %v", err)
 	}

@@ -541,6 +541,15 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		WorkDir:        workDir,
 	}
 
+	// Передаём правила проекта AGENTS.md как системный промпт ТОЛЬКО для новой сессии (convID == "").
+	// При возобновлении сессии (convID != "") контекст уже сохранён агентом,
+	// и повторная отправка исключена для экономии токенов.
+	if convID == "" {
+		if rules := utils.LoadProjectAgentsRules(workDir, config.ProjectsRoot); rules != "" {
+			args.SystemPrompt = rules
+		}
+	}
+
 	stepTimeout := config.StepTimeout
 	if stepTimeout <= 0 {
 		stepTimeout = 30 * time.Minute

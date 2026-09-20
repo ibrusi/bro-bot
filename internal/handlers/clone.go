@@ -246,13 +246,22 @@ func handleCloneCommand(s ports.Session) error {
 			return
 		}
 
-		// Ensure AGENT.md exists in newly cloned repo
-		agentDst := filepath.Join(targetPath, "AGENT.md")
+		// Ensure AGENTS.md exists in newly cloned repo
+		agentDst := filepath.Join(targetPath, "AGENTS.md")
 		if _, err := os.Stat(agentDst); os.IsNotExist(err) {
-			agentSrc := filepath.Join(cleanRoot, "AGENT.md")
+			agentSrc := filepath.Join(cleanRoot, "AGENTS.md")
+			if _, srcErr := os.Stat(agentSrc); os.IsNotExist(srcErr) {
+				agentSrc = filepath.Join(cleanRoot, "AGENT.md")
+			}
 			if _, srcErr := os.Stat(agentSrc); srcErr == nil {
 				_ = copyFile(agentSrc, agentDst)
 			}
+		}
+
+		// Ensure CLAUDE.md symlink exists for native Claude Code CLI discovery
+		claudeDst := filepath.Join(targetPath, "CLAUDE.md")
+		if _, err := os.Stat(claudeDst); os.IsNotExist(err) {
+			_ = os.Symlink("AGENTS.md", claudeDst)
 		}
 
 		// Do not switch current project; keep the existing active project

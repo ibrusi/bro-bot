@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"bro-bot/internal/adapters/cliproc"
@@ -43,6 +44,8 @@ func (a *ClaudeMCPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 	}
 	if args.ConversationID != "" {
 		cmdArgs = append(cmdArgs, "--resume", args.ConversationID)
+	} else if strings.TrimSpace(args.SystemPrompt) != "" {
+		cmdArgs = append(cmdArgs, "--append-system-prompt", strings.TrimSpace(args.SystemPrompt))
 	}
 	claudeModel := resolveClaudeModel(args.ModelName)
 	if claudeModel != "" {
