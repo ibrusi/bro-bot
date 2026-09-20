@@ -162,11 +162,15 @@ The current implementation is `internal/adapters/telegram`, which isolates `gopk
 
 ### Option A. Automated Server Deployment via Makefile (Recommended for Clean Servers)
 
-A comprehensive `Makefile` is included to automate production deployment on a clean Linux server (Ubuntu/Debian):
+A comprehensive `Makefile` is included to automate production deployment on a clean Linux server (Ubuntu/Debian). Messages are bilingual (English by default, with optional Russian localization):
 
 ```bash
-# Run full deployment (must be executed as root)
+# Run full deployment in English (default, must be executed as root)
 sudo make install
+
+# Run full deployment with Russian messages
+sudo make install LANG=ru
+# or: sudo make install L=ru
 ```
 
 The `make install` command performs the following sequence:
@@ -182,11 +186,19 @@ sudo systemctl restart bro-bot.service
 ```
 
 #### Useful Makefile Targets for Development:
-- `make help` — displays help for all available targets;
+- `make help` — displays help for all available targets (`make help LANG=ru` for Russian);
 - `make build` — compiles the Go binary `./bot` (`go build -o bot ./cmd/bot`);
 - `make test` — runs all project tests (`go test ./...`);
 - `make run` — runs the bot directly from source (`go run ./cmd/bot`);
 - `make clean` — removes the compiled `bot` binary.
+
+#### Language Selection in Makefile:
+Messages default to English (`en`). You can switch language dynamically for any target using `LANG=ru` or shorthand `L=ru`:
+```bash
+make help            # English (default)
+make help LANG=ru    # Russian (or L=ru)
+sudo make install LANG=ru
+```
 
 ---
 
