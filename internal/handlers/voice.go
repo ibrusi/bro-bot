@@ -95,6 +95,20 @@ func wrapVoiceSession(s ports.Session, text string) ports.Session {
 	}
 }
 
+// isBlankAudio проверяет, является ли распознанный текст пустым или служебным токеном тишины Whisper.
+func isBlankAudio(text string) bool {
+	clean := strings.ToLower(strings.TrimSpace(text))
+	clean = strings.Trim(clean, " .!?,")
+	return clean == "" ||
+		clean == "[blank_audio]" ||
+		clean == "[music]" ||
+		clean == "[noise]" ||
+		clean == "(blank_audio)" ||
+		clean == "(silence)" ||
+		clean == "(тишина)" ||
+		clean == "[тишина]"
+}
+
 // handleVoice обрабатывает входящие голосовые сообщения (tele.OnVoice) и аудиозаписи (tele.OnAudio).
 func handleVoice(s ports.Session) error {
 	voice := s.Voice()
@@ -147,7 +161,7 @@ func handleVoice(s ports.Session) error {
 	}
 
 	recognizedText = strings.TrimSpace(recognizedText)
-	if recognizedText == "" || recognizedText == "." {
+	if isBlankAudio(recognizedText) {
 		emptyMsg := i18n.T(lang, "voice.empty")
 		if hasStatus {
 			_ = s.Messenger().Edit(context.Background(), statusRef, emptyMsg, ports.Rich())

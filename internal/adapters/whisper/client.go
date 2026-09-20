@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,7 @@ type Config struct {
 
 // Client — реализация ports.Transcriber для взаимодействия с Whisper через HTTP API.
 type Client struct {
+	mu         sync.RWMutex
 	endpoint   string
 	apiKey     string
 	model      string
@@ -61,16 +63,45 @@ func New(cfg Config) *Client {
 	}
 }
 
+func (c *Client) getEndpoint() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.endpoint
+}
+
+func (c *Client) setEndpoint(ep string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.endpoint = ep
+}
+
 // normalizeEndpoint приводит URL к полному пути эндпоинта транскрипции.
+// Если путь не указан, по умолчанию используется /inference (родной эндпоинт whisper.cpp).
+// Если URL оканчивается на /v1, дописывается /audio/transcriptions (OpenAI-совместимый путь).
 func normalizeEndpoint(rawURL string) string {
 	rawURL = strings.TrimRight(strings.TrimSpace(rawURL), "/")
 	if rawURL == "" {
 		return ""
 	}
-	if strings.HasSuffix(rawURL, "/v1/audio/transcriptions") || strings.HasSuffix(rawURL, "/inference") {
+	if strings.HasSuffix(rawURL, "/inference") || strings.HasSuffix(rawURL, "/v1/audio/transcriptions") {
 		return rawURL
 	}
-	return rawURL + "/v1/audio/transcriptions"
+	if strings.HasSuffix(rawURL, "/v1") {
+		return rawURL + "/audio/transcriptions"
+	}
+	return rawURL + "/inference"
+}
+
+// alternateEndpoint возвращает альтернативный путь API при ошибке 404
+// (/inference <-> /v1/audio/transcriptions).
+func alternateEndpoint(current string) string {
+	if strings.HasSuffix(current, "/inference") {
+		return strings.TrimSuffix(current, "/inference") + "/v1/audio/transcriptions"
+	}
+	if strings.HasSuffix(current, "/v1/audio/transcriptions") {
+		return strings.TrimSuffix(current, "/v1/audio/transcriptions") + "/inference"
+	}
+	return ""
 }
 
 type transcriptionResponse struct {
@@ -80,9 +111,33 @@ type transcriptionResponse struct {
 	} `json:"error,omitempty"`
 }
 
+func (c *Client) doRequest(ctx context.Context, endpoint string, bodyBytes []byte, contentType string) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, 0, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+	}
+	return respBytes, resp.StatusCode, nil
+}
+
 // Transcribe отправляет аудиофайл на сервер Whisper и возвращает распознанный текст.
 func (c *Client) Transcribe(ctx context.Context, audio io.Reader, filename string) (string, error) {
-	if c.endpoint == "" {
+	endpoint := c.getEndpoint()
+	if endpoint == "" {
 		return "", fmt.Errorf("whisper: endpoint URL is empty")
 	}
 
@@ -127,28 +182,29 @@ func (c *Client) Transcribe(ctx context.Context, audio io.Reader, filename strin
 		return "", fmt.Errorf("whisper: close multipart writer: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, body)
-	if err != nil {
-		return "", fmt.Errorf("whisper: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
+	bodyBytes := body.Bytes()
+	contentType := writer.FormDataContentType()
 
-	resp, err := c.client.Do(req)
+	respBytes, statusCode, err := c.doRequest(ctx, endpoint, bodyBytes, contentType)
 	if err != nil {
 		return "", fmt.Errorf("whisper: request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("whisper: read response: %w", err)
+	// Автоматический fallback при 404: если /inference вернет 404, пробуем /v1/audio/transcriptions (или наоборот)
+	if statusCode == http.StatusNotFound {
+		alt := alternateEndpoint(endpoint)
+		if alt != "" {
+			altRespBytes, altStatusCode, altErr := c.doRequest(ctx, alt, bodyBytes, contentType)
+			if altErr == nil && altStatusCode == http.StatusOK {
+				c.setEndpoint(alt)
+				respBytes = altRespBytes
+				statusCode = altStatusCode
+			}
+		}
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("whisper: server returned HTTP %d: %s", resp.StatusCode, string(respBytes))
+	if statusCode != http.StatusOK {
+		return "", fmt.Errorf("whisper: server returned HTTP %d: %s", statusCode, string(respBytes))
 	}
 
 	var tr transcriptionResponse

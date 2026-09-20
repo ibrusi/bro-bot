@@ -400,7 +400,7 @@ install-whisper:
 		sudo -u $(DEPLOY_USER) bash $(WHISPER_DIR)/models/download-ggml-model.sh $(WHISPER_MODEL) $(WHISPER_DIR)/models; \
 	fi
 	@echo "$(MSG_WHISPER_SERVICE)"
-	@printf "[Unit]\nDescription=Whisper.cpp Server\nAfter=network.target\n\n[Service]\nType=simple\nUser=$(DEPLOY_USER)\nWorkingDirectory=$(WHISPER_DIR)\nExecStart=$(WHISPER_DIR)/build/bin/whisper-server -m $(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL).bin --port $(WHISPER_PORT) --host 127.0.0.1\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n" > $(WHISPER_SERVICE_FILE)
+	@printf "[Unit]\nDescription=Whisper.cpp Server\nAfter=network.target\n\n[Service]\nType=simple\nUser=$(DEPLOY_USER)\nWorkingDirectory=$(WHISPER_DIR)\nExecStart=$(WHISPER_DIR)/build/bin/whisper-server -m $(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL).bin --port $(WHISPER_PORT) --host 127.0.0.1 --inference-path /inference\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n" > $(WHISPER_SERVICE_FILE)
 	@systemctl daemon-reload
 	@systemctl enable whisper-server.service
 	@systemctl restart whisper-server.service

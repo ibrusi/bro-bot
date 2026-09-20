@@ -305,7 +305,7 @@ nano .env
 | `BOT_DIR` | Нет | Каталог исполняемого файла | Путь к исходному коду бота для выполнения команд `/rebuild` и сохранения маркера перезапуска. Если не задан, берётся каталог исполняемого файла — но только если рядом с ним лежит `go.mod`. Иначе бот не стартует и сообщает об этом. |
 | `BOT_SERVICE_NAME` | **Да** | — | Имя службы systemd для перезапуска через команды `/restart` и `/rebuild`. |
 | `SQLITE_DB_PATH` | Нет | `data/bot.db` в `BOT_DIR` | Путь к файлу базы данных SQLite для персистентного хранения задач, архитектурных планов, логов, метрик и настроек бота. |
-| `WHISPER_SERVER_URL` | Нет | `http://127.0.0.1:8080` (в `.env.example`) | HTTP-эндпоинт сервера распознавания речи Whisper (например, `whisper.cpp`, `faster-whisper`, OpenAI API). Поддерживает `/v1/audio/transcriptions` и `/inference`. Оставьте пустым для отключения распознавания речи. |
+| `WHISPER_SERVER_URL` | Нет | `http://127.0.0.1:8080/inference` (в `.env.example`) | HTTP-эндпоинт сервера распознавания речи Whisper (например, `whisper.cpp`, `faster-whisper`, OpenAI API). Поддерживает `/inference` и `/v1/audio/transcriptions` с автоматическим fallback при 404. Оставьте пустым для отключения распознавания речи. |
 | `WHISPER_API_KEY` | Нет | — | Опциональный токен авторизации (Bearer token), если сервер Whisper требует аутентификации. |
 | `WHISPER_MODEL` | Нет | `small` | Имя модели, передаваемое серверу Whisper. |
 | `WHISPER_LANGUAGE` | Нет | Автоопределение | Код языка распознавания (например, `ru`, `en`). Оставьте пустым для автоматического распознавания языка. |
@@ -325,7 +325,7 @@ CHAT_TIMEOUT=5m
 BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
-WHISPER_SERVER_URL=http://127.0.0.1:8080
+WHISPER_SERVER_URL=http://127.0.0.1:8080/inference
 WHISPER_MODEL=small
 ```
 

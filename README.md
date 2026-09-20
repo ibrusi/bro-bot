@@ -311,7 +311,7 @@ nano .env
 | `BOT_DIR` | No | Executable's directory | Path to the bot's source code for `/rebuild` and storing restart markers. When unset, the executable's directory is used — but only if a `go.mod` sits next to it. Otherwise the bot refuses to start and says so. |
 | `BOT_SERVICE_NAME` | **Yes** | — | Name of the systemd service unit for `/restart` and `/rebuild`. |
 | `SQLITE_DB_PATH` | No | `data/bot.db` under `BOT_DIR` | Path to the SQLite database file for persistent tasks, plans, logs, and settings. |
-| `WHISPER_SERVER_URL` | No | `http://127.0.0.1:8080` (in `.env.example`) | HTTP endpoint of the Whisper speech-to-text server (e.g. `whisper.cpp`, `faster-whisper`, OpenAI API). Supports `/v1/audio/transcriptions` and `/inference`. Leave empty to disable voice recognition. |
+| `WHISPER_SERVER_URL` | No | `http://127.0.0.1:8080/inference` (in `.env.example`) | HTTP endpoint of the Whisper speech-to-text server (e.g. `whisper.cpp`, `faster-whisper`, OpenAI API). Supports `/inference` and `/v1/audio/transcriptions` with automatic 404 fallback. Leave empty to disable voice recognition. |
 | `WHISPER_API_KEY` | No | — | Optional Bearer authorization token if your Whisper server requires authentication. |
 | `WHISPER_MODEL` | No | `small` | Model name sent to Whisper server. |
 | `WHISPER_LANGUAGE` | No | Auto-detected | Recognition language code (e.g. `ru`, `en`). Leave empty for automatic language detection. |
@@ -331,7 +331,7 @@ CHAT_TIMEOUT=5m
 BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
-WHISPER_SERVER_URL=http://127.0.0.1:8080
+WHISPER_SERVER_URL=http://127.0.0.1:8080/inference
 WHISPER_MODEL=small
 ```
 
