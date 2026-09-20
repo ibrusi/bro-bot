@@ -57,6 +57,10 @@ func (a *ClaudeAPIAdapter) AgentName() string {
 	return "claude-api"
 }
 
+func (a *ClaudeAPIAdapter) ExecutionMode() string {
+	return "api"
+}
+
 // buildClaudeMessagesBody собирает тело запроса к Messages API: историю диалога
 // (Claude API не хранит сессии на своей стороне) и текущий вопрос пользователя.
 func buildClaudeMessagesBody(modelName string, args ports.ExecuteArgs) map[string]interface{} {

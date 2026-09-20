@@ -40,20 +40,40 @@ func registry() *agents.Registry {
 	return agentRegistry
 }
 
+// adapterMatchesMode проверяет, совместим ли адаптер с целевым режимом выполнения.
+// Если адаптер сообщает свой режим через ModeAwareFramework, режим должен строго совпадать.
+// Универсальные адаптеры и моки в тестах, не реализующие интерфейс, считаются совместимыми.
+func adapterMatchesMode(framework ports.AgentFramework, targetMode string) bool {
+	if framework == nil {
+		return false
+	}
+	if aware, ok := framework.(ports.ModeAwareFramework); ok {
+		return strings.EqualFold(aware.ExecutionMode(), targetMode)
+	}
+	return true
+}
+
 // agentFrameworkFor возвращает адаптер для указанного агента с учётом текущего режима выполнения.
 // Это единая точка выбора адаптера: она одинаково работает для любого агента и режима.
 func agentFrameworkFor(agentName string) (ports.AgentFramework, error) {
-	// Адаптер и имя берём одной парой: иначе можно сравнить имя с новым агентом,
-	// а вернуть адаптер от предыдущего.
 	activeFramework, activeName := ActiveAgent()
+	targetMode := config.ProjectState.GetExecutionMode()
 
 	name := normalizeAgentName(agentName)
 
-	// Активный агент уже собран при переключении /agent и /mode — переиспользуем его.
-	if activeFramework != nil && strings.EqualFold(name, activeName) {
+	// Активный агент уже собран при переключении /agent и /mode — переиспользуем его,
+	// только если совпадают имя агента и режим выполнения адаптера.
+	if activeFramework != nil && strings.EqualFold(name, activeName) && adapterMatchesMode(activeFramework, targetMode) {
 		return activeFramework, nil
 	}
-	return registry().Build(name, config.ProjectState.GetExecutionMode())
+	adapter, err := registry().Build(name, targetMode)
+	if err != nil {
+		return nil, err
+	}
+	if strings.EqualFold(name, activeName) {
+		SetActiveAgent(adapter, name)
+	}
+	return adapter, nil
 }
 
 // normalizeAgentName приводит имя агента к каноническому виду: пустое — активный агент,

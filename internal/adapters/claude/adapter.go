@@ -27,6 +27,10 @@ func NewClaudeAdapter() *ClaudeAdapter {
 	return &ClaudeAdapter{BaseURL: defaultClaudeBaseURL}
 }
 
+func (a *ClaudeAdapter) ExecutionMode() string {
+	return "cli"
+}
+
 func resolveClaudeModel(modelName string) string {
 	m := strings.ToLower(strings.TrimSpace(modelName))
 	if m == "" {
@@ -77,8 +81,9 @@ func (a *ClaudeAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 	}
 
 	return &ClaudeProcess{
-		cmd:  cmd,
-		ptmx: ptmx,
+		cmd:    cmd,
+		ptmx:   ptmx,
+		stdout: cliproc.NewPTYReader(ptmx),
 	}, nil
 }
 
@@ -121,12 +126,19 @@ func (a *ClaudeAdapter) GetCredits(ctx context.Context) ([]byte, error) {
 
 // ClaudeProcess реализует интерфейс AgentProcess для PTY-ориентированного процесса claude
 type ClaudeProcess struct {
-	cmd  *exec.Cmd
-	ptmx *os.File
+	cmd    *exec.Cmd
+	ptmx   *os.File
+	stdout io.Reader
 }
 
 func (p *ClaudeProcess) Stdout() io.Reader {
-	return p.ptmx
+	if p.stdout != nil {
+		return p.stdout
+	}
+	if p.ptmx != nil {
+		return cliproc.NewPTYReader(p.ptmx)
+	}
+	return nil
 }
 
 func (p *ClaudeProcess) Stdin() io.WriteCloser {

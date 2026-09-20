@@ -2,11 +2,15 @@ package handlers
 
 import (
 	"context"
+	"io"
+	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/adapters/mock"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
@@ -413,4 +417,154 @@ func TestChatCommandsRegisteredInMenu(t *testing.T) {
 			t.Errorf("команда /%s отсутствует в меню", name)
 		}
 	}
+}
+
+type mockPTYProcess struct {
+	reader  io.Reader
+	waitErr error
+}
+
+func (p *mockPTYProcess) Stdout() io.Reader         { return p.reader }
+func (p *mockPTYProcess) Stdin() io.WriteCloser     { return nopPTYWriteCloser{} }
+func (p *mockPTYProcess) Wait() error               { return p.waitErr }
+func (p *mockPTYProcess) Kill() error               { return nil }
+func (p *mockPTYProcess) Close() error              { return nil }
+func (p *mockPTYProcess) PID() int                  { return 12345 }
+
+type nopPTYWriteCloser struct{}
+
+func (nopPTYWriteCloser) Write(b []byte) (int, error) { return len(b), nil }
+func (nopPTYWriteCloser) Close() error                { return nil }
+
+type mockPTYAgentFramework struct {
+	proc ports.AgentProcess
+}
+
+func (f *mockPTYAgentFramework) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
+	return f.proc, nil
+}
+func (f *mockPTYAgentFramework) GetModels(_ context.Context) ([]byte, error) { return nil, nil }
+func (f *mockPTYAgentFramework) GetQuota(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+func (f *mockPTYAgentFramework) GetQuotaText(_ context.Context, _ string) ([]byte, error) {
+	return []byte("quota"), nil
+}
+func (f *mockPTYAgentFramework) GetCredits(_ context.Context) ([]byte, error) { return []byte(`{}`), nil }
+
+type trailingErrStreamReader struct {
+	data string
+	err  error
+}
+
+func (r *trailingErrStreamReader) Read(p []byte) (int, error) {
+	if len(r.data) > 0 {
+		n := copy(p, r.data)
+		r.data = r.data[n:]
+		return n, nil
+	}
+	return 0, r.err
+}
+
+func TestChatPTYEIOHandledGracefully(t *testing.T) {
+	streamEvents := `{"type":"system","session_id":"conv-pty"}` + "\n" +
+		`{"type":"assistant","session_id":"conv-pty","message":{"role":"assistant","content":[{"type":"text","text":"Успешный ответ агента"}]}}` + "\n" +
+		`{"type":"result","session_id":"conv-pty","status":"SUCCESS","duration":1.5}` + "\n"
+
+	ptyErr := &os.PathError{Op: "read", Path: "/dev/ptmx", Err: syscall.EIO}
+
+	t.Run("Direct streamChatAnswer with raw PTY EIO error", func(t *testing.T) {
+		mt := setupTestApp(t)
+		proc := &mockPTYProcess{
+			reader: &trailingErrStreamReader{
+				data: streamEvents,
+				err:  ptyErr,
+			},
+		}
+		fw := &mockPTYAgentFramework{proc: proc}
+
+		res := streamChatAnswer(
+			context.Background(),
+			mt,
+			ports.ChatID("123"),
+			ports.MessageRef{ID: "msg-1"},
+			fw,
+			ports.ExecuteArgs{Prompt: "Тест"},
+			chatTurnSetup{Project: "testproj", Agent: "agy", Mode: "cli", Model: "sonnet"},
+			"ru",
+		)
+
+		if res.Err != nil {
+			t.Fatalf("ожидали res.Err == nil при закрытии PTY, получили: %v", res.Err)
+		}
+		if res.Answer != "Успешный ответ агента" {
+			t.Errorf("ожидали 'Успешный ответ агента', получили %q", res.Answer)
+		}
+	})
+
+	t.Run("streamChatAnswer with PTYReader wrapper", func(t *testing.T) {
+		mt := setupTestApp(t)
+		proc := &mockPTYProcess{
+			reader: cliproc.NewPTYReader(&trailingErrStreamReader{
+				data: streamEvents,
+				err:  ptyErr,
+			}),
+		}
+		fw := &mockPTYAgentFramework{proc: proc}
+
+		res := streamChatAnswer(
+			context.Background(),
+			mt,
+			ports.ChatID("123"),
+			ports.MessageRef{ID: "msg-1"},
+			fw,
+			ports.ExecuteArgs{Prompt: "Тест"},
+			chatTurnSetup{Project: "testproj", Agent: "agy", Mode: "cli", Model: "sonnet"},
+			"ru",
+		)
+
+		if res.Err != nil {
+			t.Fatalf("ожидали res.Err == nil через PTYReader, получили: %v", res.Err)
+		}
+		if res.Answer != "Успешный ответ агента" {
+			t.Errorf("ожидали 'Успешный ответ агента', получили %q", res.Answer)
+		}
+	})
+
+	t.Run("End-to-end chat turn handles PTY EIO without error banner", func(t *testing.T) {
+		mt := setupTestApp(t)
+		proc := &mockPTYProcess{
+			reader: &trailingErrStreamReader{
+				data: streamEvents,
+				err:  ptyErr,
+			},
+		}
+		fw := &mockPTYAgentFramework{proc: proc}
+
+		prevFramework, prevName := ActiveAgent()
+		SetActiveAgent(fw, "agy")
+		config.ProjectState.SetExecutionMode("cli")
+		config.ProjectState.SetInteractionMode(domain.InteractionModeChat)
+		t.Cleanup(func() {
+			SetActiveAgent(prevFramework, prevName)
+			config.ProjectState.SetExecutionMode("cli")
+			config.ProjectState.SetInteractionMode(domain.InteractionModeChat)
+		})
+
+		sendText(t, mt, "Вопрос для проверки PTY")
+		waitFor(t, "ответ в чате", func() bool {
+			for _, text := range mt.AllTexts() {
+				if strings.Contains(text, "Успешный ответ агента") {
+					return true
+				}
+			}
+			return false
+		})
+
+		for _, text := range mt.AllTexts() {
+			if strings.Contains(text, "input/output error") || strings.Contains(text, "ptmx") {
+				t.Errorf("в диалоге не должно быть ошибки PTY: %s", text)
+			}
+		}
+	})
 }

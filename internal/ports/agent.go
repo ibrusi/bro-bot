@@ -21,6 +21,12 @@ type AgentFramework interface {
 	GetCredits(ctx context.Context) ([]byte, error)
 }
 
+// ModeAwareFramework позволяет адаптеру явно сообщить свой режим выполнения ("cli" или "api").
+// Адаптеры, реализующие этот интерфейс, защищены от переиспользования в несовместимом режиме.
+type ModeAwareFramework interface {
+	ExecutionMode() string
+}
+
 // ChatMessage — одна реплика диалога, передаваемая агенту для восстановления контекста.
 type ChatMessage struct {
 	Role    string // "user" or "assistant"

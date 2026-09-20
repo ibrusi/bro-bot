@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
 	"bro-bot/internal/i18n"
@@ -426,7 +427,7 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 	if waitErr := agentProcess.Wait(); waitErr != nil && res.Err == nil {
 		res.Err = waitErr
 	}
-	if scanErr := scanner.Err(); scanErr != nil && res.Err == nil {
+	if scanErr := scanner.Err(); scanErr != nil && res.Err == nil && !cliproc.IsPTYEOF(scanErr) {
 		res.Err = scanErr
 	}
 	if ctx.Err() != nil && res.Err == nil && answer.Len() == 0 {

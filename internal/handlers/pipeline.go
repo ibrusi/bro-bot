@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
 	"bro-bot/internal/i18n"
@@ -752,7 +753,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 				}
 			})
 		}
-		if scanErr := scanner.Err(); scanErr != nil {
+		if scanErr := scanner.Err(); scanErr != nil && !cliproc.IsPTYEOF(scanErr) {
 			log.Printf("warning: output scanner error for task #%d: %v", taskID, scanErr)
 		}
 		close(done)
