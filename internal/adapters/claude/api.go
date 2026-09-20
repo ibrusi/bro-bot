@@ -4,6 +4,7 @@ import (
 	"bro-bot/internal/agents"
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/tools"
 	"bro-bot/internal/utils"
 	"bytes"
 	"context"
@@ -84,6 +85,8 @@ func buildClaudeMessagesBody(modelName string, args ports.ExecuteArgs) map[strin
 	if systemPrompt := strings.TrimSpace(args.SystemPrompt); systemPrompt != "" {
 		reqBody["system"] = systemPrompt
 	}
+	isReadOnly := args.ReadOnly || strings.Contains(args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(args.SystemPrompt, "CHAT MODE")
+	reqBody["tools"] = tools.ClaudeToolDefinitions(isReadOnly)
 	return reqBody
 }
 
@@ -148,12 +151,9 @@ func (a *ClaudeAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 	return proc, nil
 }
 
-// openClaudeStream открывает поток ответа Messages API.
-//
-// Если модель за это время отключили (404 not_found_error), список моделей обновляется
-// принудительно и запрос повторяется один раз на актуальной модели по умолчанию.
-func openClaudeStream(ctx context.Context, stream claudeStreamRequest) (*http.Response, error) {
-	resp, err := doClaudeRequest(ctx, stream, stream.model)
+// openClaudeStreamWithBody открывает поток ответа Messages API для заданного тела запроса.
+func openClaudeStreamWithBody(ctx context.Context, stream claudeStreamRequest, body map[string]interface{}) (*http.Response, error) {
+	resp, err := doClaudeRequestWithBody(ctx, stream, body)
 	if err == nil {
 		return resp, nil
 	}
@@ -161,18 +161,34 @@ func openClaudeStream(ctx context.Context, stream claudeStreamRequest) (*http.Re
 		return nil, err
 	}
 
-	fallback, ok := fallbackClaudeModelAfterFailure(ctx, stream.client, stream.baseURL, stream.apiKey, stream.model)
+	model, _ := body["model"].(string)
+	fallback, ok := fallbackClaudeModelAfterFailure(ctx, stream.client, stream.baseURL, stream.apiKey, model)
 	if !ok {
 		return nil, err
 	}
 
-	log.Printf("claude-api: model %q is unavailable (%v), retrying with %q", stream.model, err, fallback)
-	return doClaudeRequest(ctx, stream, fallback)
+	log.Printf("claude-api: model %q is unavailable (%v), retrying with %q", model, err, fallback)
+	body["model"] = fallback
+	return doClaudeRequestWithBody(ctx, stream, body)
+}
+
+// openClaudeStream открывает поток ответа Messages API.
+//
+// Если модель за это время отключили (404 not_found_error), список моделей обновляется
+// принудительно и запрос повторяется один раз на актуальной модели по умолчанию.
+func openClaudeStream(ctx context.Context, stream claudeStreamRequest) (*http.Response, error) {
+	body := buildClaudeMessagesBody(stream.model, stream.args)
+	return openClaudeStreamWithBody(ctx, stream, body)
 }
 
 // doClaudeRequest выполняет один запрос к Messages API и проверяет статус ответа.
 func doClaudeRequest(ctx context.Context, stream claudeStreamRequest, model string) (*http.Response, error) {
-	req, err := stream.build(ctx, model)
+	body := buildClaudeMessagesBody(model, stream.args)
+	return doClaudeRequestWithBody(ctx, stream, body)
+}
+
+func doClaudeRequestWithBody(ctx context.Context, stream claudeStreamRequest, body map[string]interface{}) (*http.Response, error) {
+	req, err := stream.buildWithBody(ctx, body)
 	if err != nil {
 		return nil, err
 	}
@@ -208,9 +224,9 @@ type claudeStreamRequest struct {
 	model   string
 }
 
-// build собирает HTTP-запрос к Messages API для указанной модели.
-func (r claudeStreamRequest) build(ctx context.Context, model string) (*http.Request, error) {
-	bodyBytes, err := json.Marshal(buildClaudeMessagesBody(model, r.args))
+// buildWithBody собирает HTTP-запрос к Messages API для произвольного тела запроса.
+func (r claudeStreamRequest) buildWithBody(ctx context.Context, body map[string]interface{}) (*http.Request, error) {
+	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("claude-api: marshal request: %w", err)
 	}
@@ -224,6 +240,12 @@ func (r claudeStreamRequest) build(ctx context.Context, model string) (*http.Req
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("content-type", "application/json")
 	return req, nil
+}
+
+// build собирает HTTP-запрос к Messages API для указанной модели.
+func (r claudeStreamRequest) build(ctx context.Context, model string) (*http.Request, error) {
+	body := buildClaudeMessagesBody(model, r.args)
+	return r.buildWithBody(ctx, body)
 }
 
 func (a *ClaudeAPIAdapter) GetModels(ctx context.Context) ([]byte, error) {
@@ -398,6 +420,17 @@ func (p *ClaudeAPIProcess) handleError(err error) {
 	_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(errBytes))
 }
 
+type claudeBlockState struct {
+	blockType string
+	text      strings.Builder
+	toolID    string
+	toolName  string
+	jsonBuf   strings.Builder
+	toolInput map[string]interface{}
+}
+
+const maxClaudeTurns = 30
+
 func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStreamRequest) {
 	startedAt := time.Now()
 
@@ -414,116 +447,266 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 	initBytes, _ := json.Marshal(initEvt)
 	_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(initBytes))
 
-	resp, err := openClaudeStream(ctx, stream)
-	if err != nil {
-		p.handleError(err)
-		return
-	}
-	defer resp.Body.Close()
+	isReadOnly := stream.args.ReadOnly || strings.Contains(stream.args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(stream.args.SystemPrompt, "CHAT MODE")
+	executor := tools.NewExecutor(stream.args.WorkDir)
 
-	buf := new(bytes.Buffer)
-	scanner := io.Reader(resp.Body)
-	readBuf := make([]byte, 4096)
+	body := buildClaudeMessagesBody(stream.model, stream.args)
+	messages, _ := body["messages"].([]map[string]interface{})
 
 	var textAccumulator strings.Builder
-	var inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int64
+	var totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens int64
+	var turns int
 
-	for {
-		n, err := scanner.Read(readBuf)
-		if n > 0 {
-			buf.Write(readBuf[:n])
-			for {
-				line, readErr := buf.ReadString('\n')
-				if readErr != nil {
-					buf.WriteString(line) // Вернуть оставшийся фрагмент обратно
-					break
-				}
+	for turn := 0; turn < maxClaudeTurns; turn++ {
+		turns++
+		body["messages"] = messages
 
-				line = strings.TrimSpace(line)
-				if !strings.HasPrefix(line, "data: ") {
-					continue
-				}
+		resp, err := openClaudeStreamWithBody(ctx, stream, body)
+		if err != nil {
+			p.handleError(err)
+			return
+		}
 
-				data := strings.TrimPrefix(line, "data: ")
-				if data == "[DONE]" {
-					break
-				}
+		buf := new(bytes.Buffer)
+		scanner := io.Reader(resp.Body)
+		readBuf := make([]byte, 4096)
 
-				var rawEvt map[string]interface{}
-				if err := json.Unmarshal([]byte(data), &rawEvt); err != nil {
-					continue
-				}
+		var (
+			blockStates  = make(map[int]*claudeBlockState)
+			blockIndices []int
+			stopReason   string
+		)
 
-				evtType, _ := rawEvt["type"].(string)
+		for {
+			n, readErr := scanner.Read(readBuf)
+			if n > 0 {
+				buf.Write(readBuf[:n])
+				for {
+					line, lineErr := buf.ReadString('\n')
+					if lineErr != nil {
+						buf.WriteString(line) // Вернуть оставшийся фрагмент обратно
+						break
+					}
 
-				if evtType == "content_block_delta" {
-					if delta, ok := rawEvt["delta"].(map[string]interface{}); ok {
-						if deltaType, _ := delta["type"].(string); deltaType == "text_delta" {
-							if text, _ := delta["text"].(string); text != "" {
-								textAccumulator.WriteString(text)
+					line = strings.TrimSpace(line)
+					if !strings.HasPrefix(line, "data: ") {
+						continue
+					}
 
-								msgEvt := map[string]interface{}{
+					data := strings.TrimPrefix(line, "data: ")
+					if data == "[DONE]" {
+						break
+					}
+
+					var rawEvt map[string]interface{}
+					if err := json.Unmarshal([]byte(data), &rawEvt); err != nil {
+						continue
+					}
+
+					evtType, _ := rawEvt["type"].(string)
+
+					switch evtType {
+					case "content_block_start":
+						if idxVal, ok := rawEvt["index"].(float64); ok {
+							idx := int(idxVal)
+							bs := &claudeBlockState{}
+							if cb, ok := rawEvt["content_block"].(map[string]interface{}); ok {
+								bs.blockType, _ = cb["type"].(string)
+								if bs.blockType == "tool_use" {
+									bs.toolID, _ = cb["id"].(string)
+									bs.toolName, _ = cb["name"].(string)
+								}
+							}
+							blockStates[idx] = bs
+							blockIndices = append(blockIndices, idx)
+						}
+
+					case "content_block_delta":
+						var bs *claudeBlockState
+						if idxVal, ok := rawEvt["index"].(float64); ok {
+							idx := int(idxVal)
+							bs = blockStates[idx]
+							if bs == nil {
+								bs = &claudeBlockState{blockType: "text"}
+								blockStates[idx] = bs
+								blockIndices = append(blockIndices, idx)
+							}
+						}
+
+						if delta, ok := rawEvt["delta"].(map[string]interface{}); ok {
+							deltaType, _ := delta["type"].(string)
+							if deltaType == "text_delta" {
+								if text, _ := delta["text"].(string); text != "" {
+									if bs != nil {
+										bs.text.WriteString(text)
+									}
+									textAccumulator.WriteString(text)
+
+									msgEvt := map[string]interface{}{
+										"type":       "assistant",
+										"session_id": p.sessionID,
+										"message": map[string]interface{}{
+											"role": "assistant",
+											"content": []map[string]interface{}{
+												{
+													"type": "text",
+													"text": text,
+												},
+											},
+										},
+									}
+									msgBytes, _ := json.Marshal(msgEvt)
+									_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(msgBytes))
+								}
+							} else if deltaType == "input_json_delta" {
+								if partial, _ := delta["partial_json"].(string); partial != "" && bs != nil {
+									bs.jsonBuf.WriteString(partial)
+								}
+							}
+						}
+
+					case "content_block_stop":
+						if idxVal, ok := rawEvt["index"].(float64); ok {
+							idx := int(idxVal)
+							bs := blockStates[idx]
+							if bs != nil && bs.blockType == "tool_use" {
+								var inputMap map[string]interface{}
+								if bs.jsonBuf.Len() > 0 {
+									_ = json.Unmarshal([]byte(bs.jsonBuf.String()), &inputMap)
+								}
+								if inputMap == nil {
+									inputMap = make(map[string]interface{})
+								}
+								bs.toolInput = inputMap
+
+								toolEvt := map[string]interface{}{
 									"type":       "assistant",
 									"session_id": p.sessionID,
 									"message": map[string]interface{}{
 										"role": "assistant",
 										"content": []map[string]interface{}{
 											{
-												"type": "text",
-												"text": text,
+												"type":  "tool_use",
+												"id":    bs.toolID,
+												"name":  bs.toolName,
+												"input": inputMap,
 											},
 										},
 									},
 								}
-								msgBytes, _ := json.Marshal(msgEvt)
-								_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(msgBytes))
+								toolBytes, _ := json.Marshal(toolEvt)
+								_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(toolBytes))
 							}
 						}
-					}
-				} else if evtType == "message_start" {
-					if message, ok := rawEvt["message"].(map[string]interface{}); ok {
-						if usage, ok := message["usage"].(map[string]interface{}); ok {
-							if inp, ok := usage["input_tokens"].(float64); ok {
-								inputTokens = int64(inp)
-							}
-							// Токены кэша считаются отдельно от входных и нужны /tokens.
-							if cached, ok := usage["cache_read_input_tokens"].(float64); ok {
-								cacheReadTokens = int64(cached)
-							}
-							if created, ok := usage["cache_creation_input_tokens"].(float64); ok {
-								cacheCreationTokens = int64(created)
+
+					case "message_start":
+						if message, ok := rawEvt["message"].(map[string]interface{}); ok {
+							if usage, ok := message["usage"].(map[string]interface{}); ok {
+								if inp, ok := usage["input_tokens"].(float64); ok {
+									totalInputTokens += int64(inp)
+								}
+								if cached, ok := usage["cache_read_input_tokens"].(float64); ok {
+									totalCacheReadTokens += int64(cached)
+								}
+								if created, ok := usage["cache_creation_input_tokens"].(float64); ok {
+									totalCacheCreationTokens += int64(created)
+								}
 							}
 						}
-					}
-				} else if evtType == "message_delta" {
-					if usage, ok := rawEvt["usage"].(map[string]interface{}); ok {
-						if out, ok := usage["output_tokens"].(float64); ok {
-							outputTokens = int64(out)
+
+					case "message_delta":
+						if delta, ok := rawEvt["delta"].(map[string]interface{}); ok {
+							if sr, ok := delta["stop_reason"].(string); ok {
+								stopReason = sr
+							}
+						}
+						if usage, ok := rawEvt["usage"].(map[string]interface{}); ok {
+							if out, ok := usage["output_tokens"].(float64); ok {
+								totalOutputTokens += int64(out)
+							}
 						}
 					}
 				}
 			}
+
+			if readErr != nil {
+				break
+			}
+		}
+		_ = resp.Body.Close()
+
+		// Проверяем, есть ли вызовы инструментов для выполнения
+		var turnContentBlocks []map[string]interface{}
+		var toolCalls []*claudeBlockState
+
+		for _, idx := range blockIndices {
+			bs := blockStates[idx]
+			if bs == nil {
+				continue
+			}
+			if bs.blockType == "text" && bs.text.Len() > 0 {
+				turnContentBlocks = append(turnContentBlocks, map[string]interface{}{
+					"type": "text",
+					"text": bs.text.String(),
+				})
+			} else if bs.blockType == "tool_use" {
+				turnContentBlocks = append(turnContentBlocks, map[string]interface{}{
+					"type":  "tool_use",
+					"id":    bs.toolID,
+					"name":  bs.toolName,
+					"input": bs.toolInput,
+				})
+				toolCalls = append(toolCalls, bs)
+			}
 		}
 
-		if err != nil {
+		if stopReason != "tool_use" || len(toolCalls) == 0 {
 			break
 		}
+
+		// Выполняем инструменты
+		var toolResultBlocks []map[string]interface{}
+		for _, tc := range toolCalls {
+			out, execErr := executor.Execute(ctx, tc.toolName, tc.toolInput, isReadOnly)
+			isErr := false
+			if execErr != nil {
+				out = fmt.Sprintf("Error: %v", execErr)
+				isErr = true
+			}
+			resultBlock := map[string]interface{}{
+				"type":        "tool_result",
+				"tool_use_id": tc.toolID,
+				"content":     out,
+			}
+			if isErr {
+				resultBlock["is_error"] = true
+			}
+			toolResultBlocks = append(toolResultBlocks, resultBlock)
+		}
+
+		messages = append(messages, map[string]interface{}{
+			"role":    "assistant",
+			"content": turnContentBlocks,
+		})
+		messages = append(messages, map[string]interface{}{
+			"role":    "user",
+			"content": toolResultBlocks,
+		})
 	}
 
 	// 2. Отправляем итоговый результат.
-	// Длительность и число ходов нужны трекеру токенов: без них /tokens показывает нулевую скорость.
 	resEvt := map[string]interface{}{
 		"type":        "result",
 		"session_id":  p.sessionID,
 		"is_error":    false,
 		"result":      textAccumulator.String(),
 		"duration_ms": float64(time.Since(startedAt).Milliseconds()),
-		"num_turns":   1,
+		"num_turns":   turns,
 		"usage": map[string]interface{}{
-			"input_tokens":                inputTokens,
-			"output_tokens":               outputTokens,
-			"cache_read_input_tokens":     cacheReadTokens,
-			"cache_creation_input_tokens": cacheCreationTokens,
+			"input_tokens":                totalInputTokens,
+			"output_tokens":               totalOutputTokens,
+			"cache_read_input_tokens":     totalCacheReadTokens,
+			"cache_creation_input_tokens": totalCacheCreationTokens,
 		},
 	}
 	resBytes, _ := json.Marshal(resEvt)
