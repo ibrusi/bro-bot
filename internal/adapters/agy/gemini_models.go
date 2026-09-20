@@ -2,6 +2,7 @@ package agy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -363,7 +364,7 @@ func listGeminiModels(ctx context.Context, client *genai.Client, force bool) ([]
 			if cached := modelCache.cached(); len(cached) > 0 {
 				return cached, nil
 			}
-			return nil, fmt.Errorf("не удалось получить список моделей Gemini: %w", err)
+			return nil, fmt.Errorf("agy-api: cannot fetch the Gemini model list: %w", err)
 		}
 
 		id := strings.TrimPrefix(info.Name, "models/")
@@ -386,7 +387,7 @@ func listGeminiModels(ctx context.Context, client *genai.Client, force bool) ([]
 		if cached := modelCache.cached(); len(cached) > 0 {
 			return cached, nil
 		}
-		return nil, fmt.Errorf("Gemini API вернул пустой список моделей")
+		return nil, errors.New("agy-api: the Gemini model list came back empty")
 	}
 
 	modelCache.set(items)
@@ -414,12 +415,12 @@ func availableGeminiModels(ctx context.Context, apiKey string, force bool) ([]ge
 func resolveGeminiModelWithClient(ctx context.Context, client *genai.Client, requested string) string {
 	available, err := listGeminiModels(ctx, client, false)
 	if err != nil {
-		log.Printf("agy-api: не удалось получить список моделей (%v), выбираем модель по конфигу", err)
+		log.Printf("agy-api: cannot fetch the model list (%v), falling back to the configured model", err)
 	}
 
 	resolved := resolveGeminiModel(requested, available)
 	if !strings.EqualFold(resolved, strings.TrimSpace(requested)) {
-		log.Printf("agy-api: модель %q сопоставлена с %q", requested, resolved)
+		log.Printf("agy-api: model %q resolved to %q", requested, resolved)
 	}
 	return resolved
 }
@@ -458,7 +459,7 @@ func isModelUnavailableError(err error) bool {
 func fallbackModelAfterFailure(ctx context.Context, client *genai.Client, failed string) (string, bool) {
 	available, err := listGeminiModels(ctx, client, true)
 	if err != nil {
-		log.Printf("agy-api: не удалось обновить список моделей: %v", err)
+		log.Printf("agy-api: cannot refresh the model list: %v", err)
 		return "", false
 	}
 

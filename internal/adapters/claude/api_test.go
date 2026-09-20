@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"context"
 	"encoding/json"
@@ -21,7 +22,7 @@ import (
 func TestClaudeAPIAdapterQuota(t *testing.T) {
 	adapter := NewClaudeAPIAdapter()
 
-	quota, err := adapter.GetQuota(context.Background())
+	quota, err := adapter.GetQuota(context.Background(), i18n.Default)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

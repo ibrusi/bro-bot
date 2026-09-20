@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 )
 
@@ -56,14 +57,15 @@ func (s Spec) Title(mode string) string {
 }
 
 // MissingAPIKeyError — для api-режима не задан ни один из ключей.
-// Текст без разметки: обработчик сам решает, как его показать.
+// Error() — служебный текст для логов; пользователю обработчик показывает перевод,
+// собранный из полей Agent и Vars.
 type MissingAPIKeyError struct {
 	Agent string
 	Vars  []string
 }
 
 func (e *MissingAPIKeyError) Error() string {
-	return fmt.Sprintf("для работы %s в режиме api задайте %s в .env", e.Agent, strings.Join(e.Vars, " или "))
+	return fmt.Sprintf("agents: set %s in .env to run %s in api mode", strings.Join(e.Vars, " or "), e.Agent)
 }
 
 // UnknownAgentError — агента с таким именем в реестре нет.
@@ -73,7 +75,17 @@ type UnknownAgentError struct {
 }
 
 func (e *UnknownAgentError) Error() string {
-	return fmt.Sprintf("неизвестный агент: %s. Доступны: %s", e.Name, strings.Join(e.Known, ", "))
+	return fmt.Sprintf("agents: unknown agent %q, known: %s", e.Name, strings.Join(e.Known, ", "))
+}
+
+// UnsupportedModeError — агент есть, но нужного режима у него нет.
+type UnsupportedModeError struct {
+	Agent string
+	Mode  string
+}
+
+func (e *UnsupportedModeError) Error() string {
+	return fmt.Sprintf("agents: agent %s does not support %s mode", e.Agent, e.Mode)
 }
 
 // Registry — набор известных агентов в порядке регистрации; первый — агент по умолчанию.
@@ -93,7 +105,7 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(spec Spec) {
 	name := canonical(spec.Name)
 	if name == "" {
-		panic("agents: пустое имя агента")
+		panic("agents: empty agent name")
 	}
 	spec.Name = name
 
@@ -145,15 +157,16 @@ func (r *Registry) Normalize(name string) string {
 	return r.Default()
 }
 
-// Title — название источника для агента и режима; для неизвестного агента — обобщённое.
-func (r *Registry) Title(name, mode string) string {
+// Title — название источника для агента и режима; для неизвестного агента — обобщённое
+// название на языке lang.
+func (r *Registry) Title(name, mode, lang string) string {
 	if spec, ok := r.Lookup(name); ok {
 		return spec.Title(mode)
 	}
 	if NormalizeMode(mode) == ModeAPI {
-		return "API агента"
+		return i18n.T(lang, "agent.source_api")
 	}
-	return "CLI агента"
+	return i18n.T(lang, "agent.source_cli")
 }
 
 // Build собирает адаптер агента для режима. В api-режиме сначала проверяет наличие
@@ -169,13 +182,13 @@ func (r *Registry) Build(name, mode string) (ports.AgentFramework, error) {
 			return nil, &MissingAPIKeyError{Agent: spec.Name, Vars: spec.APIKeyEnv}
 		}
 		if spec.NewAPI == nil {
-			return nil, fmt.Errorf("агент %s не поддерживает режим api", spec.Name)
+			return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeAPI}
 		}
 		return spec.NewAPI(), nil
 	}
 
 	if spec.NewCLI == nil {
-		return nil, fmt.Errorf("агент %s не поддерживает режим cli", spec.Name)
+		return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeCLI}
 	}
 	return spec.NewCLI(), nil
 }

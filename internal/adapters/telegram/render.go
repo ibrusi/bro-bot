@@ -14,7 +14,7 @@ import (
 func parseChatID(chat ports.ChatID) (int64, error) {
 	id, err := strconv.ParseInt(string(chat), 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("некорректный telegram chat id %q: %w", chat, err)
+		return 0, fmt.Errorf("telegram: invalid chat id %q: %w", chat, err)
 	}
 	return id, nil
 }

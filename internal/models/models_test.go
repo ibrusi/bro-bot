@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bro-bot/internal/i18n"
 	"reflect"
 	"strings"
 	"testing"
@@ -31,8 +32,8 @@ custom-llm-v1             Custom LLM V1 Model
 	if last.ID != "custom-llm-v1" || last.DisplayName != "Custom LLM V1 Model" {
 		t.Errorf("unexpected custom item: %+v", last)
 	}
-	if !strings.Contains(last.Description, "Custom LLM V1 Model") {
-		t.Errorf("expected dynamic description for custom item, got %s", last.Description)
+	if desc := last.Description(i18n.Default); !strings.Contains(desc, "Custom LLM V1 Model") {
+		t.Errorf("expected dynamic description for custom item, got %s", desc)
 	}
 }
 
@@ -119,12 +120,12 @@ func TestBuildAgyModelArgs(t *testing.T) {
 
 func TestFormatModelsMessage(t *testing.T) {
 	reg := NewModelRegistry(10 * time.Minute)
-	msg := reg.FormatModelsMessage("gemini-3.8-flash-medium")
+	msg := reg.FormatModelsMessage("gemini-3.8-flash-medium", i18n.Default)
 
-	if !strings.Contains(msg, "Доступные модели:") {
+	if !strings.Contains(msg, "Available models:") {
 		t.Errorf("expected header in message")
 	}
-	if !strings.Contains(msg, "(активна)") {
+	if !strings.Contains(msg, "(active)") {
 		t.Errorf("expected active marker in message")
 	}
 	if !strings.Contains(msg, "/model flash") {
@@ -136,19 +137,19 @@ func TestFormatModelsMessage(t *testing.T) {
 
 	// Test Claude-only models formatting
 	claudeModels := []ModelInfo{
-		{ID: "claude-sonnet-5", DisplayName: "Claude Sonnet 5", Description: "Hybrid Reasoning"},
-		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6", Description: "Thinking"},
-		{ID: "claude-haiku-4-5", DisplayName: "Claude Haiku 4.5", Description: "Fast"},
+		{ID: "claude-sonnet-5", DisplayName: "Claude Sonnet 5", DescriptionKey: "models.desc_claude_sonnet_5"},
+		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6", DescriptionKey: "models.desc_claude_sonnet_46"},
+		{ID: "claude-haiku-4-5", DisplayName: "Claude Haiku 4.5", DescriptionKey: "models.desc_claude_haiku_45"},
 	}
 	reg.setModels(claudeModels)
-	msgClaude := reg.FormatModelsMessage("claude-sonnet-4-6")
+	msgClaude := reg.FormatModelsMessage("claude-sonnet-4-6", i18n.Default)
 	if strings.Contains(msgClaude, "/model flash") {
 		t.Errorf("expected claude message not to contain flash alias")
 	}
 	if !strings.Contains(msgClaude, "/model haiku") {
 		t.Errorf("expected claude message to contain haiku alias")
 	}
-	if !strings.Contains(msgClaude, "👉 <b>claude-sonnet-4-6</b> <i>(активна)</i>") {
+	if !strings.Contains(msgClaude, "👉 <b>claude-sonnet-4-6</b> <i>(active)</i>") {
 		t.Errorf("expected active model marker for claude-sonnet-4-6")
 	}
 }

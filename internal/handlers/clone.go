@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"bro-bot/internal/config"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -15,15 +17,25 @@ import (
 	"time"
 )
 
+// Ошибки разбора ссылки на репозиторий. Текст служебный: перевод для пользователя
+// подбирает ErrorText.
+var (
+	errRepoURLEmpty       = errors.New("clone: repository URL must not be empty")
+	errRepoURLInvalid     = errors.New("clone: invalid URL format")
+	errRepoURLProtocol    = errors.New("clone: unsupported URL protocol")
+	errRepoNameUndetected = errors.New("clone: cannot determine the repository name from the URL")
+	errRepoNameInvalid    = errors.New("clone: the repository name from the URL is not usable")
+)
+
 // parseRepoURL parses git SSH and HTTPS URLs, returning the clean URL and inferred repo name.
 func parseRepoURL(rawURL string) (cleanURL, repoName string, err error) {
 	u := strings.TrimSpace(rawURL)
 	if u == "" {
-		return "", "", fmt.Errorf("URL репозитория не может быть пустым")
+		return "", "", errRepoURLEmpty
 	}
 
 	if strings.HasPrefix(u, "-") {
-		return "", "", fmt.Errorf("недопустимый формат URL")
+		return "", "", errRepoURLInvalid
 	}
 
 	trimmed := strings.TrimRight(u, "/")
@@ -34,14 +46,14 @@ func parseRepoURL(rawURL string) (cleanURL, repoName string, err error) {
 		strings.HasPrefix(trimmed, "git://")
 
 	if !hasSCP && !hasScheme {
-		return "", "", fmt.Errorf("неподдерживаемый протокол URL. Используйте SSH (git@...) или HTTPS (https://...)")
+		return "", "", errRepoURLProtocol
 	}
 
 	var name string
 	if hasScheme {
 		lastSlash := strings.LastIndex(trimmed, "/")
 		if lastSlash == -1 || lastSlash == len(trimmed)-1 {
-			return "", "", fmt.Errorf("не удалось определить имя репозитория из URL")
+			return "", "", errRepoNameUndetected
 		}
 		name = trimmed[lastSlash+1:]
 	} else {
@@ -59,7 +71,7 @@ func parseRepoURL(rawURL string) (cleanURL, repoName string, err error) {
 	name = strings.TrimSpace(name)
 
 	if name == "" || name == "." || name == ".." {
-		return "", "", fmt.Errorf("не удалось определить корректное имя репозитория из URL")
+		return "", "", errRepoNameInvalid
 	}
 
 	return u, name, nil
@@ -73,7 +85,7 @@ func sanitizeProjectName(name string) (string, error) {
 
 	clean, err := utils.SanitizeSegment(clean)
 	if err != nil {
-		return "", fmt.Errorf("имя проекта: %w", err)
+		return "", fmt.Errorf("clone: project name: %w", err)
 	}
 	return clean, nil
 }
@@ -131,26 +143,17 @@ func cloneRepository(ctx context.Context, repoURL, targetPath string) ([]byte, e
 
 // handleCloneCommand обрабатывает команду /clone <url> [имя].
 func handleCloneCommand(s ports.Session) error {
+	lang := uiLang()
+
 	args := s.Args()
 	if len(args) == 0 {
-		helpMsg := "📥 <b>Клонирование git-репозитория:</b>\n\n" +
-			"Использование:\n" +
-			"<code>/clone &lt;url&gt; [имя_папки]</code>\n\n" +
-			"Примеры:\n" +
-			"• <b>SSH:</b>\n" +
-			"  <code>/clone git@github.com:owner/repo.git</code>\n" +
-			"• <b>HTTPS:</b>\n" +
-			"  <code>/clone https://github.com/owner/repo.git</code>\n" +
-			"• <b>Своё имя папки:</b>\n" +
-			"  <code>/clone git@github.com:owner/repo.git my-project</code>\n\n" +
-			"💡 <i>Репозиторий будет сохранен в каталог проектов рядом с остальными проектами. Активный проект не переключается (для переключения используйте <code>/use &lt;имя&gt;</code>).</i>"
-		return s.Send(helpMsg, ports.Rich())
+		return s.Send(i18n.T(lang, "clone.help"), ports.Rich())
 	}
 
 	rawURL := args[0]
 	cleanURL, defaultName, err := parseRepoURL(rawURL)
 	if err != nil {
-		return s.Send(fmt.Sprintf("❌ Ошибка в URL: %s\n\nИспользование: <code>/clone &lt;url&gt; [имя_папки]</code>", html.EscapeString(err.Error())), ports.Rich())
+		return s.Send(i18n.Tf(lang, "clone.url_error", html.EscapeString(ErrorText(err, lang))), ports.Rich())
 	}
 
 	// В чат и в лог уходит ссылка без учётных данных: в HTTPS-URL часто встраивают
@@ -162,40 +165,36 @@ func handleCloneCommand(s ports.Session) error {
 	if len(args) > 1 {
 		customName, err := sanitizeProjectName(args[1])
 		if err != nil {
-			return s.Send(fmt.Sprintf("❌ Ошибка в имени проекта: %s", html.EscapeString(err.Error())), ports.Rich())
+			return s.Send(i18n.Tf(lang, "clone.name_error", html.EscapeString(ErrorText(err, lang))), ports.Rich())
 		}
 		targetName = customName
 	} else {
 		validatedName, err := sanitizeProjectName(defaultName)
 		if err != nil {
-			return s.Send(fmt.Sprintf("❌ Не удалось использовать автоматически извлеченное имя <code>%s</code>: %s\nУкажите имя явно: <code>/clone %s &lt;имя&gt;</code>",
-				html.EscapeString(defaultName), html.EscapeString(err.Error()), html.EscapeString(displayURL)), ports.Rich())
+			return s.Send(i18n.Tf(lang, "clone.autoname_error",
+				html.EscapeString(defaultName), html.EscapeString(ErrorText(err, lang)), html.EscapeString(displayURL)), ports.Rich())
 		}
 		targetName = validatedName
 	}
 
 	cleanRoot := filepath.Clean(config.ProjectsRoot)
 	if err := os.MkdirAll(cleanRoot, 0755); err != nil {
-		return s.Send(fmt.Sprintf("❌ Ошибка доступа к каталогу проектов: %s", html.EscapeString(err.Error())), ports.Rich())
+		return s.Send(i18n.Tf(lang, "clone.root_error", html.EscapeString(err.Error())), ports.Rich())
 	}
 
 	targetPath, err := utils.SafeJoinSegment(cleanRoot, targetName)
 	if err != nil {
-		return s.Send(fmt.Sprintf("❌ Недопустимый путь для проекта: %s", html.EscapeString(err.Error())), ports.Rich())
+		return s.Send(i18n.Tf(lang, "clone.path_error", html.EscapeString(ErrorText(err, lang))), ports.Rich())
 	}
 
 	if _, err := os.Stat(targetPath); err == nil {
-		return s.Send(fmt.Sprintf("❌ Каталог <code>%s</code> уже существует в проектах.\n\nДля переключения на него используйте: <code>/use %s</code>",
+		return s.Send(i18n.Tf(lang, "clone.exists",
 			html.EscapeString(targetName), html.EscapeString(targetName)), ports.Rich())
 	}
 
 	m := s.Messenger()
 	chat := s.Chat()
-	statusRef, err := m.Send(context.Background(), chat, fmt.Sprintf(
-		"⏳ <b>Клонирование репозитория...</b>\n\n"+
-			"🌐 <b>URL:</b> <code>%s</code>\n"+
-			"📁 <b>Имя проекта:</b> <code>%s</code>\n\n"+
-			"<i>Пожалуйста, подождите, выполняется git clone...</i>",
+	statusRef, err := m.Send(context.Background(), chat, i18n.Tf(lang, "clone.progress",
 		html.EscapeString(displayURL),
 		html.EscapeString(targetName),
 	), ports.Rich())
@@ -214,31 +213,29 @@ func handleCloneCommand(s ports.Session) error {
 			// git цитирует адрес репозитория в своих ошибках ("Authentication failed
 			// for 'https://token@...'"), поэтому вывод тоже чистим от учётных данных.
 			outStr := strings.TrimSpace(utils.RedactURLCredentials(string(out)))
-			outStr = utils.TruncateWithNote(outStr, 1500, "\n... (вывод обрезан)")
+			outStr = utils.TruncateWithNote(outStr, 1500, i18n.T(lang, "clone.output_truncated"))
 			if outStr == "" {
 				outStr = cloneErr.Error()
 			}
 
 			var hint strings.Builder
-			hint.WriteString("\n\n💡 <b>Возможные причины ошибки:</b>")
+			hint.WriteString(i18n.T(lang, "clone.hint_header"))
 			if strings.Contains(outStr, "Permission denied (publickey)") {
-				hint.WriteString("\n• Ошибка доступа по SSH (publickey). Убедитесь, что публичный ключ сервера добавлен в репозиторий (Deploy Keys или аккаунт).")
+				hint.WriteString(i18n.T(lang, "clone.hint_publickey"))
 				if pubKey := getSSHPublicKey(); pubKey != "" {
-					hint.WriteString(fmt.Sprintf("\n\n🔑 <b>SSH-ключ сервера:</b>\n<code>%s</code>", html.EscapeString(pubKey)))
+					hint.WriteString(i18n.Tf(lang, "clone.hint_sshkey", html.EscapeString(pubKey)))
 				}
 			} else if strings.Contains(outStr, "Authentication failed") || strings.Contains(outStr, "could not read Username") {
-				hint.WriteString("\n• Для приватных HTTPS-репозиториев укажите Personal Access Token в URL: <code>https://token@github.com/owner/repo.git</code> или используйте SSH.")
+				hint.WriteString(i18n.T(lang, "clone.hint_auth"))
 			} else if strings.Contains(outStr, "Could not resolve host") {
-				hint.WriteString("\n• Не удалось найти хост. Проверьте правильность домена в URL.")
+				hint.WriteString(i18n.T(lang, "clone.hint_host"))
 			} else if ctx.Err() == context.DeadlineExceeded {
-				hint.WriteString("\n• Превышено время ожидания клонирования (5 минут). Проверьте доступность сети или размер репозитория.")
+				hint.WriteString(i18n.T(lang, "clone.hint_timeout"))
 			} else {
-				hint.WriteString("\n• Проверьте правильность URL репозитория и права доступа.")
+				hint.WriteString(i18n.T(lang, "clone.hint_generic"))
 			}
 
-			errorMsg := fmt.Sprintf(
-				"❌ <b>Не удалось склонировать репозиторий:</b>\n\n"+
-					"<code>%s</code>%s",
+			errorMsg := i18n.Tf(lang, "clone.failed",
 				html.EscapeString(outStr),
 				hint.String(),
 			)
@@ -265,17 +262,10 @@ func handleCloneCommand(s ports.Session) error {
 
 		var curProjInfo string
 		if curProj != "" {
-			curProjInfo = fmt.Sprintf("🎯 <b>Текущий активный проект:</b> <code>%s</code>\n\n", html.EscapeString(curProj))
+			curProjInfo = i18n.Tf(lang, "clone.current_project", html.EscapeString(curProj))
 		}
 
-		successMsg := fmt.Sprintf(
-			"✅ <b>Репозиторий успешно склонирован!</b>\n\n"+
-				"📁 <b>Склонирован проект:</b> <code>%s</code>\n"+
-				"🌐 <b>Источник:</b> <code>%s</code>\n"+
-				"📂 <b>Путь:</b> <code>%s</code>\n"+
-				"%s"+
-				"💡 <i>Активный проект не изменился. Чтобы переключиться на склонированный проект, выполните:</i>\n"+
-				"• <code>/use %s</code>",
+		successMsg := i18n.Tf(lang, "clone.success",
 			html.EscapeString(targetName),
 			html.EscapeString(displayURL),
 			html.EscapeString(targetPath),

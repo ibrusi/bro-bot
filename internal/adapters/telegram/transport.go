@@ -38,7 +38,7 @@ func New(cfg Config) (*Transport, error) {
 		Poller: &tele.LongPoller{Timeout: pollTimeout},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("ошибка инициализации telegram-бота: %w", err)
+		return nil, fmt.Errorf("telegram: init bot: %w", err)
 	}
 	return &Transport{bot: b}, nil
 }

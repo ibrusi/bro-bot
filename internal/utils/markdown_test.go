@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bro-bot/internal/i18n"
 	"strings"
 	"testing"
 )
@@ -179,7 +180,7 @@ func TestFormatAskQuestionParams(t *testing.T) {
 		},
 	}
 
-	result := FormatAskQuestionParams(params)
+	result := FormatAskQuestionParams(params, i18n.Default)
 	if !strings.Contains(result, "**Какую ветку использовать?**") {
 		t.Errorf("expected question title, got: %s", result)
 	}

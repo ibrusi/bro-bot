@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -347,13 +348,13 @@ func listClaudeModels(ctx context.Context, httpClient *http.Client, baseURL, api
 			return claudeModelsFallback(readErr)
 		}
 		if resp.StatusCode != http.StatusOK {
-			return claudeModelsFallback(fmt.Errorf("список моделей Claude недоступен: HTTP %d: %s",
+			return claudeModelsFallback(fmt.Errorf("claude-api: model list unavailable: HTTP %d: %s",
 				resp.StatusCode, strings.TrimSpace(string(body))))
 		}
 
 		var parsed claudeModelsResponse
 		if err := json.Unmarshal(body, &parsed); err != nil {
-			return claudeModelsFallback(fmt.Errorf("не удалось разобрать список моделей Claude: %w", err))
+			return claudeModelsFallback(fmt.Errorf("claude-api: cannot parse the model list: %w", err))
 		}
 
 		for _, item := range parsed.Data {
@@ -381,7 +382,7 @@ func listClaudeModels(ctx context.Context, httpClient *http.Client, baseURL, api
 	}
 
 	if len(items) == 0 {
-		return claudeModelsFallback(fmt.Errorf("Claude API вернул пустой список моделей"))
+		return claudeModelsFallback(errors.New("claude-api: the model list came back empty"))
 	}
 
 	modelCache.set(items)
@@ -434,12 +435,12 @@ func formatClaudeModelsList(available []claudeModel) string {
 func resolveClaudeModelForAPI(ctx context.Context, httpClient *http.Client, baseURL, apiKey, requested string) string {
 	available, err := listClaudeModels(ctx, httpClient, baseURL, apiKey, false)
 	if err != nil {
-		log.Printf("claude-api: не удалось получить список моделей (%v), выбираем модель по конфигу", err)
+		log.Printf("claude-api: cannot fetch the model list (%v), falling back to the configured model", err)
 	}
 
 	resolved := resolveClaudeAPIModel(requested, available)
 	if !strings.EqualFold(resolved, strings.TrimSpace(requested)) {
-		log.Printf("claude-api: модель %q сопоставлена с %q", requested, resolved)
+		log.Printf("claude-api: model %q resolved to %q", requested, resolved)
 	}
 	return resolved
 }
@@ -449,7 +450,7 @@ func resolveClaudeModelForAPI(ctx context.Context, httpClient *http.Client, base
 func fallbackClaudeModelAfterFailure(ctx context.Context, httpClient *http.Client, baseURL, apiKey, failed string) (string, bool) {
 	available, err := listClaudeModels(ctx, httpClient, baseURL, apiKey, true)
 	if err != nil {
-		log.Printf("claude-api: не удалось обновить список моделей: %v", err)
+		log.Printf("claude-api: cannot refresh the model list: %v", err)
 		return "", false
 	}
 
@@ -468,8 +469,10 @@ func fallbackClaudeModelAfterFailure(ctx context.Context, httpClient *http.Clien
 }
 
 // claudeRateLimitBucket — одно ограничение API: предел, остаток и время восполнения.
+// NameKey — ключ каталога i18n, а не готовый текст: снимок живёт между запросами
+// и может пережить смену языка интерфейса.
 type claudeRateLimitBucket struct {
-	Name      string
+	NameKey   string
 	Limit     int64
 	Remaining int64
 	Reset     string // RFC 3339, как его отдаёт API
@@ -505,14 +508,16 @@ var rateLimitsStore struct {
 }
 
 // claudeRateLimitHeaders перечисляет группы заголовков лимитов в порядке показа.
+// NameKey — ключ каталога: имя группы показывается пользователю и переводится
+// в момент отрисовки, а не в момент снятия заголовков.
 var claudeRateLimitHeaders = []struct {
-	Name   string
-	Prefix string
+	NameKey string
+	Prefix  string
 }{
-	{"Запросы", "anthropic-ratelimit-requests"},
-	{"Входные токены", "anthropic-ratelimit-input-tokens"},
-	{"Выходные токены", "anthropic-ratelimit-output-tokens"},
-	{"Токены суммарно", "anthropic-ratelimit-tokens"},
+	{"quota.bucket_requests", "anthropic-ratelimit-requests"},
+	{"quota.bucket_input_tokens", "anthropic-ratelimit-input-tokens"},
+	{"quota.bucket_output_tokens", "anthropic-ratelimit-output-tokens"},
+	{"quota.bucket_total_tokens", "anthropic-ratelimit-tokens"},
 }
 
 // captureClaudeRateLimits снимает лимиты с заголовков ответа API.
@@ -532,7 +537,7 @@ func captureClaudeRateLimits(header http.Header) {
 			continue
 		}
 		snapshot.Buckets = append(snapshot.Buckets, claudeRateLimitBucket{
-			Name:      group.Name,
+			NameKey:   group.NameKey,
 			Limit:     limit,
 			Remaining: remaining,
 			Reset:     reset,

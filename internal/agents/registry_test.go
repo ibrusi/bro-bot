@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"bro-bot/internal/i18n"
 	"errors"
 	"strings"
 	"testing"
@@ -71,11 +72,11 @@ func TestRegistryTitle(t *testing.T) {
 		{"alpha", "api"}:   "alpha API",
 		{"alpha", "API"}:   "alpha API",
 		{"alpha", ""}:      "alpha CLI",
-		{"unknown", "api"}: "API агента",
-		{"", "cli"}:        "CLI агента",
+		{"unknown", "api"}: "agent API",
+		{"", "cli"}:        "agent CLI",
 	}
 	for in, want := range cases {
-		if got := reg.Title(in[0], in[1]); got != want {
+		if got := reg.Title(in[0], in[1], i18n.Default); got != want {
 			t.Errorf("Title(%q, %q) = %q, ожидали %q", in[0], in[1], got, want)
 		}
 	}

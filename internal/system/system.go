@@ -3,11 +3,12 @@ package system
 import (
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
-	"bro-bot/internal/i18n"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -153,12 +154,12 @@ func CheckAndNotifyRestart(m ports.Messenger, defaultAdminChat ports.ChatID, bot
 	time.Sleep(1500 * time.Millisecond)
 
 	if botDir == "" {
-		log.Printf("Каталог бота не определён, проверку маркера перезапуска пропускаем")
+		log.Printf("bot directory is unknown, skipping the restart marker check")
 		return
 	}
 	marker, err := loadAndClearRestartMarker(botDir)
 	if err != nil {
-		log.Printf("Ошибка чтения маркера перезапуска: %v", err)
+		log.Printf("cannot read the restart marker: %v", err)
 		return
 	}
 	if marker == nil {
@@ -166,7 +167,7 @@ func CheckAndNotifyRestart(m ports.Messenger, defaultAdminChat ports.ChatID, bot
 	}
 
 	if time.Since(marker.TriggeredAt) > 10*time.Minute {
-		log.Printf("Маркер перезапуска устарел (%v), пропускаем", marker.TriggeredAt)
+		log.Printf("the restart marker is stale (%v), skipping", marker.TriggeredAt)
 		return
 	}
 
@@ -182,19 +183,13 @@ func CheckAndNotifyRestart(m ports.Messenger, defaultAdminChat ports.ChatID, bot
 	commit := getGitCommit(botDir)
 	nowStr := time.Now().Format("02.01.2006 15:04:05 MST")
 
-	var title string
+	lang := config.ProjectState.GetLanguage()
+	title := i18n.T(lang, "system.restart_title")
 	if marker.Action == "rebuild" {
-		title = "🚀 <b>Бот успешно пересобран и перезапущен!</b>"
-	} else {
-		title = "🚀 <b>Бот успешно перезапущен!</b>"
+		title = i18n.T(lang, "system.rebuild_title")
 	}
 
-	msg := fmt.Sprintf(
-		"%s\n\n"+
-			"🌿 <b>Ветка:</b> <code>%s</code>\n"+
-			"🔖 <b>Коммит:</b> <code>%s</code>\n"+
-			"⏱ <b>Время запуска:</b> <code>%s</code>\n\n"+
-			"✅ <i>Все системы активны и готовы к приёму задач.</i>",
+	msg := i18n.Tf(lang, "system.restart_report",
 		title,
 		html.EscapeString(branch),
 		html.EscapeString(commit),
@@ -203,7 +198,7 @@ func CheckAndNotifyRestart(m ports.Messenger, defaultAdminChat ports.ChatID, bot
 
 	_, sendErr := m.Send(context.Background(), targetChat, msg, ports.Rich())
 	if sendErr != nil {
-		log.Printf("Не удалось отправить уведомление о перезапуске: %v", sendErr)
+		log.Printf("cannot send the restart notification: %v", sendErr)
 	}
 }
 
@@ -235,6 +230,34 @@ func parseSystemFlags(args []string) SystemFlags {
 	return f
 }
 
+// Ошибки проверки имени ветки. Текст служебный: пользователю показывается перевод,
+// который подбирает BranchErrorText.
+var (
+	ErrBranchEmpty    = errors.New("system: branch name must not be empty")
+	ErrBranchTooLong  = errors.New("system: branch name is too long")
+	ErrBranchCharset  = errors.New("system: branch name contains characters outside the allowed set")
+	ErrBranchSequence = errors.New("system: branch name contains a forbidden sequence")
+	ErrBranchSuffix   = errors.New("system: branch name has a forbidden ending")
+)
+
+// BranchErrorText переводит ошибку validateBranchName на язык интерфейса.
+func BranchErrorText(err error, lang string) string {
+	switch {
+	case errors.Is(err, ErrBranchEmpty):
+		return i18n.T(lang, "err.branch_empty")
+	case errors.Is(err, ErrBranchTooLong):
+		return i18n.T(lang, "err.branch_too_long")
+	case errors.Is(err, ErrBranchCharset):
+		return i18n.T(lang, "err.branch_charset")
+	case errors.Is(err, ErrBranchSequence):
+		return i18n.T(lang, "err.branch_sequence")
+	case errors.Is(err, ErrBranchSuffix):
+		return i18n.T(lang, "err.branch_suffix")
+	default:
+		return err.Error()
+	}
+}
+
 // validBranchNameRegex — подмножество допустимых имён веток git: буква или цифра в
 // начале, дальше буквы, цифры, дефис, подчёркивание, точка и слэш.
 var validBranchNameRegex = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
@@ -249,15 +272,15 @@ func validateBranchName(branch string) error {
 
 	switch {
 	case name == "":
-		return fmt.Errorf("имя ветки не может быть пустым")
+		return ErrBranchEmpty
 	case len(name) > 255:
-		return fmt.Errorf("имя ветки слишком длинное")
+		return ErrBranchTooLong
 	case !validBranchNameRegex.MatchString(name):
-		return fmt.Errorf("имя ветки содержит недопустимые символы. Разрешены буквы, цифры, дефис, подчёркивание, точка и слэш; начинаться имя должно с буквы или цифры")
+		return ErrBranchCharset
 	case strings.Contains(name, ".."), strings.Contains(name, "//"), strings.Contains(name, "@{"):
-		return fmt.Errorf("имя ветки содержит недопустимую последовательность")
+		return ErrBranchSequence
 	case strings.HasSuffix(name, "/"), strings.HasSuffix(name, "."), strings.HasSuffix(name, ".lock"):
-		return fmt.Errorf("недопустимое окончание имени ветки")
+		return ErrBranchSuffix
 	}
 	return nil
 }
@@ -316,18 +339,18 @@ func performBuild(ctx context.Context, botDir string) (string, error) {
 	outStr := strings.TrimSpace(string(out))
 	if err != nil {
 		_ = os.Remove(tmpBinary)
-		return outStr, fmt.Errorf("ошибка компиляции: %w\n%s", err, outStr)
+		return outStr, fmt.Errorf("system: build failed: %w\n%s", err, outStr)
 	}
 
 	if err := os.Chmod(tmpBinary, 0755); err != nil {
 		_ = os.Remove(tmpBinary)
-		return "", fmt.Errorf("не удалось выставить права на бинарник: %w", err)
+		return "", fmt.Errorf("system: chmod the new binary: %w", err)
 	}
 
 	// Атомарно заменяем рабочий бинарник
 	if err := os.Rename(tmpBinary, targetBinary); err != nil {
 		_ = os.Remove(tmpBinary)
-		return "", fmt.Errorf("не удалось заменить бинарник: %w", err)
+		return "", fmt.Errorf("system: replace the binary: %w", err)
 	}
 
 	return outStr, nil
@@ -339,12 +362,12 @@ func executeRestart(t ports.Transport) {
 		// До этого места с пустым именем не добраться: конфигурация проверена на
 		// старте. Но если добрались — выходим чисто и даём systemd поднять юнит,
 		// вместо того чтобы убивать бота посреди пользовательской команды.
-		log.Printf("Имя сервиса не задано, systemctl не вызываем — выходим и полагаемся на Restart=always")
+		log.Printf("service name is not set, skipping systemctl: exiting and relying on Restart=always")
 		t.Stop()
 		os.Exit(0)
 	}
 
-	log.Printf("Инициирован перезапуск бота (сервис: %s)...", serviceName)
+	log.Printf("bot restart initiated (service: %s)...", serviceName)
 
 	// Небольшая задержка, чтобы сообщение гарантированно ушло получателю
 	time.Sleep(800 * time.Millisecond)
@@ -355,18 +378,18 @@ func executeRestart(t ports.Transport) {
 	// 1. Пробуем безопасный неблокирующий перезапуск через systemctl
 	cmd := exec.Command("sudo", "systemctl", "restart", "--no-block", serviceName)
 	if err := cmd.Run(); err == nil {
-		log.Printf("sudo systemctl restart --no-block %s успешно вызван", serviceName)
+		log.Printf("sudo systemctl restart --no-block %s succeeded", serviceName)
 		// Ждём штатного сигнала от systemd, если не пришёл за 3 сек — выходим чисто
 		time.Sleep(3 * time.Second)
 		os.Exit(0)
 		return
 	} else {
-		log.Printf("Предупреждение: sudo systemctl restart завершился с ошибкой: %v", err)
+		log.Printf("warning: sudo systemctl restart failed: %v", err)
 	}
 
 	// 2. Мягкий фоллбек: чистый выход процесса.
 	// Так как в systemd настроено Restart=always, сервис автоматически перезапустится!
-	log.Println("Запуск мягкого завершения процесса (Restart=always перезапустит сервис)...")
+	log.Println("falling back to a clean process exit (Restart=always will bring the service back)...")
 	time.Sleep(500 * time.Millisecond)
 	os.Exit(0)
 }
@@ -447,7 +470,7 @@ func isBotProject(projectName, botDir, projectsRoot string) bool {
 	return false
 }
 
-func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, projectsRoot string) (string, bool) {
+func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, projectsRoot, lang string) (string, bool) {
 	activeTasks := domain.GlobalTaskManager.GetActiveOrQueuedTasks()
 
 	// 1. Ищем активные задачи на проекте самого бота
@@ -468,30 +491,21 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 		tID := firstView.ID
 		tProj := firstView.Project
 		tPrompt := firstView.CurrentPrompt
-		lang := config.ProjectState.GetLanguage()
 		tStatus := i18n.TaskStatusTitle(string(firstView.Status), lang)
 
 		countStr := ""
 		if len(botTasks) > 1 {
-			countStr = fmt.Sprintf(" (%d шт.)", len(botTasks))
+			countStr = i18n.Tf(lang, "system.busy_count", len(botTasks))
 		}
 
-		actionDesc := "Сборка и перезапуск"
+		actionDesc := i18n.T(lang, "system.action_rebuild")
 		if strings.Contains(cmdName, "pull") {
-			actionDesc = "Смена ветки на main, git pull и сборка"
+			actionDesc = i18n.T(lang, "system.action_pull")
 		} else if strings.Contains(cmdName, "restart") {
-			actionDesc = "Перезапуск бота"
+			actionDesc = i18n.T(lang, "system.action_restart")
 		}
 
-		return fmt.Sprintf(
-			"⚠️ <b>На проекте бота выполняется активная задача%s!</b>\n\n"+
-				"• Проект: <code>%s</code>\n"+
-				"• Задача #%d: <i>%s</i>\n"+
-				"• Статус: %s\n\n"+
-				"%s могут повлиять на рабочий репозиторий и прервут выполнение.\n"+
-				"Чтобы принудительно остановить задачу и выполнить команду:\n"+
-				"<code>%s force</code>\n\n"+
-				"Или отмените текущую задачу командой: <code>/cancel %d</code>.",
+		return i18n.Tf(lang, "system.busy_bot_task",
 			countStr,
 			html.EscapeString(tProj),
 			tID,
@@ -510,16 +524,9 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 		tID := firstView2.ID
 		tProj := firstView2.Project
 		tPrompt := firstView2.CurrentPrompt
-		lang := config.ProjectState.GetLanguage()
 		tStatus := i18n.TaskStatusTitle(string(firstView2.Status), lang)
 
-		return fmt.Sprintf(
-			"⚠️ <b>Выполняются активные задачи (%d шт.)!</b>\n\n"+
-				"• Задача #%d (проект: <code>%s</code>): <i>%s</i> [%s]\n\n"+
-				"Перезапуск бота прервёт выполнение активных процессов.\n"+
-				"Чтобы принудительно остановить задачи и выполнить операцию:\n"+
-				"<code>%s force</code>\n\n"+
-				"Или дождитесь их завершения.",
+		return i18n.Tf(lang, "system.busy_other_tasks",
 			len(otherTasks),
 			tID,
 			html.EscapeString(tProj),
@@ -537,14 +544,7 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 	config.Session.Unlock()
 
 	if legacyRunning && !flags.Force {
-		return fmt.Sprintf(
-			"⚠️ <b>Выполняется активная задача!</b>\n\n"+
-				"• Проект: <code>%s</code>\n"+
-				"• Задача: <i>%s</i>\n\n"+
-				"Сборка и перезапуск прервут её выполнение.\n"+
-				"Чтобы принудительно перезапустить:\n"+
-				"<code>%s force</code>\n\n"+
-				"Или отмените текущую задачу командой /cancel.",
+		return i18n.Tf(lang, "system.busy_legacy_task",
 			html.EscapeString(legacyProj),
 			html.EscapeString(utils.TruncateString(legacyPrompt, 100)),
 			cmdName,
@@ -574,7 +574,7 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 	systemActionLock.Lock()
 	if isSystemAction {
 		systemActionLock.Unlock()
-		return s.Send("⚠️ Операция сборки или перезапуска уже выполняется, подождите...", nil)
+		return s.Send(i18n.T(config.ProjectState.GetLanguage(), "system.busy"), nil)
 	}
 	isSystemAction = true
 	systemActionLock.Unlock()
@@ -585,10 +585,11 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 		systemActionLock.Unlock()
 	}()
 
+	lang := config.ProjectState.GetLanguage()
 	flags := parseSystemFlags(s.Args())
 	botDir := config.BotDir
 	if botDir == "" {
-		return s.Send("❌ Каталог бота не определён: задайте <code>BOT_DIR</code> в .env", ports.Rich())
+		return s.Send(i18n.T(lang, "system.bot_dir_missing"), ports.Rich())
 	}
 
 	cmdName := "/rebuild"
@@ -596,13 +597,13 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 		cmdName = "/rebuild pull"
 	}
 
-	if warnMsg, blocked := checkActiveTasksForSystemAction(cmdName, flags, botDir, config.ProjectsRoot); blocked {
+	if warnMsg, blocked := checkActiveTasksForSystemAction(cmdName, flags, botDir, config.ProjectsRoot, lang); blocked {
 		return s.Send(warnMsg, ports.Rich())
 	}
 
 	ctx := context.Background()
 	chat := s.Chat()
-	statusRef, _ := t.Send(ctx, chat, "🔨 <b>Инициализация сборки бота...</b>", ports.Rich())
+	statusRef, _ := t.Send(ctx, chat, i18n.T(lang, "system.build_init"), ports.Rich())
 
 	updateStatus := func(text string) {
 		if statusRef.ID != "" {
@@ -623,14 +624,11 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 		// Имя проверяем до первого обращения к git: иначе значение вроде "-f" или
 		// "--upload-pack=..." ушло бы в команду как опция, а не как ветка.
 		if err := validateBranchName(targetBranch); err != nil {
-			updateStatus(fmt.Sprintf(
-				"❌ <b>Недопустимое имя ветки:</b> %s\n<i>Сборка отменена, бот продолжает работу на текущей ветке.</i>",
-				html.EscapeString(err.Error()),
-			))
+			updateStatus(i18n.Tf(lang, "system.branch_invalid", html.EscapeString(BranchErrorText(err, lang))))
 			return nil
 		}
 
-		updateStatus(fmt.Sprintf("🌿 <b>Переключаюсь на ветку %s...</b>", html.EscapeString(targetBranch)))
+		updateStatus(i18n.Tf(lang, "system.branch_switching", html.EscapeString(targetBranch)))
 		ctxCheckout, cancelCheckout := context.WithTimeout(context.Background(), 30*time.Second)
 		checkoutOut, checkoutErr := performGitCheckout(ctxCheckout, botDir, targetBranch, flags.Force)
 		cancelCheckout()
@@ -639,8 +637,7 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 			if errMsg == "" {
 				errMsg = checkoutErr.Error()
 			}
-			updateStatus(fmt.Sprintf(
-				"❌ <b>Ошибка при переключении на ветку %s:</b>\n<pre>%s</pre>\n<i>Сборка отменена, бот продолжает работу на текущей ветке.</i>",
+			updateStatus(i18n.Tf(lang, "system.branch_failed",
 				html.EscapeString(targetBranch),
 				html.EscapeString(errMsg),
 			))
@@ -648,7 +645,7 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 		}
 
 		if flags.Pull {
-			updateStatus("📥 <b>Выполняю git pull origin...</b>")
+			updateStatus(i18n.T(lang, "system.pulling"))
 			ctxPull, cancelPull := context.WithTimeout(context.Background(), 30*time.Second)
 			pullOut, pullErr := performGitPull(ctxPull, botDir, targetBranch, flags.Force)
 			cancelPull()
@@ -657,10 +654,7 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 				if errMsg == "" {
 					errMsg = pullErr.Error()
 				}
-				updateStatus(fmt.Sprintf(
-					"❌ <b>Ошибка при git pull:</b>\n<pre>%s</pre>\n<i>Сборка отменена, бот продолжает работу.</i>",
-					html.EscapeString(errMsg),
-				))
+				updateStatus(i18n.Tf(lang, "system.pull_failed", html.EscapeString(errMsg)))
 				return nil
 			}
 		}
@@ -669,10 +663,7 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 	branch := getGitBranch(botDir)
 	commit := getGitCommit(botDir)
 
-	updateStatus(fmt.Sprintf(
-		"🔨 <b>Компиляция нового билда...</b>\n"+
-			"🌿 Ветка: <code>%s</code>\n"+
-			"🔖 Коммит: <code>%s</code>",
+	updateStatus(i18n.Tf(lang, "system.compiling",
 		html.EscapeString(branch),
 		html.EscapeString(commit),
 	))
@@ -686,9 +677,7 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 		if errDetails == "" {
 			errDetails = buildErr.Error()
 		}
-		updateStatus(fmt.Sprintf(
-			"❌ <b>Ошибка компиляции (билд отклонён):</b>\n<pre>%s</pre>\n\n"+
-				"🛡 <i>Текущий бинарник сохранён без изменений, бот продолжает работу.</i>",
+		updateStatus(i18n.Tf(lang, "system.build_failed",
 			html.EscapeString(utils.TruncateString(errDetails, 3500)),
 		))
 		return nil
@@ -704,11 +693,7 @@ func HandleRebuild(t ports.Transport, s ports.Session) error {
 		GitBranch:   branch,
 	})
 
-	updateStatus(fmt.Sprintf(
-		"✅ <b>Билд успешно собран!</b>\n"+
-			"🌿 Ветка: <code>%s</code>\n"+
-			"🔖 Коммит: <code>%s</code>\n\n"+
-			"🔄 <b>Перезапускаю сервис...</b>",
+	updateStatus(i18n.Tf(lang, "system.build_ok",
 		html.EscapeString(branch),
 		html.EscapeString(commit),
 	))
@@ -721,7 +706,7 @@ func HandleRestart(t ports.Transport, s ports.Session) error {
 	systemActionLock.Lock()
 	if isSystemAction {
 		systemActionLock.Unlock()
-		return s.Send("⚠️ Операция сборки или перезапуска уже выполняется, подождите...", nil)
+		return s.Send(i18n.T(config.ProjectState.GetLanguage(), "system.busy"), nil)
 	}
 	isSystemAction = true
 	systemActionLock.Unlock()
@@ -732,13 +717,14 @@ func HandleRestart(t ports.Transport, s ports.Session) error {
 		systemActionLock.Unlock()
 	}()
 
+	lang := config.ProjectState.GetLanguage()
 	flags := parseSystemFlags(s.Args())
 	botDir := config.BotDir
 	if botDir == "" {
-		return s.Send("❌ Каталог бота не определён: задайте <code>BOT_DIR</code> в .env", ports.Rich())
+		return s.Send(i18n.T(lang, "system.bot_dir_missing"), ports.Rich())
 	}
 
-	if warnMsg, blocked := checkActiveTasksForSystemAction("/restart", flags, botDir, config.ProjectsRoot); blocked {
+	if warnMsg, blocked := checkActiveTasksForSystemAction("/restart", flags, botDir, config.ProjectsRoot, lang); blocked {
 		return s.Send(warnMsg, ports.Rich())
 	}
 
@@ -747,7 +733,7 @@ func HandleRestart(t ports.Transport, s ports.Session) error {
 
 	ctx := context.Background()
 	chat := s.Chat()
-	statusRef, _ := t.Send(ctx, chat, "🔄 <b>Инициирован перезапуск бота...</b>", ports.Rich())
+	statusRef, _ := t.Send(ctx, chat, i18n.T(lang, "system.restart_init"), ports.Rich())
 
 	_ = saveRestartMarker(botDir, RestartMarker{
 		ChatID:      string(chat),

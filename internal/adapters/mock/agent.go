@@ -200,7 +200,7 @@ func (f *AgentFramework) GetModels(_ context.Context) ([]byte, error) {
 	return []byte(f.ModelsOutput), nil
 }
 
-func (f *AgentFramework) GetQuota(_ context.Context) ([]byte, error) {
+func (f *AgentFramework) GetQuota(_ context.Context, _ string) ([]byte, error) {
 	f.mu.Lock()
 	out := f.QuotaOutput
 	f.mu.Unlock()
@@ -210,7 +210,7 @@ func (f *AgentFramework) GetQuota(_ context.Context) ([]byte, error) {
 	return []byte(out), nil
 }
 
-func (f *AgentFramework) GetQuotaText(_ context.Context) ([]byte, error) {
+func (f *AgentFramework) GetQuotaText(_ context.Context, _ string) ([]byte, error) {
 	f.mu.Lock()
 	f.quotaTextCalls++
 	f.mu.Unlock()

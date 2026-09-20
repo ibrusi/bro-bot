@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"fmt"
 	"html"
 	"log"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"bro-bot/internal/agents"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
 )
@@ -74,8 +74,8 @@ func isKnownAgent(name string) bool {
 // usageSourceTitle называет источник лимитов в шапке /usage. В cli-режиме это название
 // CLI-продукта, в api-режиме работа идёт по ключу API — и подписывать её именем
 // CLI-продукта было бы неверно.
-func usageSourceTitle(agentName, execMode string) string {
-	return registry().Title(agentName, execMode)
+func usageSourceTitle(agentName, execMode, lang string) string {
+	return registry().Title(agentName, execMode, lang)
 }
 
 // AgentSwitch — результат переключения агента: данные без разметки, форматирует их
@@ -147,10 +147,10 @@ func switchActiveAgent(name, mode string) (AgentSwitch, error) {
 }
 
 // formatAgentSwitch — сообщение пользователю о переключении агента.
-func formatAgentSwitch(r AgentSwitch) string {
-	msg := fmt.Sprintf("✅ Агент переключен на: <b>%s</b> [%s]", html.EscapeString(r.Agent), html.EscapeString(r.Mode))
+func formatAgentSwitch(r AgentSwitch, lang string) string {
+	msg := i18n.Tf(lang, "agent.switched", html.EscapeString(r.Agent), html.EscapeString(r.Mode))
 	if r.ModelSwitched() {
-		msg += fmt.Sprintf("\nМодель автоматически переключена на <b>%s</b>.", html.EscapeString(r.Model))
+		msg += i18n.Tf(lang, "agent.model_switched", html.EscapeString(r.Model))
 	}
 	return msg
 }
@@ -162,26 +162,26 @@ func initActiveAgent(savedAgent string) {
 	reg := registry()
 	name := reg.Normalize(savedAgent)
 	if name == "" {
-		log.Printf("Предупреждение: реестр агентов пуст, команды агента работать не будут")
+		log.Printf("warning: the agent registry is empty, agent commands will not work")
 		return
 	}
 
 	if savedAgent != "" {
 		_, err := SwitchActiveAgent(savedAgent)
 		if err == nil {
-			log.Printf("Восстановлен активный агент из SQLite: %s", name)
+			log.Printf("restored the active agent from SQLite: %s", name)
 			return
 		}
-		log.Printf("Предупреждение: не удалось восстановить агента %q: %v", savedAgent, err)
+		log.Printf("warning: cannot restore agent %q: %v", savedAgent, err)
 	}
 
 	mode := config.ProjectState.GetExecutionMode()
 	adapter, err := reg.Build(name, mode)
 	if err != nil {
-		log.Printf("Предупреждение: агент %s в режиме %s недоступен (%v), запускаемся в режиме cli", name, mode, err)
+		log.Printf("warning: agent %s is unavailable in %s mode (%v), starting in cli mode", name, mode, err)
 		config.ProjectState.SetExecutionMode(agents.ModeCLI)
 		if adapter, err = reg.Build(name, agents.ModeCLI); err != nil {
-			log.Printf("Предупреждение: агент %s недоступен: %v", name, err)
+			log.Printf("warning: agent %s is unavailable: %v", name, err)
 			return
 		}
 	}

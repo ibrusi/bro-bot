@@ -3,9 +3,9 @@ package handlers
 import (
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
-	"bro-bot/internal/i18n"
 	"context"
 	"fmt"
 	"html"
@@ -19,34 +19,23 @@ import (
 
 // handlePlan — обработчик команды /plan.
 func handlePlan(s ports.Session) error {
+	lang := uiLang()
+
 	args := s.Args()
 	if len(args) == 0 {
 		config.ProjectState.RLock()
 		mode := config.ProjectState.PlanMode
 		config.ProjectState.RUnlock()
 
-		statusStr := "❌ выключен"
+		statusStr := i18n.T(lang, "plan.mode_off_label")
 		if mode {
-			statusStr = "✅ включен"
+			statusStr = i18n.T(lang, "plan.mode_on_label")
 		}
 
-		msg := fmt.Sprintf(
-			"📝 <b>Режим планирования задач:</b>\n\n"+
-				"В этом режиме агент сначала подробно исследует кодовую базу, формирует пошаговый план, отправляет его вам на утверждение, и <b>только после вашего одобрения</b> приступает к автономной реализации (создание ветки, код, тесты, PR).\n\n"+
-				"• Обязательный план для всех задач: <b>%s</b>\n\n"+
-				"<b>Команды:</b>\n"+
-				"• <code>/plan &lt;описание задачи&gt;</code> — создать задачу с обязательным планом\n"+
-				"• <code>/plan &lt;проект&gt; &lt;описание&gt;</code> — создать задачу с планом для проекта\n"+
-				"• <code>/planmode [on|off]</code> — включить/выключить обязательный план для всех задач\n"+
-				"• <code>/approve [id]</code> — утвердить план задачи и начать реализацию\n\n"+
-				"💡 <i>Вы можете переключить режим кнопкой ниже:</i>",
-			statusStr,
-		)
-
 		menu := &ports.Keyboard{Rows: [][]ports.Button{
-			{{Text: "🔄 Переключить Plan Mode", Action: "plan_mode_toggle"}},
+			{{Text: i18n.T(lang, "btn.toggle_plan_mode"), Action: "plan_mode_toggle"}},
 		}}
-		return s.Send(msg, ports.RichWith(menu))
+		return s.Send(i18n.Tf(lang, "plan.overview", statusStr), ports.RichWith(menu))
 	}
 	text := strings.TrimSpace(strings.Join(args, " "))
 	return handleCreatePlanTask(s, text)
@@ -54,6 +43,8 @@ func handlePlan(s ports.Session) error {
 
 // handlePlanMode — обработчик команды /planmode.
 func handlePlanMode(s ports.Session) error {
+	lang := uiLang()
+
 	args := s.Args()
 	config.ProjectState.Lock()
 	if len(args) == 0 {
@@ -69,7 +60,7 @@ func handlePlanMode(s ports.Session) error {
 			config.ProjectState.PlanMode = !config.ProjectState.PlanMode
 		default:
 			config.ProjectState.Unlock()
-			return s.Send("Использование: <code>/planmode [on|off|toggle]</code>", ports.Rich())
+			return s.Send(i18n.T(lang, "plan.mode_usage"), ports.Rich())
 		}
 	}
 	newMode := config.ProjectState.PlanMode
@@ -80,14 +71,16 @@ func handlePlanMode(s ports.Session) error {
 	}
 
 	if newMode {
-		return s.Send("✅ <b>Режим обязательного планирования ВКЛЮЧЕН.</b>\nВсе новые задачи будут сначала составлять план и ожидать вашего утверждения.", ports.Rich())
+		return s.Send(i18n.T(lang, "plan.mode_enabled"), ports.Rich())
 	}
 
-	return s.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nНовые задачи будут сразу приступать к реализации (для плана используйте <code>/plan &lt;задача&gt;</code>).", ports.Rich())
+	return s.Send(i18n.T(lang, "plan.mode_disabled"), ports.Rich())
 }
 
 // handlePlanFile — обработчик команды /planfile.
 func handlePlanFile(s ports.Session) error {
+	lang := uiLang()
+
 	args := s.Args()
 	var target *domain.TaskSession
 	if len(args) > 0 {
@@ -96,7 +89,7 @@ func handlePlanFile(s ports.Session) error {
 		if id, err := strconv.Atoi(first); err == nil {
 			target = domain.GlobalTaskManager.GetTask(id)
 			if target == nil {
-				return s.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), ports.Rich())
+				return s.Send(i18n.Tf(lang, "task.not_found", id), ports.Rich())
 			}
 		}
 	}
@@ -106,14 +99,16 @@ func handlePlanFile(s ports.Session) error {
 	}
 
 	if target == nil {
-		return s.Send("❌ Нет активных задач. Список задач: /tasks", ports.Rich())
+		return s.Send(i18n.T(lang, "task.no_active"), ports.Rich())
 	}
 
-	return sendTaskPlanDocument(s, target)
+	return sendTaskPlanDocument(s, target, lang)
 }
 
 // handleApprove — обработчик команды /approve.
 func handleApprove(s ports.Session) error {
+	lang := uiLang()
+
 	args := s.Args()
 	var targetID int
 	if len(args) > 0 {
@@ -121,12 +116,12 @@ func handleApprove(s ports.Session) error {
 		var err error
 		targetID, err = strconv.Atoi(first)
 		if err != nil {
-			return s.Send("Укажите номер задачи. Пример: <code>/approve 1</code>", ports.Rich())
+			return s.Send(i18n.T(lang, "plan.approve_usage"), ports.Rich())
 		}
 	} else {
 		active := domain.GlobalTaskManager.GetActiveTask()
 		if active == nil {
-			return s.Send("Нет активных задач для утверждения.", nil)
+			return s.Send(i18n.T(lang, "plan.no_active_to_approve"), nil)
 		}
 		targetID = active.Snapshot().ID
 	}
@@ -135,6 +130,8 @@ func handleApprove(s ports.Session) error {
 
 // handleConfirm — обработчик команды /confirm.
 func handleConfirm(s ports.Session) error {
+	lang := uiLang()
+
 	args := s.Args()
 	var targetID int
 	if len(args) > 0 {
@@ -142,12 +139,12 @@ func handleConfirm(s ports.Session) error {
 		var err error
 		targetID, err = strconv.Atoi(first)
 		if err != nil {
-			return s.Send("Укажите номер задачи. Пример: <code>/confirm 1</code>", ports.Rich())
+			return s.Send(i18n.T(lang, "plan.confirm_usage"), ports.Rich())
 		}
 	} else {
 		active := domain.GlobalTaskManager.GetActiveTask()
 		if active == nil {
-			return s.Send("Нет активных задач для утверждения.", nil)
+			return s.Send(i18n.T(lang, "plan.no_active_to_approve"), nil)
 		}
 		targetID = active.Snapshot().ID
 	}
@@ -156,36 +153,40 @@ func handleConfirm(s ports.Session) error {
 
 // onPlanApprove — обработчик кнопки plan_approve.
 func onPlanApprove(s ports.Session) error {
-	idStr := s.Callback().Payload
-	id, err := strconv.Atoi(idStr)
+	lang := uiLang()
+
+	id, err := strconv.Atoi(s.Callback().Payload)
 	if err != nil {
-		return s.Respond("Некорректный номер задачи")
+		return s.Respond(i18n.T(lang, "task.toast_bad_id"))
 	}
-	_ = s.Respond(fmt.Sprintf("План #%d утверждён", id))
+	_ = s.Respond(i18n.Tf(lang, "task.toast_plan_approved", id))
 	return handleApprovePlan(s.Messenger(), s.Chat(), id)
 }
 
 // onPlanCancel — обработчик кнопки plan_cancel.
 func onPlanCancel(s ports.Session) error {
-	idStr := s.Callback().Payload
-	id, err := strconv.Atoi(idStr)
+	lang := uiLang()
+
+	id, err := strconv.Atoi(s.Callback().Payload)
 	if err != nil {
-		return s.Respond("Некорректный номер задачи")
+		return s.Respond(i18n.T(lang, "task.toast_bad_id"))
 	}
-	_ = s.Respond(fmt.Sprintf("Задача #%d отменена", id))
+	_ = s.Respond(i18n.Tf(lang, "task.toast_cancelled", id))
 	task, err := domain.GlobalTaskManager.CancelTask(id)
 	if err != nil {
-		return s.Send(fmt.Sprintf("❌ %s", err.Error()), ports.Rich())
+		return s.Send("❌ "+ErrorText(err, lang), ports.Rich())
 	}
 	syncLegacySession(domain.GlobalTaskManager.GetActiveTask())
 	domain.GlobalTokenTracker.CancelTask()
 	project := task.Snapshot().Project
 	checkAndStartQueuedTask(s.Messenger(), project, config.ProjectsRoot)
-	return s.Send(fmt.Sprintf("🛑 <b>Задача #%d (<code>%s</code>) остановлена.</b>", id, html.EscapeString(project)), ports.Rich())
+	return s.Send(i18n.Tf(lang, "task.cancelled_rich", id, html.EscapeString(project)), ports.Rich())
 }
 
 // onPlanModeToggle — обработчик кнопки plan_mode_toggle.
 func onPlanModeToggle(s ports.Session) error {
+	lang := uiLang()
+
 	config.ProjectState.Lock()
 	config.ProjectState.PlanMode = !config.ProjectState.PlanMode
 	newMode := config.ProjectState.PlanMode
@@ -196,27 +197,29 @@ func onPlanModeToggle(s ports.Session) error {
 	}
 
 	if newMode {
-		_ = s.Respond("Режим планирования включен")
-		return s.Send("✅ <b>Режим обязательного планирования ВКЛЮЧЕН.</b>\nВсе новые задачи будут сначала формировать план и ожидать вашего утверждения.", ports.Rich())
+		_ = s.Respond(i18n.T(lang, "plan.toast_mode_on"))
+		return s.Send(i18n.T(lang, "plan.mode_enabled"), ports.Rich())
 	}
-	_ = s.Respond("Режим планирования выключен")
-	return s.Send("ℹ️ <b>Режим обязательного планирования ВЫКЛЮЧЕН.</b>\nДля создания задач с планом используйте <code>/plan &lt;задача&gt;</code>.", ports.Rich())
+	_ = s.Respond(i18n.T(lang, "plan.toast_mode_off"))
+	return s.Send(i18n.T(lang, "plan.mode_disabled_button"), ports.Rich())
 }
 
 // onPlanApproveVariant — обработчик кнопки plan_appr_var.
 func onPlanApproveVariant(s ports.Session) error {
+	lang := uiLang()
+
 	parts := strings.Split(s.Callback().Payload, ":")
 	if len(parts) < 2 {
-		return s.Respond("Некорректные параметры")
+		return s.Respond(i18n.T(lang, "task.toast_bad_params"))
 	}
 	id, err1 := strconv.Atoi(parts[0])
 	varIdx, err2 := strconv.Atoi(parts[1])
 	if err1 != nil || err2 != nil {
-		return s.Respond("Некорректный номер задачи или варианта")
+		return s.Respond(i18n.T(lang, "task.toast_bad_params"))
 	}
 	task := domain.GlobalTaskManager.GetTask(id)
 	if task == nil {
-		return s.Respond("Задача не найдена")
+		return s.Respond(i18n.T(lang, "task.toast_not_found"))
 	}
 	view := task.Snapshot()
 	planText := view.Plan
@@ -225,30 +228,29 @@ func onPlanApproveVariant(s ports.Session) error {
 	if varIdx >= 0 && varIdx < len(variants) {
 		chosenVar = variants[varIdx]
 	}
-	_ = s.Respond(fmt.Sprintf("Утверждён вариант: %s", utils.TruncateString(chosenVar, 20)))
+	_ = s.Respond(i18n.Tf(lang, "task.toast_variant_approved", utils.TruncateString(chosenVar, 20)))
 	return handleApprovePlanWithVariant(s.Messenger(), s.Chat(), id, chosenVar)
 }
 
 // onPlanDoc — обработчик кнопки plan_doc.
 func onPlanDoc(s ports.Session) error {
-	idStr := s.Callback().Payload
-	id, err := strconv.Atoi(idStr)
+	lang := uiLang()
+
+	id, err := strconv.Atoi(s.Callback().Payload)
 	if err != nil {
-		return s.Respond("Некорректный номер задачи")
+		return s.Respond(i18n.T(lang, "task.toast_bad_id"))
 	}
 	task := domain.GlobalTaskManager.GetTask(id)
 	if task == nil {
-		return s.Respond("Задача не найдена")
-	}
-	view2 := task.Snapshot()
-	planText := strings.TrimSpace(view2.Plan)
-
-	if planText == "" {
-		return s.Respond("У задачи нет сформированного плана")
+		return s.Respond(i18n.T(lang, "task.toast_not_found"))
 	}
 
-	_ = s.Respond("Отправляю файл плана...")
-	return sendTaskPlanDocument(s, task)
+	if strings.TrimSpace(task.Snapshot().Plan) == "" {
+		return s.Respond(i18n.T(lang, "task.toast_no_plan"))
+	}
+
+	_ = s.Respond(i18n.T(lang, "task.toast_sending_plan"))
+	return sendTaskPlanDocument(s, task, lang)
 }
 
 func handleApprovePlan(m ports.Messenger, chat ports.ChatID, taskID int) error {
@@ -256,18 +258,10 @@ func handleApprovePlan(m ports.Messenger, chat ports.ChatID, taskID int) error {
 }
 
 // buildImplementationPrompt собирает промпт реализации по утверждённому плану.
-func buildImplementationPrompt(initialPrompt, planText, variantInstruction string) string {
-	return fmt.Sprintf(
-		"Задача пользователя: %s\n\n"+
-			"УТВЕРЖДЁННЫЙ ПЛАН РЕАЛИЗАЦИИ:\n%s%s\n\n"+
-			"Приступай к полной автономной реализации задачи в точности по утверждённому плану и инструкциям в AGENT.md:\n"+
-			"1. Создай ветку от актуального main: feat/... или fix/...\n"+
-			"2. Реализуй все пункты плана.\n"+
-			"3. Проверь код тестами и линтерами.\n"+
-			"4. Закоммить изменения (Conventional Commits) и запушь ветку.\n"+
-			"5. Открой Pull Request через GitHub CLI (gh pr create --fill).\n"+
-			"6. В самом конце ответа обязательно выведи строчку строго в формате:\n"+
-			"PR_URL: <полная web-ссылка на созданный PR>",
+// Промпт тоже переводится: на его языке агент пишет отчёт, который бот пересылает
+// пользователю в чат.
+func buildImplementationPrompt(initialPrompt, planText, variantInstruction, lang string) string {
+	return i18n.Tf(lang, "pipeline.implementation_prompt",
 		initialPrompt,
 		planText,
 		variantInstruction,
@@ -277,13 +271,15 @@ func buildImplementationPrompt(initialPrompt, planText, variantInstruction strin
 func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID int, variant string) error {
 	task := domain.GlobalTaskManager.GetTask(taskID)
 	if task == nil {
-		_, err := m.Send(context.Background(), chat, fmt.Sprintf("❌ Задача #%d не найдена.", taskID), nil)
+		_, err := m.Send(context.Background(), chat, i18n.Tf(uiLang(), "task.not_found_short", taskID), nil)
 		return err
 	}
 
+	lang := uiLang()
+
 	variantInstruction := ""
 	if variant != "" {
-		variantInstruction = fmt.Sprintf("\n\nПОЛЬЗОВАТЕЛЬ ВЫБРАЛ И УТВЕРДИЛ ВАРИАНТ:\n%s\nРеализуй задачу строго в соответствии с этим выбранным вариантом плана.", variant)
+		variantInstruction = i18n.Tf(lang, "pipeline.implementation_variant", variant)
 	}
 
 	// Проверка статуса, утверждение плана и запись промпта — одним куском: иначе план
@@ -298,7 +294,6 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 	task.Update(func(t *domain.TaskSession) {
 		if t.Status != domain.TaskStatusWaitingApproval {
 			wrongStatus = true
-			lang := config.ProjectState.GetLanguage()
 			statusTitle = i18n.TaskStatusTitle(string(t.Status), lang)
 			return
 		}
@@ -311,11 +306,11 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 		projectName = t.Project
 		modelName = t.Model
 		initialPrompt = t.InitialPrompt
-		t.CurrentPrompt = buildImplementationPrompt(t.InitialPrompt, t.Plan, variantInstruction)
+		t.CurrentPrompt = buildImplementationPrompt(t.InitialPrompt, t.Plan, variantInstruction, lang)
 	})
 
 	if wrongStatus {
-		_, err := m.Send(context.Background(), chat, fmt.Sprintf("ℹ️ Задача #%d не ожидает утверждения плана (текущий статус: %s).", taskID, statusTitle), nil)
+		_, err := m.Send(context.Background(), chat, i18n.Tf(lang, "plan.not_waiting_approval", taskID, statusTitle), nil)
 		return err
 	}
 
@@ -327,7 +322,7 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 		return sendAgentConflictDialogWithMessenger(m, chat, task)
 	}
 
-	_, _ = m.Send(context.Background(), chat, fmt.Sprintf("🚀 <b>План задачи #%d утверждён!</b>\nПриступаю к автономной реализации в <code>%s</code>...", taskID, html.EscapeString(projectName)), ports.Rich())
+	_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "plan.approved", taskID, html.EscapeString(projectName)), ports.Rich())
 
 	domain.GlobalTokenTracker.StartTaskWithAgent(projectName, modelName, initialPrompt, ActiveAgentName())
 	workDir := filepath.Join(config.ProjectsRoot, projectName)
@@ -337,9 +332,11 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 }
 
 func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback string) error {
+	lang := uiLang()
+
 	task := domain.GlobalTaskManager.GetTask(taskID)
 	if task == nil {
-		return fmt.Errorf("задача #%d не найдена", taskID)
+		return &domain.TaskNotFoundError{ID: taskID}
 	}
 
 	var projectName string
@@ -359,7 +356,7 @@ func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback
 		return sendAgentConflictDialogWithMessenger(m, chat, task)
 	}
 
-	_, _ = m.Send(context.Background(), chat, fmt.Sprintf("📝 <b>Задача #%d: Обновляю план с учётом замечаний...</b>\n<i>«%s»</i>", taskID, html.EscapeString(utils.TruncateString(feedback, 100))), ports.Rich())
+	_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "plan.revising", taskID, html.EscapeString(utils.TruncateString(feedback, 100))), ports.Rich())
 
 	workDir := filepath.Join(config.ProjectsRoot, projectName)
 	go runAgentTaskPipeline(m, chat, task, workDir, config.ProjectsRoot)
@@ -367,9 +364,9 @@ func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback
 	return nil
 }
 
-func sendTaskPlanDocument(s ports.Session, task *domain.TaskSession) error {
+func sendTaskPlanDocument(s ports.Session, task *domain.TaskSession, lang string) error {
 	if task == nil {
-		return s.Send("❌ Задача не найдена. Список задач: /tasks", ports.Rich())
+		return s.Send(i18n.T(lang, "task.not_found_plain"), ports.Rich())
 	}
 
 	view3 := task.Snapshot()
@@ -378,20 +375,19 @@ func sendTaskPlanDocument(s ports.Session, task *domain.TaskSession) error {
 	proj := view3.Project
 
 	if planText == "" {
-		return s.Send(fmt.Sprintf("ℹ️ У задачи #%d нет сформированного плана.", id), ports.Rich())
+		return s.Send(i18n.Tf(lang, "plan.none", id), ports.Rich())
 	}
 
-	docName := fmt.Sprintf("plan_task_%d.md", id)
 	doc := ports.Document{
-		FileName: docName,
+		FileName: fmt.Sprintf("plan_task_%d.md", id),
 		MIME:     "text/markdown",
-		Caption:  fmt.Sprintf("📄 Полный план реализации задачи #%d (%s)", id, proj),
+		Caption:  i18n.Tf(lang, "plan.doc_caption", id, proj),
 		Content:  []byte(planText),
 	}
 	return s.SendDocument(doc)
 }
 
-func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession) {
+func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, lang string) {
 	view4 := task.Snapshot()
 	taskID := view4.ID
 	projectName := view4.Project
@@ -404,17 +400,18 @@ func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.Task
 	variants := utils.ExtractPlanVariantOptions(planText)
 	if len(variants) > 0 {
 		for i, v := range variants {
-			btnText := fmt.Sprintf("Утвердить: %s", utils.TruncateString(v, 24))
+			btnText := i18n.Tf(lang, "btn.approve_variant", utils.TruncateString(v, 24))
 			rows = append(rows, []ports.Button{{Text: btnText, Action: "plan_appr_var", Payload: fmt.Sprintf("%d:%d", taskID, i)}})
 		}
 	}
 
-	lang := config.ProjectState.GetLanguage()
+	approveLabel := i18n.T(lang, "btn.approve_and_start")
+	cancelLabel := i18n.T(lang, "btn.cancel")
 	rows = append(rows, []ports.Button{
-		{Text: i18n.T(lang, "BtnApproveAndStart"), Action: "plan_approve", Payload: strconv.Itoa(taskID)},
-		{Text: i18n.T(lang, "BtnCancel"), Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
+		{Text: approveLabel, Action: "plan_approve", Payload: strconv.Itoa(taskID)},
+		{Text: cancelLabel, Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
 	})
-	rows = append(rows, []ports.Button{{Text: i18n.T(lang, "BtnDownloadPlan"), Action: "plan_doc", Payload: strconv.Itoa(taskID)}})
+	rows = append(rows, []ports.Button{{Text: i18n.T(lang, "btn.download_plan"), Action: "plan_doc", Payload: strconv.Itoa(taskID)}})
 	planMenu := &ports.Keyboard{Rows: rows}
 
 	planRunes := []rune(planText)
@@ -425,26 +422,20 @@ func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.Task
 	if isLongPlan {
 		summary := utils.ExtractPlanSummary(planText, maxInlinePlanRunes)
 		planDisplayHTML = utils.MarkdownToTelegramHTML(summary)
-		planNote = fmt.Sprintf("\n\n📄 <i>Полный детальный план (%d знаков):</i> /planfile_%d (или кнопка ниже)", len(planRunes), taskID)
+		planNote = i18n.Tf(lang, "plan.note_long", len(planRunes), taskID)
 	} else {
 		planDisplayHTML = utils.MarkdownToTelegramHTML(planText)
-		planNote = fmt.Sprintf("\n\n📄 <i>Полный план:</i> /planfile_%d", taskID)
+		planNote = i18n.Tf(lang, "plan.note_short", taskID)
 	}
 
 	promptSnippet := utils.TruncateString(initialPrompt, 250)
 
-	msgText := fmt.Sprintf(
-		"📋 <b>План реализации задачи #%d</b> (<code>%s</code>):\n\n"+
-			"📝 <b>Задача:</b> <i>«%s»</i>\n\n"+
-			"%s%s\n\n"+
-			"👆 <b>План ожидает вашего утверждения:</b>\n"+
-			"• Нажмите <b>«✅ Утвердить и начать»</b> (или выберите вариант) либо <code>/approve %d</code>.\n"+
-			"• Для правок отправьте <code>/add %d &lt;замечания&gt;</code> или ответьте на сообщение.\n"+
-			"• Для отмены: <b>«❌ Отменить»</b> или <code>/cancel %d</code>.",
+	msgText := i18n.Tf(lang, "plan.approval_request",
 		taskID, html.EscapeString(projectName),
 		html.EscapeString(promptSnippet),
 		planDisplayHTML, planNote,
-		taskID, taskID, taskID,
+		approveLabel, taskID, taskID,
+		cancelLabel, taskID,
 	)
 
 	ctlRef, _ := m.Send(context.Background(), chat, msgText, ports.RichWith(planMenu))

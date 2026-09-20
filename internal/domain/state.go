@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"bro-bot/internal/i18n"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +34,9 @@ type ProjectState struct {
 	// InteractionMode задаёт, что делать с обычным сообщением без активной задачи:
 	// "chat" — отвечать в диалоге, "task" — сразу создавать задачу.
 	InteractionMode string
-	Language        string
+	// Language — зеркало выбранного языка для отладки и снимков состояния.
+	// Источник истины — i18n.Active(): см. GetLanguage/SetLanguage.
+	Language string
 }
 
 // GetCurrentAgent возвращает имя активного агента (по умолчанию agy).
@@ -101,23 +104,21 @@ func (ps *ProjectState) SetInteractionMode(mode string) {
 	}
 }
 
-// GetLanguage возвращает текущий язык интерфейса (по умолчанию "en").
+// GetLanguage возвращает текущий язык интерфейса (по умолчанию английский).
+//
+// Значение живёт в пакете i18n: его должен видеть и домен, которому нельзя
+// зависеть от config. Здесь остаётся привычная точка доступа для обработчиков.
 func (ps *ProjectState) GetLanguage() string {
-	ps.RLock()
-	defer ps.RUnlock()
-	if ps.Language == "" {
-		return "en"
-	}
-	return ps.Language
+	return i18n.Active()
 }
 
-// SetLanguage обновляет язык интерфейса.
-func (ps *ProjectState) SetLanguage(lang string) {
+// SetLanguage обновляет язык интерфейса и возвращает применённый код.
+// Незнакомый код заменяется языком по умолчанию, поэтому значение из базы
+// можно передавать сюда без дополнительной проверки.
+func (ps *ProjectState) SetLanguage(lang string) string {
+	applied := i18n.SetActive(lang)
 	ps.Lock()
 	defer ps.Unlock()
-	if strings.ToLower(lang) == "ru" {
-		ps.Language = "ru"
-	} else {
-		ps.Language = "en"
-	}
+	ps.Language = applied
+	return applied
 }

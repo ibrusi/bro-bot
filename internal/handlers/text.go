@@ -3,8 +3,8 @@ package handlers
 import (
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -24,9 +24,9 @@ func handleText(s ports.Session) error {
 		if id, err := strconv.Atoi(strings.TrimSpace(rawID)); err == nil {
 			target := domain.GlobalTaskManager.GetTask(id)
 			if target != nil {
-				return sendTaskPlanDocument(s, target)
+				return sendTaskPlanDocument(s, target, uiLang())
 			}
-			return s.Send(fmt.Sprintf("❌ Задача #%d не найдена. Список задач: /tasks", id), ports.Rich())
+			return s.Send(i18n.Tf(uiLang(), "task.not_found", id), ports.Rich())
 		}
 	}
 
@@ -56,7 +56,7 @@ func handleText(s ports.Session) error {
 		}
 		if isAwaitingAnswer(active) {
 			activeID := active.Snapshot().ID
-			note = fmt.Sprintf("❓ Задача #%d всё ещё ждёт ответа: /resume %d", activeID, activeID)
+			note = i18n.Tf(uiLang(), "chat.task_still_waiting", activeID, activeID)
 		}
 	}
 

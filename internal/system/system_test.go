@@ -322,7 +322,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	testTM := domain.NewTaskManager()
 	domain.GlobalTaskManager = testTM
 
-	warn, blocked := checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects")
+	warn, blocked := checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects", "ru")
 	if blocked || warn != "" {
 		t.Errorf("expected no block when no tasks active, got blocked=%v, warn=%s", blocked, warn)
 	}
@@ -331,7 +331,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	task := testTM.CreateTask("bro-bot", "gemini", "Делаем рефакторинг", ports.ChatID("123"))
 	task.Update(func(t *domain.TaskSession) { t.Status = domain.TaskStatusRunning })
 
-	warn, blocked = checkActiveTasksForSystemAction("/rebuild pull", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects")
+	warn, blocked = checkActiveTasksForSystemAction("/rebuild pull", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects", "ru")
 	if !blocked {
 		t.Errorf("expected block for active task on bot project")
 	}
@@ -348,7 +348,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	task2 := testTM2.CreateTask("some-other-project", "gemini", "Фича для сайта", ports.ChatID("123"))
 	task2.Update(func(t *domain.TaskSession) { t.Status = domain.TaskStatusRunning })
 
-	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects")
+	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{}, "/home/deploy/bro-bot", "/home/deploy/projects", "ru")
 	if !blocked {
 		t.Errorf("expected block for active task on other project without force")
 	}
@@ -357,7 +357,7 @@ func TestCheckActiveTasksForSystemAction(t *testing.T) {
 	}
 
 	// 4. Флаг Force отменяет задачи и разрешает выполнение
-	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{Force: true}, "/home/deploy/bro-bot", "/home/deploy/projects")
+	warn, blocked = checkActiveTasksForSystemAction("/rebuild", SystemFlags{Force: true}, "/home/deploy/bro-bot", "/home/deploy/projects", "ru")
 	if blocked || warn != "" {
 		t.Errorf("expected Force to allow operation, got blocked=%v, warn=%s", blocked, warn)
 	}
@@ -407,7 +407,7 @@ func TestHandleRebuildRejectsBadBranchName(t *testing.T) {
 		t.Fatal("HandleRebuild ничего не отправил")
 	}
 	last := texts[len(texts)-1]
-	if !strings.Contains(last, "Недопустимое имя ветки") {
+	if !strings.Contains(last, "Invalid branch name") {
 		t.Errorf("ожидали отказ до обращения к git, получили: %s", last)
 	}
 	// Сборка не должна была начаться.

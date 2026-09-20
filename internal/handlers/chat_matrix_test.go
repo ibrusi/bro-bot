@@ -141,7 +141,7 @@ func TestChatSurvivesAgentSwitch(t *testing.T) {
 	if call.ConversationID != "" {
 		t.Errorf("у нового агента своя сессия, ожидали пустой идентификатор, получили %q", call.ConversationID)
 	}
-	if !strings.Contains(call.Prompt, "КОНТЕКСТ ПРЕДЫДУЩЕГО РАЗГОВОРА") {
+	if !strings.Contains(call.Prompt, "CONTEXT OF THE PREVIOUS CONVERSATION") {
 		t.Errorf("новому агенту должен передаваться контекст прошлых реплик: %q", call.Prompt)
 	}
 	if !strings.Contains(call.Prompt, "расскажи про адаптеры") {

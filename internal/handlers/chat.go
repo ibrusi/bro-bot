@@ -3,9 +3,9 @@ package handlers
 import (
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
-	"bro-bot/internal/i18n"
 	"bufio"
 	"context"
 	"fmt"
@@ -32,12 +32,12 @@ const (
 
 // chatSystemPreamble — инструкция диалогового режима: агент изучает код и отвечает, но не меняет его.
 func chatSystemPreamble(lang string) string {
-	return i18n.T(lang, "ChatSystemPreamble")
+	return i18n.T(lang, "chat.system_preamble")
 }
 
 // chatShortReminder — короткое напоминание о режиме для последующих ходов CLI-агента.
 func chatShortReminder(lang string) string {
-	return i18n.T(lang, "ChatShortReminder")
+	return i18n.T(lang, "chat.short_reminder")
 }
 
 // buildChatPrompt собирает промпт хода диалога.
@@ -60,24 +60,24 @@ func buildChatPrompt(session *domain.ChatSession, agent, mode, userText, lang st
 	bldr.WriteString(chatSystemPreamble(lang))
 
 	if session.NeedsContextBootstrap(agent, mode) {
-		if prev := formatChatContext(session.HistoryForPrompt(chatBootstrapTurns, chatBootstrapChars)); prev != "" {
-			bldr.WriteString("\n\nКОНТЕКСТ ПРЕДЫДУЩЕГО РАЗГОВОРА (перенесён с другого агента или режима):\n")
+		if prev := formatChatContext(session.HistoryForPrompt(chatBootstrapTurns, chatBootstrapChars), lang); prev != "" {
+			bldr.WriteString(i18n.T(lang, "chat.prompt_previous_context"))
 			bldr.WriteString(prev)
 		}
 	}
 
-	bldr.WriteString("\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n")
+	bldr.WriteString(i18n.T(lang, "chat.prompt_user_question"))
 	bldr.WriteString(userText)
 	return bldr.String()
 }
 
 // formatChatContext оформляет реплики разговора в текстовый блок для промпта.
-func formatChatContext(turns []domain.ChatTurn) string {
+func formatChatContext(turns []domain.ChatTurn, lang string) string {
 	var bldr strings.Builder
 	for _, turn := range turns {
-		speaker := "Пользователь"
+		speaker := i18n.T(lang, "chat.prompt_speaker_user")
 		if turn.Role == domain.ChatRoleAssistant {
-			speaker = "Ты"
+			speaker = i18n.T(lang, "chat.prompt_speaker_assistant")
 		}
 		bldr.WriteString(fmt.Sprintf("%s: %s\n", speaker, turn.Content))
 	}
@@ -146,12 +146,12 @@ func handleTextInChatModeWithNote(s ports.Session, text, note string) error {
 		return nil
 	}
 	if targetProj == "" {
-		return s.Send("❌ Сначала выберите проект: /projects", nil)
+		return s.Send(i18n.T(uiLang(), "projects.select_first"), nil)
 	}
 
 	intent, reason := domain.ClassifyMessageReason(prompt)
 	if intent == domain.IntentWork {
-		log.Printf("Диалог: сообщение распознано как запрос на изменение кода (правило %s)", reason)
+		log.Printf("chat: the message was classified as a code-change request (rule %s)", reason)
 		return sendWorkSuggestion(s, targetProj, targetAgent, prompt)
 	}
 
@@ -164,12 +164,14 @@ func handleChatMessage(s ports.Session, text string) error {
 	curProj := config.ProjectState.CurrentProject
 	config.ProjectState.RUnlock()
 
+	lang := uiLang()
+
 	targetProj, targetAgent, prompt := parseNewTaskInput(text, curProj, ActiveAgentName())
 	if strings.TrimSpace(prompt) == "" {
-		return s.Send("Использование: <code>/chat &lt;вопрос&gt;</code>", ports.Rich())
+		return s.Send(i18n.T(lang, "chat.usage"), ports.Rich())
 	}
 	if targetProj == "" {
-		return s.Send("❌ Сначала выберите проект: /projects", nil)
+		return s.Send(i18n.T(lang, "projects.select_first"), nil)
 	}
 	return startChatTurn(s.Messenger(), s.Chat(), targetProj, targetAgent, prompt, "")
 }
@@ -198,9 +200,11 @@ func startChatTurn(m ports.Messenger, chat ports.ChatID, project, agent, text, n
 		Model:   model,
 	}
 
+	lang := i18n.Active()
+
 	framework, err := agentFrameworkFor(setup.Agent)
 	if err != nil {
-		return sendPlain(m, chat, fmt.Sprintf("❌ %s", err.Error()))
+		return sendPlain(m, chat, "❌ "+ErrorText(err, lang))
 	}
 	setup.Framework = framework
 
@@ -210,7 +214,7 @@ func startChatTurn(m ports.Messenger, chat ports.ChatID, project, agent, text, n
 	if !session.BeginTurn(cancel) {
 		cancel()
 		queued := session.EnqueuePending(text)
-		return sendPlain(m, chat, fmt.Sprintf("📥 <b>Учту после текущего ответа</b> (в очереди: %d)", queued))
+		return sendPlain(m, chat, i18n.Tf(lang, "chat.queued", queued))
 	}
 
 	go runChatLoop(ctx, cancel, m, chat, session, setup, text, note)
@@ -253,10 +257,12 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 	setup chatTurnSetup, userText, note string) {
 	project, agent, mode, model := setup.Project, setup.Agent, setup.Mode, setup.Model
 
-	statusText := fmt.Sprintf("💭 <b>Думаю…</b> <code>%s</code> [<code>%s</code>] · %s/%s",
+	lang := i18n.Active()
+
+	statusText := i18n.Tf(lang, "chat.thinking",
 		html.EscapeString(project), html.EscapeString(model), html.EscapeString(agent), html.EscapeString(mode))
 	if domain.GlobalTaskManager.HasRunningTaskInProject(project) {
-		statusText += "\n<i>⚠️ В проекте выполняется задача — отвечаю, не трогая файлы.</i>"
+		statusText += i18n.T(lang, "chat.thinking_task_note")
 	}
 	// Статусное сообщение диалога намеренно не регистрируется как сообщение задачи:
 	// таблица сообщений ссылается на tasks(id), а у разговора строки задачи нет.
@@ -266,33 +272,32 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 	args := ports.ExecuteArgs{
 		ConversationID: session.ConversationIDFor(agent, mode),
 		ModelName:      model,
-		Prompt:         buildChatPrompt(session, agent, mode, userText, config.ProjectState.GetLanguage()),
+		Prompt:         buildChatPrompt(session, agent, mode, userText, lang),
 		WorkDir:        workDir,
 		History:        chatHistoryForAgent(session, mode),
 	}
 	if strings.EqualFold(mode, "api") {
-		args.SystemPrompt = chatSystemPreamble(config.ProjectState.GetLanguage())
+		args.SystemPrompt = chatSystemPreamble(lang)
 	}
 
 	startedAt := time.Now()
-	res := streamChatAnswer(ctx, m, chat, statusRef, setup.Framework, args, setup)
+	res := streamChatAnswer(ctx, m, chat, statusRef, setup.Framework, args, setup, lang)
 
 	if res.ConversationID != "" {
 		session.SetConversationID(agent, mode, res.ConversationID)
 	}
 
 	if res.Err != nil || res.Status == "ERROR" {
-		message := "❌ <b>Не удалось получить ответ</b>"
+		message := i18n.T(lang, "chat.answer_failed")
 		if ctx.Err() == context.Canceled {
 			// Пользователь сам остановил ответ командой /chat stop.
-			editOrSend(m, chat, statusRef, "🛑 <b>Ответ остановлен.</b>")
+			editOrSend(m, chat, statusRef, i18n.T(lang, "chat.answer_stopped"))
 			return
 		}
 		if ctx.Err() == context.DeadlineExceeded {
-			message = fmt.Sprintf("⌛️ <b>Агент не ответил за %s.</b>\nПопробуйте переспросить или начать новый разговор: <code>/chat new</code>",
-				domain.FormatDurationHuman(chatTimeout()))
+			message = i18n.Tf(lang, "chat.answer_timeout", domain.FormatDuration(chatTimeout(), lang))
 		} else if res.Err != nil {
-			message = fmt.Sprintf("❌ <b>Не удалось получить ответ:</b> %s", html.EscapeString(res.Err.Error()))
+			message = i18n.Tf(lang, "chat.answer_failed_reason", html.EscapeString(ErrorText(res.Err, lang)))
 		}
 		editOrSend(m, chat, statusRef, message)
 		return
@@ -300,7 +305,7 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 
 	answer := strings.TrimSpace(res.Answer)
 	if answer == "" {
-		editOrSend(m, chat, statusRef, "🤔 Агент не прислал ответ. Попробуйте переформулировать вопрос.")
+		editOrSend(m, chat, statusRef, i18n.T(lang, "chat.answer_empty"))
 		return
 	}
 
@@ -317,12 +322,12 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 	}
 	domain.GlobalTokenTracker.RecordChatUsage(model, usage, duration)
 
-	sendChatAnswer(m, chat, statusRef, project, answer, note)
+	sendChatAnswer(m, chat, statusRef, project, answer, note, lang)
 }
 
 // streamChatAnswer запускает агента и разбирает поток событий stream-json.
 func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID, statusRef ports.MessageRef,
-	framework ports.AgentFramework, args ports.ExecuteArgs, setup chatTurnSetup) chatResult {
+	framework ports.AgentFramework, args ports.ExecuteArgs, setup chatTurnSetup, lang string) chatResult {
 	var res chatResult
 
 	agentProcess, err := framework.ExecuteTask(ctx, args)
@@ -333,7 +338,7 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 	defer func() { _ = agentProcess.Close() }()
 
 	var mu sync.Mutex
-	lastAction := "Инициализация сессии агента..."
+	lastAction := i18n.T(lang, "chat.init_action")
 	startedAt := time.Now()
 
 	stopTicker := make(chan struct{})
@@ -352,10 +357,10 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 				action := lastAction
 				mu.Unlock()
 
-				text := fmt.Sprintf("💭 <b>Думаю…</b> <code>%s</code> [<code>%s</code>] · %s/%s\n⏱ %s\n<i>%s</i>\n\n<i>Остановить: /chat stop</i>",
+				text := i18n.Tf(lang, "chat.thinking_progress",
 					html.EscapeString(setup.Project), html.EscapeString(setup.Model),
 					html.EscapeString(setup.Agent), html.EscapeString(setup.Mode),
-					domain.FormatDurationHuman(time.Since(startedAt)),
+					domain.FormatDuration(time.Since(startedAt), lang),
 					html.EscapeString(utils.TruncateString(action, 80)))
 				if statusRef.ID != "" {
 					_ = m.Edit(context.Background(), statusRef, text, ports.Rich())
@@ -446,7 +451,7 @@ func streamEventConversationID(evt *domain.StreamEvent) string {
 }
 
 // sendChatAnswer отправляет ответ агента: коротким сообщением, несколькими частями или файлом.
-func sendChatAnswer(m ports.Messenger, chat ports.ChatID, statusRef ports.MessageRef, project, answer, note string) {
+func sendChatAnswer(m ports.Messenger, chat ports.ChatID, statusRef ports.MessageRef, project, answer, note, lang string) {
 	if note != "" {
 		answer = answer + "\n\n" + note
 	}
@@ -457,17 +462,17 @@ func sendChatAnswer(m ports.Messenger, chat ports.ChatID, statusRef ports.Messag
 		editOrSend(m, chat, statusRef, utils.MarkdownToTelegramHTML(answer))
 
 	case len(runes) <= chatAnswerDocumentLimit:
-		editOrSend(m, chat, statusRef, "💬 <b>Ответ агента:</b>")
+		editOrSend(m, chat, statusRef, i18n.T(lang, "chat.answer_header"))
 		sendLongMarkdown(m, chat, answer)
 
 	default:
 		summary := utils.MarkdownToTelegramHTML(utils.ExtractPlanSummary(answer, 1200))
-		editOrSend(m, chat, statusRef, fmt.Sprintf("💬 <b>Ответ агента:</b>\n\n%s\n\n📄 <i>Полный ответ (%d знаков) прикреплён файлом.</i>", summary, len(runes)))
+		editOrSend(m, chat, statusRef, i18n.Tf(lang, "chat.answer_summary", summary, len(runes)))
 
 		doc := ports.Document{
 			FileName: fmt.Sprintf("chat_%s_%d.md", project, time.Now().Unix()),
 			MIME:     "text/markdown",
-			Caption:  fmt.Sprintf("💬 Полный ответ агента (%s)", project),
+			Caption:  i18n.Tf(lang, "chat.answer_doc_caption", project),
 			Content:  []byte(answer),
 		}
 		if _, err := m.SendDocument(context.Background(), chat, doc); err != nil {
@@ -514,13 +519,12 @@ var (
 
 // sendWorkSuggestion предлагает выбор: ответить в чате, составить план или создать задачу.
 func sendWorkSuggestion(s ports.Session, project, agent, text string) error {
-	msg := fmt.Sprintf(
-		"🤔 <b>Похоже на запрос на изменение кода:</b>\n<i>«%s»</i>\n\n"+
-			"Проект: <code>%s</code>\nЧто сделать?",
+	lang := uiLang()
+	msg := i18n.Tf(lang, "chat.work_suggestion",
 		html.EscapeString(utils.TruncateString(text, 250)), html.EscapeString(project))
 
 	m := s.Messenger()
-	ref, err := m.Send(context.Background(), s.Chat(), msg, ports.RichWith(buildWorkSuggestionMarkup()))
+	ref, err := m.Send(context.Background(), s.Chat(), msg, ports.RichWith(buildWorkSuggestionMarkup(lang)))
 	if err != nil {
 		return err
 	}
@@ -529,15 +533,15 @@ func sendWorkSuggestion(s ports.Session, project, agent, text string) error {
 }
 
 // buildWorkSuggestionMarkup собирает кнопки карточки выбора.
-func buildWorkSuggestionMarkup() *ports.Keyboard {
+func buildWorkSuggestionMarkup(lang string) *ports.Keyboard {
 	return &ports.Keyboard{
 		Rows: [][]ports.Button{
 			{
-				{Text: "💬 Ответить в чате", Action: "chat_answer"},
-				{Text: "📝 Составить план", Action: "chat_plan"},
+				{Text: i18n.T(lang, "btn.chat_answer"), Action: "chat_answer"},
+				{Text: i18n.T(lang, "btn.chat_plan"), Action: "chat_plan"},
 			},
 			{
-				{Text: "🚀 Создать задачу", Action: "chat_task"},
+				{Text: i18n.T(lang, "btn.chat_task"), Action: "chat_task"},
 			},
 		},
 	}
@@ -585,16 +589,18 @@ func takeChatSuggestion(s ports.Session) (workSuggestion, bool) {
 }
 
 // buildChatModeMarkup — кнопка переключения диалогового режима.
-func buildChatModeMarkup() *ports.Keyboard {
+func buildChatModeMarkup(lang string) *ports.Keyboard {
 	return &ports.Keyboard{
 		Rows: [][]ports.Button{
-			{{Text: "🔄 Переключить режим сообщений", Action: "chat_mode_toggle"}},
+			{{Text: i18n.T(lang, "btn.toggle_message_mode"), Action: "chat_mode_toggle"}},
 		},
 	}
 }
 
 // applyInteractionMode переключает режим обработки обычных сообщений и сохраняет выбор.
 func applyInteractionMode(s ports.Session, target string, fromButton bool) error {
+	lang := uiLang()
+
 	config.ProjectState.SetInteractionMode(target)
 	actual := config.ProjectState.GetInteractionMode()
 
@@ -604,22 +610,19 @@ func applyInteractionMode(s ports.Session, target string, fromButton bool) error
 
 	if actual == domain.InteractionModeChat {
 		if fromButton {
-			_ = s.Respond("Диалоговый режим включен")
+			_ = s.Respond(i18n.T(lang, "chat.toast_mode_on"))
 		}
-		return s.Send("💬 <b>Диалоговый режим ВКЛЮЧЕН.</b>\n"+
-			"Обычные сообщения — это разговор с агентом по текущему проекту (контекст сохраняется, /resume не нужен).\n"+
-			"Запрос на изменение кода бот предложит оформить планом или задачей.", ports.Rich())
+		return s.Send(i18n.T(lang, "chat.mode_on"), ports.Rich())
 	}
 
 	if fromButton {
-		_ = s.Respond("Диалоговый режим выключен")
+		_ = s.Respond(i18n.T(lang, "chat.toast_mode_off"))
 	}
-	return s.Send("🚀 <b>Диалоговый режим ВЫКЛЮЧЕН.</b>\n"+
-		"Каждое обычное сообщение снова создаёт задачу. Разовый вопрос в чат: <code>/chat &lt;вопрос&gt;</code>.", ports.Rich())
+	return s.Send(i18n.T(lang, "chat.mode_off"), ports.Rich())
 }
 
 // formatChatStatus описывает текущий разговор: проект, агент, режим и вид памяти.
-func formatChatStatus(project string) string {
+func formatChatStatus(project, lang string) string {
 	mode := config.ProjectState.GetExecutionMode()
 	agent := ActiveAgentName()
 	if agent == "" {
@@ -628,40 +631,42 @@ func formatChatStatus(project string) string {
 	interaction := config.ProjectState.GetInteractionMode()
 
 	var bldr strings.Builder
-	bldr.WriteString("💬 <b>Диалоговый режим</b>\n\n")
+	bldr.WriteString(i18n.T(lang, "chat.status_header"))
 	if interaction == domain.InteractionModeChat {
-		bldr.WriteString("Обычные сообщения: <b>отвечаю в чате</b>\n")
+		bldr.WriteString(i18n.T(lang, "chat.status_messages_chat"))
 	} else {
-		bldr.WriteString("Обычные сообщения: <b>создают задачу</b> (<code>/chatmode on</code> — вернуть диалог)\n")
+		bldr.WriteString(i18n.T(lang, "chat.status_messages_task"))
 	}
-	bldr.WriteString(fmt.Sprintf("Проект: <code>%s</code>\n", html.EscapeString(project)))
-	bldr.WriteString(fmt.Sprintf("Агент: <code>%s</code>, режим: <code>%s</code>\n", html.EscapeString(agent), html.EscapeString(mode)))
+	bldr.WriteString(i18n.Tf(lang, "chat.status_project", html.EscapeString(project)))
+	bldr.WriteString(i18n.Tf(lang, "chat.status_agent", html.EscapeString(agent), html.EscapeString(mode)))
 
 	session := domain.GlobalChatManager.Get(project)
 	if session == nil {
-		bldr.WriteString("\nРазговор ещё не начат — просто напишите вопрос.")
+		bldr.WriteString(i18n.T(lang, "chat.status_not_started"))
 		return bldr.String()
 	}
 
-	bldr.WriteString(fmt.Sprintf("Реплик в истории: <code>%d</code>\n", session.TurnsCount()))
+	bldr.WriteString(i18n.Tf(lang, "chat.status_turns", session.TurnsCount()))
 	if convID := session.ConversationIDFor(agent, mode); convID != "" {
-		bldr.WriteString(fmt.Sprintf("Сессия агента: <code>%s</code>\n", html.EscapeString(utils.TruncateString(convID, 40))))
+		bldr.WriteString(i18n.Tf(lang, "chat.status_session", html.EscapeString(utils.TruncateString(convID, 40))))
 	}
 	if strings.EqualFold(mode, "api") {
-		bldr.WriteString("Память: история диалога из базы бота (агент помнит только текст реплик).\n")
+		bldr.WriteString(i18n.T(lang, "chat.status_memory_api"))
 	} else {
-		bldr.WriteString("Память: собственная сессия агента.\n")
+		bldr.WriteString(i18n.T(lang, "chat.status_memory_cli"))
 	}
 	if session.IsRunning() {
-		bldr.WriteString("\n⏳ Сейчас идёт ответ. Остановить: <code>/chat stop</code>")
+		bldr.WriteString(i18n.T(lang, "chat.status_running"))
 	} else {
-		bldr.WriteString("\n🔄 Начать разговор заново: <code>/chat new</code>")
+		bldr.WriteString(i18n.T(lang, "chat.status_idle"))
 	}
 	return bldr.String()
 }
 
 // handleChat — обработчик команды /chat.
 func handleChat(s ports.Session) error {
+	lang := uiLang()
+
 	args := s.Args()
 	config.ProjectState.RLock()
 	curProj := config.ProjectState.CurrentProject
@@ -670,31 +675,31 @@ func handleChat(s ports.Session) error {
 
 	if len(args) == 0 {
 		if curProj == "" {
-			return s.Send("❌ Сначала выберите проект: /projects", nil)
+			return s.Send(i18n.T(lang, "projects.select_first"), nil)
 		}
-		return s.Send(formatChatStatus(curProj), ports.RichWith(buildChatModeMarkup()))
+		return s.Send(formatChatStatus(curProj, lang), ports.RichWith(buildChatModeMarkup(lang)))
 	}
 
 	switch strings.ToLower(strings.TrimSpace(args[0])) {
 	case "new", "reset", "новый", "сброс":
 		if curProj == "" {
-			return s.Send("❌ Сначала выберите проект: /projects", nil)
+			return s.Send(i18n.T(lang, "projects.select_first"), nil)
 		}
 		if session := domain.GlobalChatManager.Get(curProj); session != nil {
 			session.Cancel()
 		}
 		domain.GlobalChatManager.Reset(curProj, curModel)
-		return s.Send(fmt.Sprintf("🔄 <b>Начат новый разговор</b> в проекте <code>%s</code>. Прошлый контекст больше не используется.", html.EscapeString(curProj)), ports.Rich())
+		return s.Send(i18n.Tf(lang, "chat.reset", html.EscapeString(curProj)), ports.Rich())
 
 	case "stop", "стоп", "отмена":
 		if curProj == "" {
-			return s.Send("❌ Сначала выберите проект: /projects", nil)
+			return s.Send(i18n.T(lang, "projects.select_first"), nil)
 		}
 		session := domain.GlobalChatManager.Get(curProj)
 		if session == nil || !session.Cancel() {
-			return s.Send("ℹ️ Сейчас нет активного ответа в диалоге.", ports.Rich())
+			return s.Send(i18n.T(lang, "chat.no_active_answer"), ports.Rich())
 		}
-		return s.Send("🛑 <b>Ответ агента остановлен.</b>", ports.Rich())
+		return s.Send(i18n.T(lang, "chat.stopped"), ports.Rich())
 	}
 
 	return handleChatMessage(s, strings.TrimSpace(strings.Join(args, " ")))
@@ -721,7 +726,7 @@ func handleChatMode(s ports.Session) error {
 				target = domain.InteractionModeTask
 			}
 		default:
-			return s.Send("Использование: <code>/chatmode [on|off|toggle]</code>", ports.Rich())
+			return s.Send(i18n.T(uiLang(), "chat.mode_usage"), ports.Rich())
 		}
 	}
 
@@ -739,33 +744,42 @@ func onChatModeToggle(s ports.Session) error {
 
 // onChatAnswer — обработчик кнопки chat_answer.
 func onChatAnswer(s ports.Session) error {
+	lang := uiLang()
+
 	sug, ok := takeChatSuggestion(s)
 	if !ok {
-		_ = s.Respond("Карточка устарела")
-		return s.Send("ℹ️ Карточка устарела — отправьте сообщение ещё раз.", ports.Rich())
+		return respondCardExpired(s, lang)
 	}
-	_ = s.Respond("Отвечаю в чате")
+	_ = s.Respond(i18n.T(lang, "chat.toast_answering"))
 	return startChatTurn(s.Messenger(), s.Chat(), sug.Project, sug.Agent, sug.Text, "")
+}
+
+// respondCardExpired отвечает на нажатие кнопки карточки, которую бот уже забыл.
+func respondCardExpired(s ports.Session, lang string) error {
+	_ = s.Respond(i18n.T(lang, "chat.toast_card_expired"))
+	return s.Send(i18n.T(lang, "chat.card_expired"), ports.Rich())
 }
 
 // onChatPlan — обработчик кнопки chat_plan.
 func onChatPlan(s ports.Session) error {
+	lang := uiLang()
+
 	sug, ok := takeChatSuggestion(s)
 	if !ok {
-		_ = s.Respond("Карточка устарела")
-		return s.Send("ℹ️ Карточка устарела — отправьте сообщение ещё раз.", ports.Rich())
+		return respondCardExpired(s, lang)
 	}
-	_ = s.Respond("Составляю план")
+	_ = s.Respond(i18n.T(lang, "chat.toast_planning"))
 	return handleCreateNewTaskWithOptions(s, sug.Text, true)
 }
 
 // onChatTask — обработчик кнопки chat_task.
 func onChatTask(s ports.Session) error {
+	lang := uiLang()
+
 	sug, ok := takeChatSuggestion(s)
 	if !ok {
-		_ = s.Respond("Карточка устарела")
-		return s.Send("ℹ️ Карточка устарела — отправьте сообщение ещё раз.", ports.Rich())
+		return respondCardExpired(s, lang)
 	}
-	_ = s.Respond("Создаю задачу")
+	_ = s.Respond(i18n.T(lang, "chat.toast_creating_task"))
 	return handleCreateNewTaskWithOptions(s, sug.Text, false)
 }

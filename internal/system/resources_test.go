@@ -1,6 +1,7 @@
 package system
 
 import (
+	"bro-bot/internal/i18n"
 	"strings"
 	"testing"
 	"time"
@@ -90,7 +91,7 @@ func TestFormatResourcesMessageIdle(t *testing.T) {
 		GeneratedAt:   time.Now(),
 	}
 
-	msg := FormatResourcesMessage(report)
+	msg := FormatResourcesMessage(report, "ru")
 	if !strings.Contains(msg, "Мониторинг ресурсов") {
 		t.Fatalf("expected title in message: %s", msg)
 	}
@@ -135,7 +136,7 @@ func TestFormatResourcesMessageActiveTask(t *testing.T) {
 		TaskElapsed:   45 * time.Second,
 	}
 
-	msg := FormatResourcesMessage(report)
+	msg := FormatResourcesMessage(report, "ru")
 	if !strings.Contains(msg, "выполняет задачу") {
 		t.Fatalf("expected active task state: %s", msg)
 	}
@@ -152,7 +153,7 @@ func TestFormatResourcesMessageActiveTask(t *testing.T) {
 		t.Fatalf("expected agy CLI line in message: %s", msg)
 	}
 
-	compact := FormatCompactResourceSnippet(report)
+	compact := FormatCompactResourceSnippet(report, "ru")
 	if !strings.Contains(compact, "Bot (PID 100)") {
 		t.Fatalf("expected bot in compact snippet: %s", compact)
 	}
@@ -193,7 +194,7 @@ func TestFormatResourcesMessageClaudeActiveTask(t *testing.T) {
 		TaskElapsed:     75 * time.Second,
 	}
 
-	msg := FormatResourcesMessage(report)
+	msg := FormatResourcesMessage(report, "ru")
 	if !strings.Contains(msg, "Агент задач (claude) — 🟢 <i>активен</i>") {
 		t.Fatalf("expected claude active header: %s", msg)
 	}
@@ -213,7 +214,7 @@ func TestFormatResourcesMessageClaudeActiveTask(t *testing.T) {
 		t.Fatalf("expected claude in console tip: %s", msg)
 	}
 
-	compact := FormatCompactResourceSnippet(report)
+	compact := FormatCompactResourceSnippet(report, "ru")
 	if !strings.Contains(compact, "claude (PID 333)") {
 		t.Fatalf("expected claude in compact snippet: %s", compact)
 	}
@@ -256,7 +257,7 @@ func TestFormatResourcesMessageClaudeIdleAndWorkers(t *testing.T) {
 		},
 	}
 
-	msg := FormatResourcesMessage(report)
+	msg := FormatResourcesMessage(report, "ru")
 	if !strings.Contains(msg, "Активный CLI агент: <code>claude</code>") {
 		t.Fatalf("expected active agent in bot section: %s", msg)
 	}
@@ -273,7 +274,7 @@ func TestFormatResourcesMessageClaudeIdleAndWorkers(t *testing.T) {
 		t.Fatalf("expected agy worker PID: %s", msg)
 	}
 
-	compact := FormatCompactResourceSnippet(report)
+	compact := FormatCompactResourceSnippet(report, "ru")
 	if !strings.Contains(compact, "claude: 💤 <i>idle</i>") {
 		t.Fatalf("expected claude idle in compact snippet: %s", compact)
 	}
@@ -299,7 +300,7 @@ func TestFormatResourcesMessageUnifiedAgentSections(t *testing.T) {
 		TaskPrompt:  "fix bug in code",
 	}
 
-	msg1 := FormatResourcesMessage(rep1)
+	msg1 := FormatResourcesMessage(rep1, "ru")
 
 	// Verify agy section
 	if !strings.Contains(msg1, "🧠 <b>Агент задач (agy) — 🟢 <i>активен</i>:</b>") {
@@ -330,7 +331,7 @@ func TestFormatResourcesMessageUnifiedAgentSections(t *testing.T) {
 		ClaudeInstalled: false,
 	}
 
-	msg2 := FormatResourcesMessage(rep2)
+	msg2 := FormatResourcesMessage(rep2, "ru")
 	// Check that both have "• CLI: 🔴 <i>не найден в PATH</i>"
 	countNotFound := strings.Count(msg2, "• CLI: 🔴 <i>не найден в PATH</i>")
 	if countNotFound != 2 {
@@ -360,7 +361,7 @@ func TestFormatResourcesMessageWithDisk(t *testing.T) {
 		},
 	}
 
-	msg := FormatResourcesMessage(report)
+	msg := FormatResourcesMessage(report, "ru")
 	if !strings.Contains(msg, "💻 <b>Сервер:</b>") {
 		t.Fatalf("expected Server header in message: %s", msg)
 	}
@@ -369,3 +370,21 @@ func TestFormatResourcesMessageWithDisk(t *testing.T) {
 	}
 }
 
+// TestFormatResourcesMessageDefaultLanguageIsEnglish фиксирует язык по умолчанию:
+// остальные проверки отчёта идут на русском, и без этого теста английский рендер
+// остался бы непокрытым.
+func TestFormatResourcesMessageDefaultLanguageIsEnglish(t *testing.T) {
+	report := ResourcesReport{
+		Host:        HostLoadStats{Load1: 1.0, Cores: 2},
+		Memory:      HostMemoryStats{TotalBytes: 4 << 30, UsedBytes: 1 << 30},
+		BotProc:     &ProcessResourceInfo{PID: 1234, CPUPercent: 0.5, MemoryBytes: 30 << 20},
+		GeneratedAt: time.Now(),
+	}
+
+	msg := FormatResourcesMessage(report, i18n.Default)
+	for _, want := range []string{"Resource monitoring", "Server:", "Idle (no active tasks)", "1234"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("в английском отчёте нет %q: %s", want, msg)
+		}
+	}
+}

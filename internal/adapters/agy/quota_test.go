@@ -1,6 +1,7 @@
 package agy
 
 import (
+	"bro-bot/internal/i18n"
 	"context"
 	"encoding/json"
 	"strings"
@@ -29,7 +30,7 @@ func withGeminiLimits(m geminiModel, input, output int) geminiModel {
 // TestAgyGetQuotaHasNoGroups — Gemini API не сообщает остаток квоты по ключу,
 // поэтому структурных данных быть не должно: проценты рисовать не из чего.
 func TestAgyGetQuotaHasNoGroups(t *testing.T) {
-	raw, err := NewAgyAPIAdapter().GetQuota(context.Background())
+	raw, err := NewAgyAPIAdapter().GetQuota(context.Background(), i18n.Default)
 	if err != nil {
 		t.Fatalf("GetQuota: %v", err)
 	}
@@ -59,14 +60,14 @@ func TestAgyGetQuotaTextShowsModelLimits(t *testing.T) {
 		withGeminiLimits(parseGeminiModelName("gemini-3.1-pro"), 2097152, 65536),
 	})
 
-	raw, err := NewAgyAPIAdapter().GetQuotaText(context.Background())
+	raw, err := NewAgyAPIAdapter().GetQuotaText(context.Background(), i18n.Default)
 	if err != nil {
 		t.Fatalf("GetQuotaText: %v", err)
 	}
 
 	text := string(raw)
 	// Модель по умолчанию — младшая из старших, её лимиты и показываем.
-	for _, want := range []string{"gemini-3.8-flash-high", "контекст 1.0M", "66K", "/tokens", "AI Studio"} {
+	for _, want := range []string{"gemini-3.8-flash-high", "context 1.0M", "66K", "/tokens", "AI Studio"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("в сводке нет %q: %s", want, text)
 		}
@@ -79,7 +80,7 @@ func TestAgyGetQuotaTextShowsModelLimits(t *testing.T) {
 func TestAgyGetQuotaTextWithoutModelCache(t *testing.T) {
 	seedGeminiModelCache(t, nil)
 
-	raw, err := NewAgyAPIAdapter().GetQuotaText(context.Background())
+	raw, err := NewAgyAPIAdapter().GetQuotaText(context.Background(), i18n.Default)
 	if err != nil {
 		t.Fatalf("GetQuotaText: %v", err)
 	}

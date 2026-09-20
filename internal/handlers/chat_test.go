@@ -164,7 +164,7 @@ func TestWorkRequestSendsSuggestionCard(t *testing.T) {
 	if last == nil {
 		t.Fatal("ожидали карточку выбора")
 	}
-	if !strings.Contains(last.Text, "запрос на изменение кода") {
+	if !strings.Contains(last.Text, "request to change code") {
 		t.Errorf("неожиданный текст карточки: %s", last.Text)
 	}
 	if last.Opts == nil || last.Opts.Keyboard == nil {
@@ -277,7 +277,7 @@ func TestChatSuggestionExpired(t *testing.T) {
 	}
 
 	last := mt.LastSent()
-	if last == nil || !strings.Contains(last.Text, "устарела") {
+	if last == nil || !strings.Contains(last.Text, "has expired") {
 		t.Errorf("ожидали сообщение об устаревшей карточке, получили %v", last)
 	}
 }
@@ -294,7 +294,7 @@ func TestChatQueuesMessageWhileAnswering(t *testing.T) {
 	sendText(t, mt, "и ещё один вопрос")
 
 	last := mt.LastSent()
-	if last == nil || !strings.Contains(last.Text, "в очереди") {
+	if last == nil || !strings.Contains(last.Text, "queued:") {
 		t.Fatalf("ожидали сообщение об очереди, получили %v", last)
 	}
 	if got := len(session.DrainPending()); got != 1 {

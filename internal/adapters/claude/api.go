@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bro-bot/internal/agents"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
 	"bytes"
@@ -15,6 +16,13 @@ import (
 	"sync"
 	"time"
 )
+
+// errMissingAPIKey — в окружении нет ключа для работы через Claude Messages API.
+// Тип общий с реестром агентов: обработчик переводит его в одном месте и не знает
+// про конкретные адаптеры.
+func errMissingAPIKey() error {
+	return &agents.MissingAPIKeyError{Agent: "claude", Vars: apiKeyEnv}
+}
 
 // APIAdapter абстрактный интерфейс для любого API-агента
 type APIAdapter interface {
@@ -105,7 +113,7 @@ func (a *ClaudeAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 	apiKey := apiKeyFromEnv()
 
 	if apiKey == "" {
-		return nil, fmt.Errorf("API ключ не найден. Задайте ANTHROPIC_API_KEY или CLAUDE_API_KEY в .env для работы в режиме API")
+		return nil, errMissingAPIKey()
 	}
 
 	// Имя модели подбирается по живому списку /v1/models: захардкоженные идентификаторы
@@ -158,7 +166,7 @@ func openClaudeStream(ctx context.Context, stream claudeStreamRequest) (*http.Re
 		return nil, err
 	}
 
-	log.Printf("claude-api: модель %q недоступна (%v), повторяем на %q", stream.model, err, fallback)
+	log.Printf("claude-api: model %q is unavailable (%v), retrying with %q", stream.model, err, fallback)
 	return doClaudeRequest(ctx, stream, fallback)
 }
 
@@ -204,12 +212,12 @@ type claudeStreamRequest struct {
 func (r claudeStreamRequest) build(ctx context.Context, model string) (*http.Request, error) {
 	bodyBytes, err := json.Marshal(buildClaudeMessagesBody(model, r.args))
 	if err != nil {
-		return nil, fmt.Errorf("ошибка маршалинга запроса Claude API: %w", err)
+		return nil, fmt.Errorf("claude-api: marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(r.baseURL, "/")+"/messages", bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("ошибка создания HTTP запроса к Claude API: %w", err)
+		return nil, fmt.Errorf("claude-api: build HTTP request: %w", err)
 	}
 
 	req.Header.Set("x-api-key", r.apiKey)
@@ -221,7 +229,7 @@ func (r claudeStreamRequest) build(ctx context.Context, model string) (*http.Req
 func (a *ClaudeAPIAdapter) GetModels(ctx context.Context) ([]byte, error) {
 	apiKey := apiKeyFromEnv()
 	if apiKey == "" {
-		return nil, fmt.Errorf("API ключ не найден. Задайте ANTHROPIC_API_KEY или CLAUDE_API_KEY в .env для работы в режиме API")
+		return nil, errMissingAPIKey()
 	}
 
 	available, err := listClaudeModels(ctx, a.HTTPClient, a.BaseURL, apiKey, false)
@@ -237,7 +245,7 @@ func (a *ClaudeAPIAdapter) GetModels(ctx context.Context) ([]byte, error) {
 //
 // Данные берутся из снимка заголовков последнего ответа Messages API. Пока запросов не было,
 // групп в ответе нет — тогда обработчик покажет текст из GetQuotaText, а не пустые шкалы.
-func (a *ClaudeAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
+func (a *ClaudeAPIAdapter) GetQuota(_ context.Context, lang string) ([]byte, error) {
 	snapshot := lastClaudeRateLimits()
 
 	payload := map[string]interface{}{
@@ -245,7 +253,7 @@ func (a *ClaudeAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
 		"command": map[string]interface{}{
 			"name": "quota",
 			"data": map[string]interface{}{
-				"description": claudeQuotaDescription(snapshot),
+				"description": claudeQuotaDescription(snapshot, lang),
 			},
 		},
 	}
@@ -254,12 +262,12 @@ func (a *ClaudeAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
 		buckets := make([]map[string]interface{}, 0, len(snapshot.Buckets))
 		for _, bucket := range snapshot.Buckets {
 			item := map[string]interface{}{
-				"name":       bucket.Name,
+				"name":       i18n.T(lang, bucket.NameKey),
 				"reset_time": bucket.Reset,
 			}
 			if frac := bucket.Fraction(); frac != nil {
 				item["remaining_fraction"] = *frac
-				item["description"] = fmt.Sprintf("осталось %s из %s",
+				item["description"] = i18n.Tf(lang, "quota.claude_remaining",
 					utils.FormatCount(bucket.Remaining), utils.FormatCount(bucket.Limit))
 			}
 			buckets = append(buckets, item)
@@ -267,8 +275,8 @@ func (a *ClaudeAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
 
 		data := payload["command"].(map[string]interface{})["data"].(map[string]interface{})
 		data["groups"] = []map[string]interface{}{{
-			"name":        "Лимиты ключа API",
-			"description": "по данным последнего ответа API",
+			"name":        i18n.T(lang, "quota.claude_api_title"),
+			"description": i18n.T(lang, "quota.claude_api_description"),
 			"buckets":     buckets,
 		}}
 	}
@@ -277,39 +285,38 @@ func (a *ClaudeAPIAdapter) GetQuota(ctx context.Context) ([]byte, error) {
 }
 
 // claudeQuotaDescription поясняет, насколько свежий снимок лимитов.
-func claudeQuotaDescription(snapshot claudeRateLimits) string {
+func claudeQuotaDescription(snapshot claudeRateLimits, lang string) string {
 	if len(snapshot.Buckets) == 0 {
-		return "Лимиты появятся после первого ответа агента."
+		return i18n.T(lang, "quota.claude_empty")
 	}
-	return fmt.Sprintf("Снимок от %s", snapshot.CapturedAt.Format("15:04:05"))
+	return i18n.Tf(lang, "quota.claude_snapshot", snapshot.CapturedAt.Format("15:04:05"))
 }
 
 // GetQuotaText — человекочитаемая сводка для случаев, когда структурных данных нет.
-func (a *ClaudeAPIAdapter) GetQuotaText(ctx context.Context) ([]byte, error) {
+func (a *ClaudeAPIAdapter) GetQuotaText(_ context.Context, lang string) ([]byte, error) {
 	var bldr strings.Builder
 
 	snapshot := lastClaudeRateLimits()
 	if len(snapshot.Buckets) == 0 {
-		bldr.WriteString("Лимиты ключа API приходят вместе с ответами Claude, поэтому появятся здесь ")
-		bldr.WriteString("после первого ответа агента — отдельные запросы ради этого бот не делает.\n")
+		bldr.WriteString(i18n.T(lang, "quota.claude_text_empty"))
 	} else {
-		bldr.WriteString(fmt.Sprintf("Лимиты ключа API на %s:\n", snapshot.CapturedAt.Format("15:04:05")))
+		bldr.WriteString(i18n.Tf(lang, "quota.claude_text_header", snapshot.CapturedAt.Format("15:04:05")))
 		for _, bucket := range snapshot.Buckets {
 			if frac := bucket.Fraction(); frac != nil {
-				bldr.WriteString(fmt.Sprintf("• %s: осталось %s из %s (%.0f%%)\n",
-					bucket.Name, utils.FormatCount(bucket.Remaining), utils.FormatCount(bucket.Limit), *frac*100))
+				bldr.WriteString(i18n.Tf(lang, "quota.claude_text_bucket",
+					i18n.T(lang, bucket.NameKey), utils.FormatCount(bucket.Remaining), utils.FormatCount(bucket.Limit), *frac*100))
 				continue
 			}
-			bldr.WriteString(fmt.Sprintf("• %s: предел не сообщён\n", bucket.Name))
+			bldr.WriteString(i18n.Tf(lang, "quota.claude_text_bucket_unknown", i18n.T(lang, bucket.NameKey)))
 		}
 	}
 
 	if model, ok := currentClaudeModelLimits(); ok {
-		bldr.WriteString(fmt.Sprintf("Модель %s: контекст %s токенов, ответ до %s токенов.\n",
+		bldr.WriteString(i18n.Tf(lang, "quota.model_window",
 			model.ID, utils.FormatCount(int64(model.MaxInputTokens)), utils.FormatCount(int64(model.MaxTokens))))
 	}
 
-	bldr.WriteString("Расход токенов ботом: /tokens. Счета и лимиты организации: консоль Anthropic.")
+	bldr.WriteString(i18n.T(lang, "quota.claude_footer"))
 	return []byte(bldr.String()), nil
 }
 

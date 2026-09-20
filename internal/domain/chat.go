@@ -97,7 +97,7 @@ func (cs *ChatSession) SetConversationID(agent, mode, conversationID string) {
 	if st != nil && sessionID > 0 {
 		parts := strings.SplitN(key, "/", 2)
 		if err := st.SetChatConversationID(context.Background(), sessionID, parts[0], parts[1], conversationID); err != nil {
-			log.Printf("Предупреждение: не удалось сохранить сессию разговора %s: %v", key, err)
+			log.Printf("warning: cannot store the conversation session %s: %v", key, err)
 		}
 	}
 }
@@ -210,11 +210,11 @@ func (cs *ChatSession) AppendTurn(role ChatRole, content string) {
 	}
 	ctx := context.Background()
 	if err := st.AppendChatMessage(ctx, sessionID, string(role), content); err != nil {
-		log.Printf("Предупреждение: не удалось сохранить реплику разговора: %v", err)
+		log.Printf("warning: cannot store a conversation turn: %v", err)
 		return
 	}
 	if err := st.TrimChatMessages(ctx, sessionID, MaxChatHistoryTurns); err != nil {
-		log.Printf("Предупреждение: не удалось обрезать историю разговора: %v", err)
+		log.Printf("warning: cannot trim the conversation history: %v", err)
 	}
 }
 
@@ -284,7 +284,7 @@ func (cm *ChatManager) InitWithStorage(s storage.Storage) {
 	ctx := context.Background()
 	records, err := s.ListActiveChatSessions(ctx)
 	if err != nil {
-		log.Printf("Предупреждение: не удалось загрузить разговоры из SQLite: %v", err)
+		log.Printf("warning: cannot load conversations from SQLite: %v", err)
 		return
 	}
 
@@ -292,7 +292,7 @@ func (cm *ChatManager) InitWithStorage(s storage.Storage) {
 		session := chatRecordToSession(rec, s)
 		messages, err := s.GetChatMessages(ctx, rec.ID, MaxChatHistoryTurns)
 		if err != nil {
-			log.Printf("Предупреждение: не удалось загрузить историю разговора проекта %s: %v", rec.Project, err)
+			log.Printf("warning: cannot load the conversation history of project %s: %v", rec.Project, err)
 		}
 		for _, msg := range messages {
 			session.History = append(session.History, ChatTurn{
@@ -305,7 +305,7 @@ func (cm *ChatManager) InitWithStorage(s storage.Storage) {
 	}
 
 	if len(cm.sessions) > 0 {
-		log.Printf("Восстановлено разговорных сессий из SQLite: %d", len(cm.sessions))
+		log.Printf("restored conversation sessions from SQLite: %d", len(cm.sessions))
 	}
 }
 
@@ -361,7 +361,7 @@ func (cm *ChatManager) Reset(project, model string) *ChatSession {
 
 	if cm.storage != nil {
 		if err := cm.storage.DeactivateChatSessions(context.Background(), project); err != nil {
-			log.Printf("Предупреждение: не удалось закрыть разговор проекта %s: %v", project, err)
+			log.Printf("warning: cannot close the conversation of project %s: %v", project, err)
 		}
 	}
 	return cm.createLocked(project, model)
@@ -380,7 +380,7 @@ func (cm *ChatManager) createLocked(project, model string) *ChatSession {
 	if cm.storage != nil {
 		id, err := cm.storage.CreateChatSession(context.Background(), project, model)
 		if err != nil {
-			log.Printf("Предупреждение: не удалось создать разговор проекта %s: %v", project, err)
+			log.Printf("warning: cannot create a conversation for project %s: %v", project, err)
 		} else {
 			session.ID = id
 		}

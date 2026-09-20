@@ -47,6 +47,17 @@ type Messenger struct {
 	Answered  []AnsweredCallback
 	Commands  []ports.BotCommand
 	Caps      ports.Capabilities
+
+	// commandCalls хранит каждую регистрацию меню подсказок вместе с кодом языка:
+	// бот публикует своё меню для каждого загруженного каталога, и тест должен
+	// видеть все вызовы, а не только последний.
+	commandCalls []SetCommandsCall
+}
+
+// SetCommandsCall — одна регистрация меню подсказок.
+type SetCommandsCall struct {
+	LanguageCode string
+	Commands     []ports.BotCommand
 }
 
 // New создаёт Messenger с возможностями "как у Telegram" по умолчанию —
@@ -99,7 +110,18 @@ func (m *Messenger) SetCommands(_ context.Context, cmds []ports.BotCommand, lang
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Commands = cmds
+	m.commandCalls = append(m.commandCalls, SetCommandsCall{
+		LanguageCode: languageCode,
+		Commands:     append([]ports.BotCommand(nil), cmds...),
+	})
 	return nil
+}
+
+// CommandCalls возвращает копию всех регистраций меню подсказок.
+func (m *Messenger) CommandCalls() []SetCommandsCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]SetCommandsCall(nil), m.commandCalls...)
 }
 
 func (m *Messenger) Capabilities() ports.Capabilities {

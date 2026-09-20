@@ -4,6 +4,7 @@ import (
 	"bro-bot/internal/agents"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/storage"
@@ -70,7 +71,7 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 
 	sqliteStorage, err := storage.NewSQLiteStorage(cfg.DBPath)
 	if err != nil {
-		return fmt.Errorf("не удалось инициализировать SQLite базу данных: %w", err)
+		return fmt.Errorf("handlers: cannot initialize the SQLite database: %w", err)
 	}
 	domain.GlobalTaskManager.InitWithStorage(sqliteStorage)
 	domain.GlobalChatManager.InitWithStorage(sqliteStorage)
@@ -86,51 +87,46 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 		// Значение приходит из базы, но проверяем его так же, как ввод пользователя:
 		// в базу оно когда-то попало из команды /use.
 		if projPath, pathErr := utils.SafeJoinSegment(config.ProjectsRoot, savedProj); pathErr != nil {
-			log.Printf("Сохранённый проект %q отклонён: %v", savedProj, pathErr)
+			log.Printf("stored project %q rejected: %v", savedProj, pathErr)
 		} else if fi, err := os.Stat(projPath); err == nil && fi.IsDir() {
 			config.ProjectState.Lock()
 			config.ProjectState.CurrentProject = savedProj
 			config.ProjectState.Unlock()
-			log.Printf("Восстановлен активный проект из SQLite: %s", savedProj)
+			log.Printf("restored the active project from SQLite: %s", savedProj)
 		}
 	}
 	if savedModel, err := sqliteStorage.GetSetting(ctx, "current_model"); err == nil && savedModel != "" {
 		config.ProjectState.Lock()
 		config.ProjectState.CurrentModel = savedModel
 		config.ProjectState.Unlock()
-		log.Printf("Восстановлена активная модель из SQLite: %s", savedModel)
+		log.Printf("restored the active model from SQLite: %s", savedModel)
 	}
 	if savedPlanMode, err := sqliteStorage.GetSetting(ctx, "plan_mode"); err == nil && savedPlanMode != "" {
 		if pm, err := strconv.ParseBool(savedPlanMode); err == nil {
 			config.ProjectState.Lock()
 			config.ProjectState.PlanMode = pm
 			config.ProjectState.Unlock()
-			log.Printf("Восстановлен PlanMode из SQLite: %v", pm)
+			log.Printf("restored PlanMode from SQLite: %v", pm)
 		}
 	}
 	if savedMode, err := sqliteStorage.GetSetting(ctx, "execution_mode"); err == nil && savedMode != "" {
 		config.ProjectState.SetExecutionMode(savedMode)
-		log.Printf("Восстановлен режим выполнения из SQLite: %s", savedMode)
+		log.Printf("restored the execution mode from SQLite: %s", savedMode)
 	}
 	if savedInteraction, err := sqliteStorage.GetSetting(ctx, "interaction_mode"); err == nil && savedInteraction != "" {
 		config.ProjectState.SetInteractionMode(savedInteraction)
-		log.Printf("Восстановлен режим взаимодействия из SQLite: %s", savedInteraction)
+		log.Printf("restored the interaction mode from SQLite: %s", savedInteraction)
 	}
 
 	if savedLang, err := sqliteStorage.GetSetting(ctx, "bot_language"); err == nil && savedLang != "" {
 		config.ProjectState.SetLanguage(savedLang)
-		log.Printf("Восстановлен язык интерфейса из SQLite: %s", savedLang)
+		log.Printf("restored the interface language from SQLite: %s", savedLang)
 	}
 
 	savedAgent, _ := sqliteStorage.GetSetting(ctx, "current_agent")
 	initActiveAgent(savedAgent)
 
-	if err := t.SetCommands(context.Background(), getDefaultCommands("en"), ""); err != nil {
-		log.Printf("Предупреждение: не удалось зарегистрировать команды: %v", err)
-	}
-	if err := t.SetCommands(context.Background(), getDefaultCommands("ru"), "ru"); err != nil {
-		log.Printf("Предупреждение: не удалось зарегистрировать команды для ru: %v", err)
-	}
+	registerBotCommands(t)
 
 	t.Use(authMiddleware(config.AdminID))
 
@@ -196,7 +192,7 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	// уже переписывает снимок — детектор гонок это заметит.
 	go system.CheckAndNotifyRestart(t, cfg.AdminID, cfg.BotDir)
 
-	log.Println("Мультипроектный агент-бот запущен...")
+	log.Println("multi-project agent bot started...")
 	return t.Start(context.Background())
 }
 
@@ -207,14 +203,14 @@ func initDefaultProject(root, defaultProject string) {
 			config.ProjectState.Lock()
 			config.ProjectState.CurrentProject = defaultProject
 			config.ProjectState.Unlock()
-			log.Printf("Инициализирован проект по умолчанию: %s", defaultProject)
+			log.Printf("initialized the default project: %s", defaultProject)
 			return
 		}
 	}
 
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		log.Printf("Предупреждение: не удалось прочитать директорию проектов %s: %v", root, err)
+		log.Printf("warning: cannot read the projects directory %s: %v", root, err)
 		return
 	}
 	for _, e := range entries {
@@ -222,7 +218,7 @@ func initDefaultProject(root, defaultProject string) {
 			config.ProjectState.Lock()
 			config.ProjectState.CurrentProject = e.Name()
 			config.ProjectState.Unlock()
-			log.Printf("Инициализирован первый найденный проект: %s", e.Name())
+			log.Printf("initialized the first project found: %s", e.Name())
 			return
 		}
 	}
@@ -241,77 +237,44 @@ func initDefaultModel(defaultModel string) {
 	config.ProjectState.Lock()
 	config.ProjectState.CurrentModel = defaultModel
 	config.ProjectState.Unlock()
-	log.Printf("Инициализирована модель по умолчанию: %s", defaultModel)
+	log.Printf("initialized the default model: %s", defaultModel)
 }
 
-// getDefaultCommands возвращает список команд для регистрации в мессенджере (меню подсказок).
+// getDefaultCommands возвращает список команд для меню подсказок мессенджера на
+// языке lang. Описания живут в каталоге локалей, поэтому новый язык получает своё
+// меню без правок здесь.
 func getDefaultCommands(lang string) []ports.BotCommand {
-	if lang == "ru" {
-		return []ports.BotCommand{
-			{Name: "status", Description: "[id] Статус текущей задачи, логи и очередь"},
-			{Name: "tasks", Description: "Список всех задач и переключение"},
-			{Name: "task", Description: "<id> [текст] Переключить фокус на задачу или дополнить её"},
-			{Name: "plan", Description: "[проект] <текст> Составить план для новой задачи"},
-			{Name: "planmode", Description: "[on|off] Включить/выключить обязательный план"},
-			{Name: "approve", Description: "[id] Утвердить план и начать реализацию"},
-			{Name: "planfile", Description: "[id] Скачать полный план задачи в виде .md файла"},
-			{Name: "history", Description: "[id] Показать переписку пользователя и агента в сессии задачи"},
-			{Name: "add", Description: "[id] <текст> Дополнить задачу текстом"},
-			{Name: "chat", Description: "[вопрос|new|stop] Разговор с агентом по текущему проекту"},
-			{Name: "chatmode", Description: "[on|off] Отвечать в чате вместо создания задачи"},
-			{Name: "new", Description: "[проект] [агент] <текст> Создать новую задачу в проекте/агенте"},
-			{Name: "resume", Description: "[id] [ответ] Возобновить задачу или передать ответ"},
-			{Name: "retry", Description: "[id] Перезапустить задачу с чистого листа"},
-			{Name: "pause", Description: "[id] Приостановить выполнение задачи"},
-			{Name: "cancel", Description: "[id] Остановить задачу"},
-			{Name: "tokens", Description: "Статистика токенов, скорости и кэша"},
-			{Name: "context", Description: "[id] Распределение окна контекста модели"},
-			{Name: "top", Description: "Мониторинг CPU и памяти бота, agy и claude"},
-			{Name: "usage", Description: "Остаток квот и лимиты аккаунта"},
-			{Name: "models", Description: "Список доступных моделей"},
-			{Name: "model", Description: "[имя] Переключить активную модель"},
-			{Name: "agent", Description: "[" + strings.Join(registry().Names(), "|") + "] Переключить активный агент"},
-			{Name: "mode", Description: "[cli|api] Переключить режим (CLI или API)"},
-			{Name: "projects", Description: "Список доступных проектов"},
-			{Name: "use", Description: "<имя> Переключить активный проект"},
-			{Name: "clone", Description: "<url> [имя] Клонировать git-репозиторий"},
-			{Name: "language", Description: "Сменить язык интерфейса бота"},
-			{Name: "restart", Description: "Перезапустить бота"},
-			{Name: "rebuild", Description: "[branch=имя] [pull] [force] Собрать и перезапустить бота"},
-			{Name: "start", Description: "Перезапуск и приветственное сообщение"},
-		}
+	agentNames := strings.Join(registry().Names(), "|")
+
+	names := []string{
+		"status", "tasks", "task", "plan", "planmode", "approve", "planfile", "history",
+		"add", "chat", "chatmode", "new", "resume", "retry", "pause", "cancel",
+		"tokens", "context", "top", "usage", "models", "model", "agent", "mode",
+		"projects", "use", "clone", "language", "restart", "rebuild", "start",
 	}
-	return []ports.BotCommand{
-		{Name: "status", Description: "[id] Status of current task, logs and queue"},
-		{Name: "tasks", Description: "List all tasks and switch"},
-		{Name: "task", Description: "<id> [text] Focus on task or append to it"},
-		{Name: "plan", Description: "[project] <text> Create a plan for a new task"},
-		{Name: "planmode", Description: "[on|off] Toggle mandatory planning"},
-		{Name: "approve", Description: "[id] Approve plan and start execution"},
-		{Name: "planfile", Description: "[id] Download full task plan as .md file"},
-		{Name: "history", Description: "[id] Show conversation history of task session"},
-		{Name: "add", Description: "[id] <text> Append text to a task"},
-		{Name: "chat", Description: "[question|new|stop] Chat with agent in current project"},
-		{Name: "chatmode", Description: "[on|off] Reply in chat instead of creating a task"},
-		{Name: "new", Description: "[project] [agent] <text> Create new task"},
-		{Name: "resume", Description: "[id] [reply] Resume task or send reply"},
-		{Name: "retry", Description: "[id] Restart task from scratch"},
-		{Name: "pause", Description: "[id] Pause task execution"},
-		{Name: "cancel", Description: "[id] Cancel task"},
-		{Name: "tokens", Description: "Token, speed and cache statistics"},
-		{Name: "context", Description: "[id] Context window distribution"},
-		{Name: "top", Description: "CPU/memory monitoring of bot, agy, and claude"},
-		{Name: "usage", Description: "API usage costs and account limits"},
-		{Name: "models", Description: "List available models"},
-		{Name: "model", Description: "[name] Switch active model"},
-		{Name: "agent", Description: "[" + strings.Join(registry().Names(), "|") + "] Switch active agent"},
-		{Name: "mode", Description: "[cli|api] Switch mode (CLI or API)"},
-		{Name: "projects", Description: "List available projects"},
-		{Name: "use", Description: "<name> Switch active project"},
-		{Name: "clone", Description: "<url> [name] Clone git repository"},
-		{Name: "language", Description: "Change bot interface language"},
-		{Name: "restart", Description: "Restart the bot"},
-		{Name: "rebuild", Description: "[branch=name] [pull] [force] Build and restart the bot"},
-		{Name: "start", Description: "Restart and welcome message"},
+
+	cmds := make([]ports.BotCommand, 0, len(names))
+	for _, name := range names {
+		description := i18n.T(lang, "cmd."+name)
+		if name == "agent" {
+			description = i18n.Tf(lang, "cmd.agent", agentNames)
+		}
+		cmds = append(cmds, ports.BotCommand{Name: name, Description: description})
+	}
+	return cmds
+}
+
+// registerBotCommands публикует меню подсказок для каждого загруженного языка.
+// Мессенджер сам выбирает подходящее по языку клиента, а пустой код — это набор
+// по умолчанию: его увидят клиенты с языком, для которого каталога нет.
+func registerBotCommands(m ports.Messenger) {
+	ctx := context.Background()
+	if err := m.SetCommands(ctx, getDefaultCommands(i18n.Default), ""); err != nil {
+		log.Printf("warning: cannot register the default command menu: %v", err)
+	}
+	for _, lang := range i18n.Codes() {
+		if err := m.SetCommands(ctx, getDefaultCommands(lang), lang); err != nil {
+			log.Printf("warning: cannot register the command menu for %q: %v", lang, err)
+		}
 	}
 }

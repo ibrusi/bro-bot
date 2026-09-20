@@ -107,7 +107,7 @@ func TestScriptRejectsSiblingDirectory(t *testing.T) {
 	}
 
 	texts := mt.AllTexts()
-	if len(texts) == 0 || !strings.Contains(texts[len(texts)-1], "Недопустимое имя скрипта") {
+	if len(texts) == 0 || !strings.Contains(texts[len(texts)-1], "Invalid script name") {
 		t.Errorf("ожидали отказ, получили: %v", texts)
 	}
 }

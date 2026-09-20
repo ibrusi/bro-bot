@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"bro-bot/internal/i18n"
 )
 
 var (
@@ -412,8 +414,9 @@ func SplitMarkdown(text string, maxChunkLen int) []string {
 	return chunks
 }
 
-// FormatAskQuestionParams форматирует параметры инструмента ask_question в читаемый Markdown.
-func FormatAskQuestionParams(params map[string]interface{}) string {
+// FormatAskQuestionParams форматирует параметры инструмента ask_question в читаемый
+// Markdown на языке интерфейса lang.
+func FormatAskQuestionParams(params map[string]interface{}, lang string) string {
 	if params == nil {
 		return ""
 	}
@@ -437,7 +440,7 @@ func FormatAskQuestionParams(params map[string]interface{}) string {
 			bldr.WriteString(fmt.Sprintf("**%s**", qText))
 
 			if isMulti, _ := qMap["is_multi_select"].(bool); isMulti {
-				bldr.WriteString(" *(можно выбрать несколько)*")
+				bldr.WriteString(i18n.T(lang, "markdown.multi_select"))
 			}
 
 			if opts, ok := qMap["options"].([]interface{}); ok && len(opts) > 0 {

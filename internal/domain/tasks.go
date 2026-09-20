@@ -1,10 +1,10 @@
 package domain
 
 import (
+	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/storage"
 	"bro-bot/internal/utils"
-	"bro-bot/internal/i18n"
 	"context"
 	"fmt"
 	"html"
@@ -108,10 +108,7 @@ type TaskSession struct {
 
 // Потолок накопленного вывода шага. Длинный шаг с многословным агентом копил бы
 // сотни мегабайт: для плана и отчёта хватает первого мегабайта.
-const (
-	maxFullOutputBytes    = 1 << 20
-	outputTruncatedMarker = "\n… (вывод обрезан: превышен лимит хранения)\n"
-)
+const maxFullOutputBytes = 1 << 20
 
 // AppendOutputLocked дописывает текст в FullOutput с учётом потолка (мьютекс должен
 // быть уже захвачен). Обрезка проходит по границе руны.
@@ -131,7 +128,7 @@ func (t *TaskSession) AppendOutputLocked(text string) {
 		}
 		t.FullOutput.WriteString(text[:cut])
 	}
-	t.FullOutput.WriteString(outputTruncatedMarker)
+	t.FullOutput.WriteString(i18n.T(i18n.Active(), "task.output_truncated"))
 	t.outputTruncated = true
 }
 
@@ -400,7 +397,7 @@ func (t *TaskSession) AppendLog(line string) {
 	}
 	if s != nil {
 		if err := s.AppendLog(context.Background(), id, line); err != nil {
-			log.Printf("Предупреждение: не удалось записать лог задачи #%d: %v", id, err)
+			log.Printf("warning: cannot store the log of task #%d: %v", id, err)
 		}
 	}
 }
@@ -744,7 +741,7 @@ func (tm *TaskManager) SetActiveTask(id int) (*TaskSession, error) {
 
 	task, ok := tm.tasks[id]
 	if !ok {
-		return nil, fmt.Errorf("задача #%d не найдена", id)
+		return nil, &TaskNotFoundError{ID: id}
 	}
 
 	tm.activeTaskID = id
@@ -826,16 +823,14 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 	tm.Unlock()
 
 	if !ok {
-		return nil, fmt.Errorf("задача #%d не найдена", id)
+		return nil, &TaskNotFoundError{ID: id}
 	}
 
 	task.mu.Lock()
 	if task.Status == TaskStatusCompleted || task.Status == TaskStatusCancelled {
-		// Since we don't have project state here, default to "ru" for internal errors,
-		// or pass lang through context if needed. In error messages it's less critical.
-		statusTitle := i18n.TaskStatusTitle(string(task.Status), "ru")
+		status := task.Status
 		task.mu.Unlock()
-		return task, fmt.Errorf("задача #%d уже %s", id, statusTitle)
+		return task, &TaskAlreadyFinishedError{ID: id, Status: status}
 	}
 
 	task.terminateLocked()
@@ -873,7 +868,7 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 	task, ok := tm.tasks[id]
 	if !ok {
 		tm.Unlock()
-		return nil, fmt.Errorf("задача #%d не найдена", id)
+		return nil, &TaskNotFoundError{ID: id}
 	}
 
 	task.mu.Lock()
@@ -934,9 +929,9 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 		task.CurrentPrompt = answer
 	} else if task.ConversationID != "" || task.CurrentPrompt == "" {
 		if task.RequiresPlan && !task.PlanApproved {
-			task.CurrentPrompt = "Продолжай исследование репозитория и заверши составление детального плана реализации задачи."
+			task.CurrentPrompt = i18n.T(i18n.Active(), "prompt.resume_planning")
 		} else {
-			task.CurrentPrompt = "Продолжай автономное выполнение задачи по утвержденному плану в текущей ветке git. Заверши необходимые изменения, запусти тесты и линтеры, закоммить изменения и открой Pull Request."
+			task.CurrentPrompt = i18n.T(i18n.Active(), "prompt.resume_execution")
 		}
 	}
 	task.LastQuestion = ""
@@ -1046,14 +1041,14 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 	tm.RUnlock()
 
 	if !ok {
-		return nil, 0, false, fmt.Errorf("задача #%d не найдена", id)
+		return nil, 0, false, &TaskNotFoundError{ID: id}
 	}
 
 	task.mu.Lock()
 	if task.Status == TaskStatusCompleted {
-		statusTitle := i18n.TaskStatusTitle(string(task.Status), "ru")
+		status := task.Status
 		task.mu.Unlock()
-		return task, 0, false, fmt.Errorf("задача #%d уже %s", id, statusTitle)
+		return task, 0, false, &TaskAlreadyFinishedError{ID: id, Status: status}
 	}
 
 	// Если задача на паузе или отменена — возобновляем её с переданным ответом
@@ -1230,11 +1225,11 @@ func FormatTasksList(tm *TaskManager, lang string) (string, *ports.Keyboard) {
 	}
 
 	if len(tasks) == 0 {
-		return "💤 <b>Список задач пуст.</b>\n\n💡 Отправьте текст в чат или используйте <code>/new &lt;задача&gt;</code>, чтобы начать.", nil
+		return i18n.T(lang, "task.list_empty"), nil
 	}
 
 	var bldr strings.Builder
-	bldr.WriteString("📋 <b>Список задач агента:</b>\n\n")
+	bldr.WriteString(i18n.T(lang, "task.list_header"))
 
 	var activeList []*TaskSession
 	var completedList []*TaskSession
@@ -1249,7 +1244,7 @@ func FormatTasksList(tm *TaskManager, lang string) (string, *ports.Keyboard) {
 
 	// Секция активных задач
 	if len(activeList) > 0 {
-		bldr.WriteString("⚡ <b>Активные и в очереди:</b>\n")
+		bldr.WriteString(i18n.T(lang, "task.list_active_header"))
 		for _, t := range activeList {
 			t.mu.Lock()
 			id := t.ID
@@ -1275,24 +1270,24 @@ func FormatTasksList(tm *TaskManager, lang string) (string, *ports.Keyboard) {
 
 			extraInfo := fmt.Sprintf("⏱ <code>%s</code>", durStr)
 			if status == TaskStatusQueued {
-				extraInfo = "⏳ <i>ожидает очереди проекта</i>"
+				extraInfo = i18n.T(lang, "task.list_waiting_queue")
 			} else if status == TaskStatusWaitingApproval {
-				extraInfo = fmt.Sprintf("📋 <i>ожидает утверждения плана (<code>/approve %d</code>)</i>", id)
+				extraInfo = i18n.Tf(lang, "task.list_waiting_approval", id)
 			} else if status == TaskStatusPlanning {
-				extraInfo = "📝 <i>составление плана...</i>"
+				extraInfo = i18n.T(lang, "task.list_planning")
 			}
 			if followupsCount > 0 {
-				extraInfo += fmt.Sprintf(" | 📥 правок: %d", followupsCount)
+				extraInfo += i18n.Tf(lang, "task.list_followups", followupsCount)
 			}
 			bldr.WriteString(fmt.Sprintf("   %s\n\n", extraInfo))
 		}
 	} else {
-		bldr.WriteString("💤 <i>Сейчас нет активных задач.</i>\n\n")
+		bldr.WriteString(i18n.T(lang, "task.list_none_active"))
 	}
 
 	// Секция недавно завершённых задач (до 5 штук)
 	if len(completedList) > 0 {
-		bldr.WriteString("🏁 <b>Недавно завершённые:</b>\n")
+		bldr.WriteString(i18n.T(lang, "task.list_completed_header"))
 		startIdx := 0
 		if len(completedList) > 5 {
 			startIdx = len(completedList) - 5
@@ -1328,14 +1323,7 @@ func FormatTasksList(tm *TaskManager, lang string) (string, *ports.Keyboard) {
 		bldr.WriteString("\n")
 	}
 
-	bldr.WriteString("💡 <b>Управление:</b>\n")
-	bldr.WriteString("• <code>/task &lt;id&gt;</code> — переключить активную задачу\n")
-	bldr.WriteString("• <code>/add &lt;id&gt; &lt;текст&gt;</code> — дополнить конкретную задачу\n")
-	bldr.WriteString("• <code>/new &lt;текст&gt;</code> — создать новую задачу\n")
-	bldr.WriteString("• <code>/plan &lt;текст&gt;</code> — составить план и утвердить перед реализацией\n")
-	bldr.WriteString("• <code>/approve &lt;id&gt;</code> — утвердить план задачи\n")
-	bldr.WriteString("• <code>/resume &lt;id&gt; [ответ]</code> — возобновить приостановленную задачу\n")
-	bldr.WriteString("• <code>/cancel &lt;id&gt;</code> — отменить задачу")
+	bldr.WriteString(i18n.T(lang, "task.list_help"))
 
 	// Формируем инлайн-клавиатуру для активных задач
 	var buttons []ports.Button
@@ -1368,6 +1356,27 @@ func FormatTasksList(tm *TaskManager, lang string) (string, *ports.Keyboard) {
 	}
 
 	return bldr.String(), nil
+}
+
+// TaskNotFoundError — задачи с таким номером в менеджере нет.
+// Error() — служебный текст для логов; пользователю обработчик показывает перевод,
+// собранный по полю ID.
+type TaskNotFoundError struct {
+	ID int
+}
+
+func (e *TaskNotFoundError) Error() string {
+	return fmt.Sprintf("tasks: task #%d not found", e.ID)
+}
+
+// TaskAlreadyFinishedError — задача уже в конечном состоянии, и действие к ней неприменимо.
+type TaskAlreadyFinishedError struct {
+	ID     int
+	Status TaskStatus
+}
+
+func (e *TaskAlreadyFinishedError) Error() string {
+	return fmt.Sprintf("tasks: task #%d is already %s", e.ID, e.Status)
 }
 
 // MaxTaskDetailsPromptRunes задает максимальную длину текста задачи в карточке статуса.
@@ -1403,54 +1412,52 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool, lang string) strin
 	var bldr strings.Builder
 	focusTitle := ""
 	if isActiveFocus {
-		focusTitle = " 🎯 <i>(в фокусе)</i>"
+		focusTitle = i18n.T(lang, "task.details_focus")
 	}
-	bldr.WriteString(fmt.Sprintf("📊 <b>Задача #%d:</b> <code>%s</code>%s\n\n", id, html.EscapeString(proj), focusTitle))
-	bldr.WriteString(fmt.Sprintf("• <b>Статус:</b> %s <b>%s</b>\n", status.Emoji(), i18n.TaskStatusTitle(string(status), lang)))
-	bldr.WriteString(fmt.Sprintf("• <b>Агент:</b> <code>%s</code>\n", html.EscapeString(agent)))
-	bldr.WriteString(fmt.Sprintf("• <b>Модель:</b> <code>%s</code>\n", html.EscapeString(model)))
-	bldr.WriteString(fmt.Sprintf("• <b>Время:</b> <code>%s</code>\n", durStr))
+	bldr.WriteString(i18n.Tf(lang, "task.details_header", id, html.EscapeString(proj), focusTitle))
+	bldr.WriteString(i18n.Tf(lang, "task.details_status", status.Emoji(), i18n.TaskStatusTitle(string(status), lang)))
+	bldr.WriteString(i18n.Tf(lang, "task.details_agent", html.EscapeString(agent)))
+	bldr.WriteString(i18n.Tf(lang, "task.details_model", html.EscapeString(model)))
+	bldr.WriteString(i18n.Tf(lang, "task.details_elapsed", durStr))
 	if convID != "" {
-		bldr.WriteString(fmt.Sprintf("• 🧵 <b>Сессия %s:</b> <code>%s</code>\n", html.EscapeString(agent), html.EscapeString(convID)))
+		bldr.WriteString(i18n.Tf(lang, "task.details_session", html.EscapeString(agent), html.EscapeString(convID)))
 	}
-	bldr.WriteString(fmt.Sprintf("• <b>Задача:</b> <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(initialPrompt, MaxTaskDetailsPromptRunes))))
+	bldr.WriteString(i18n.Tf(lang, "task.details_task", html.EscapeString(utils.TruncateString(initialPrompt, MaxTaskDetailsPromptRunes))))
 
 	if requiresPlan {
 		if planApproved {
-			bldr.WriteString("• <b>План:</b> ✅ Утверждён\n")
+			bldr.WriteString(i18n.T(lang, "task.details_plan_approved"))
 		} else if status == TaskStatusWaitingApproval {
-			bldr.WriteString(fmt.Sprintf("• <b>План:</b> 📋 Ожидает утверждения (<code>/approve %d</code>)\n", id))
+			bldr.WriteString(i18n.Tf(lang, "task.details_plan_waiting", id))
 		} else if status == TaskStatusPlanning {
-			bldr.WriteString("• <b>План:</b> 📝 Составляется агентом...\n")
+			bldr.WriteString(i18n.T(lang, "task.details_plan_drafting"))
 		}
 	}
 
 	if curPrompt != initialPrompt && curPrompt != "" {
-		bldr.WriteString(fmt.Sprintf("• <b>Текущий шаг:</b> <i>«%s»</i>\n", html.EscapeString(utils.TruncateString(curPrompt, 80))))
+		bldr.WriteString(i18n.Tf(lang, "task.details_current_step", html.EscapeString(utils.TruncateString(curPrompt, 80))))
 	}
 
 	if prURL != "" {
-		bldr.WriteString(fmt.Sprintf("• <b>PR:</b> 🔗 <a href=\"%s\">%s</a>\n", html.EscapeString(prURL), html.EscapeString(prURL)))
+		bldr.WriteString(i18n.Tf(lang, "task.details_pr", html.EscapeString(prURL), html.EscapeString(prURL)))
 	}
 
 	if lastQuestion != "" {
-		bldr.WriteString(fmt.Sprintf("\n❓ <b>Вопрос агента:</b>\n<i>%s</i>\n", html.EscapeString(utils.TruncateString(lastQuestion, 300))))
+		bldr.WriteString(i18n.Tf(lang, "task.details_question", html.EscapeString(utils.TruncateString(lastQuestion, 300))))
 	}
 
 	if plan != "" {
 		planRunes := []rune(plan)
 		if len(planRunes) > MaxTaskDetailsPlanRunes {
 			planSnippet := utils.TruncateString(plan, MaxTaskDetailsPlanRunes)
-			bldr.WriteString(fmt.Sprintf("\n📋 <b>План реализации (кратко):</b>\n<i>%s</i>\n📄 <i>Полный план:</i> /planfile_%d\n",
-				html.EscapeString(planSnippet), id))
+			bldr.WriteString(i18n.Tf(lang, "task.details_plan_short", html.EscapeString(planSnippet), id))
 		} else {
-			bldr.WriteString(fmt.Sprintf("\n📋 <b>План реализации:</b>\n<i>%s</i>\n📄 <i>Полный план:</i> /planfile_%d\n",
-				html.EscapeString(plan), id))
+			bldr.WriteString(i18n.Tf(lang, "task.details_plan_full", html.EscapeString(plan), id))
 		}
 	}
 
 	if len(followups) > 0 {
-		bldr.WriteString(fmt.Sprintf("\n📥 <b>В очереди дополнений (%d):</b>\n", len(followups)))
+		bldr.WriteString(i18n.Tf(lang, "task.details_followups", len(followups)))
 		for i, f := range followups {
 			bldr.WriteString(fmt.Sprintf("%d. <i>«%s»</i>\n", i+1, html.EscapeString(utils.TruncateString(f, 120))))
 		}
@@ -1461,21 +1468,17 @@ func FormatTaskDetails(task *TaskSession, isActiveFocus bool, lang string) strin
 		if len(rawTail) > 1200 {
 			rawTail = rawTail[len(rawTail)-1200:]
 		}
-		bldr.WriteString(fmt.Sprintf("\n📜 <b>Лог выполнения:</b>\n<pre>%s</pre>\n", html.EscapeString(rawTail)))
+		bldr.WriteString(i18n.Tf(lang, "task.details_log", html.EscapeString(rawTail)))
 	}
 
 	if status == TaskStatusWaitingApproval {
-		bldr.WriteString(fmt.Sprintf("\n💡 <i>Утвердить: <code>/approve %d</code> | Дополнить: <code>/add %d &lt;правки&gt;</code> | Отменить: <code>/cancel %d</code></i>", id, id, id))
+		bldr.WriteString(i18n.Tf(lang, "task.details_hint_approval", id, id, id))
 	} else if status == TaskStatusPaused {
-		bldr.WriteString(fmt.Sprintf("\n💡 <i>Возобновить: <code>/resume %d &lt;ответ&gt;</code> | Отменить: <code>/cancel %d</code></i>", id, id))
+		bldr.WriteString(i18n.Tf(lang, "task.details_hint_paused", id, id))
 	} else if status == TaskStatusWaitingInput {
-		bldr.WriteString(fmt.Sprintf("\n💡 <i>Ответить: <code>/add %d &lt;ответ&gt;</code> | Отменить: <code>/cancel %d</code></i>", id, id))
+		bldr.WriteString(i18n.Tf(lang, "task.details_hint_waiting", id, id))
 	} else {
-		bldr.WriteString("\n💡 <i>Дополнить: <code>/add ")
-		bldr.WriteString(strconv.Itoa(id))
-		bldr.WriteString(" &lt;текст&gt;</code> | Отменить: <code>/cancel ")
-		bldr.WriteString(strconv.Itoa(id))
-		bldr.WriteString("</code></i>")
+		bldr.WriteString(i18n.Tf(lang, "task.details_hint_default", id, id))
 	}
 
 	return bldr.String()
@@ -1493,18 +1496,18 @@ func BuildTaskDetailsMarkup(task *TaskSession, lang string) *ports.Keyboard {
 	var rows [][]ports.Button
 
 	if hasPlan {
-		rows = append(rows, []ports.Button{{Text: i18n.T(lang, "BtnDownloadPlan"), Action: "plan_doc", Payload: strconv.Itoa(id)}})
+		rows = append(rows, []ports.Button{{Text: i18n.T(lang, "btn.download_plan"), Action: "plan_doc", Payload: strconv.Itoa(id)}})
 	}
 
 	if status == TaskStatusWaitingApproval {
 		rows = append(rows, []ports.Button{
-			{Text: i18n.T(lang, "BtnApprovePlan"), Action: "plan_approve", Payload: strconv.Itoa(id)},
-			{Text: i18n.T(lang, "BtnCancel"), Action: "plan_cancel", Payload: strconv.Itoa(id)},
+			{Text: i18n.T(lang, "btn.approve_plan"), Action: "plan_approve", Payload: strconv.Itoa(id)},
+			{Text: i18n.T(lang, "btn.cancel"), Action: "plan_cancel", Payload: strconv.Itoa(id)},
 		})
 	} else if status == TaskStatusPaused {
 		rows = append(rows, []ports.Button{
-			{Text: i18n.T(lang, "BtnResume"), Action: "q_resume", Payload: strconv.Itoa(id)},
-			{Text: i18n.T(lang, "BtnCancel"), Action: "plan_cancel", Payload: strconv.Itoa(id)},
+			{Text: i18n.T(lang, "btn.resume"), Action: "q_resume", Payload: strconv.Itoa(id)},
+			{Text: i18n.T(lang, "btn.cancel"), Action: "plan_cancel", Payload: strconv.Itoa(id)},
 		})
 	}
 
@@ -1517,7 +1520,7 @@ func BuildTaskDetailsMarkup(task *TaskSession, lang string) *ports.Keyboard {
 // BuildTaskPlanMarkup создает инлайн-кнопку скачивания полного файла плана задачи.
 func BuildTaskPlanMarkup(taskID int, lang string) *ports.Keyboard {
 	return &ports.Keyboard{Rows: [][]ports.Button{
-		{{Text: i18n.T(lang, "BtnDownloadPlan"), Action: "plan_doc", Payload: strconv.Itoa(taskID)}},
+		{{Text: i18n.T(lang, "btn.download_plan"), Action: "plan_doc", Payload: strconv.Itoa(taskID)}},
 	}}
 }
 
@@ -1637,7 +1640,7 @@ func (w *logWriter) write(batch []logEntry) {
 			j++
 		}
 		if err := w.storage.AppendLogs(ctx, taskID, lines); err != nil {
-			log.Printf("Предупреждение: не удалось записать %d строк лога задачи #%d: %v", len(lines), taskID, err)
+			log.Printf("warning: cannot store %d log lines of task #%d: %v", len(lines), taskID, err)
 		}
 		i = j
 	}
