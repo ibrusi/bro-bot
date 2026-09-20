@@ -5,10 +5,12 @@ import (
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"context"
+	"fmt"
 	"html"
 	"log"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -109,6 +111,24 @@ func isBlankAudio(text string) bool {
 		clean == "[тишина]"
 }
 
+// formatSTTLatency форматирует задержку транскрибации (миллисекунды для <1s, секунды для >=1s).
+func formatSTTLatency(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.2fs", d.Seconds())
+}
+
+// formatVoiceMetrics собирает строку метрик: время STT, длительность аудио и RTF (Real-Time Factor).
+func formatVoiceMetrics(sttDuration time.Duration, audioDurationSeconds int) string {
+	latencyStr := formatSTTLatency(sttDuration)
+	if audioDurationSeconds > 0 {
+		rtf := sttDuration.Seconds() / float64(audioDurationSeconds)
+		return fmt.Sprintf("STT: %s | Audio: %ds | RTF: %.2f", latencyStr, audioDurationSeconds, rtf)
+	}
+	return fmt.Sprintf("STT: %s", latencyStr)
+}
+
 // handleVoice обрабатывает входящие голосовые сообщения (tele.OnVoice) и аудиозаписи (tele.OnAudio).
 func handleVoice(s ports.Session) error {
 	voice := s.Voice()
@@ -148,9 +168,11 @@ func handleVoice(s ports.Session) error {
 	defer rc.Close()
 
 	// 3. Отправляем аудио на сервер Whisper
+	sttStart := time.Now()
 	recognizedText, err := transcriber.Transcribe(ctx, rc, voice.FileName)
+	sttDuration := time.Since(sttStart)
 	if err != nil {
-		log.Printf("voice transcription error: %v", err)
+		log.Printf("voice transcription error after %v: %v", sttDuration, err)
 		errMsg := i18n.Tf(lang, "voice.transcribe_failed", html.EscapeString(err.Error()))
 		if hasStatus {
 			_ = s.Messenger().Edit(context.Background(), statusRef, errMsg, ports.Rich())
@@ -172,7 +194,16 @@ func handleVoice(s ports.Session) error {
 	}
 
 	// 4. Заменяем статус-сообщение в чате цитатой распознанного текста
-	quoteMsg := i18n.Tf(lang, "voice.quote", html.EscapeString(recognizedText))
+	metricsStr := formatVoiceMetrics(sttDuration, voice.Duration)
+	log.Printf("voice: transcribed in %v (%s): %q", sttDuration, metricsStr, recognizedText)
+
+	var quoteMsg string
+	if config.Debug {
+		quoteMsg = i18n.Tf(lang, "voice.quote_metrics", html.EscapeString(recognizedText), html.EscapeString(metricsStr))
+	} else {
+		quoteMsg = i18n.Tf(lang, "voice.quote", html.EscapeString(recognizedText))
+	}
+
 	if hasStatus {
 		_ = s.Messenger().Edit(context.Background(), statusRef, quoteMsg, ports.Rich())
 	} else {

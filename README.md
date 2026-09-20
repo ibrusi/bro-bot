@@ -84,6 +84,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Voice notes and audio files sent in Telegram are transcribed automatically via `whisper-server`.
   - Audio is converted to 16kHz mono WAV via `ffmpeg` before transcription to ensure 100% compatibility with any Whisper server.
   - Quoting recognized text in chat (`🗣 «...»`) with immediate execution: recognized commands (`/status`, `/plan`, etc.) are executed directly, and conversational speech routes to chat or task creation.
+  - In debug mode (`DEBUG=true`), performance metrics are appended to the quote: STT latency, audio duration, and RTF (Real-Time Factor).
   - Voice recognition defaults to English (`en`). To switch the language, e.g. to Russian, set `WHISPER_LANGUAGE=ru` in your `.env`.
   - Easy setup via `sudo make install-whisper`.
 - **Hot-Rebuild & In-Bot CI/CD**:
@@ -317,6 +318,7 @@ nano .env
 | `WHISPER_MODEL` | No | `small` | Model name sent to Whisper server. |
 | `WHISPER_LANGUAGE` | No | `en` | Speech recognition language code (`en`, `ru`, `auto`, etc.). Defaults to `en`. To switch the language, for example to Russian, set `WHISPER_LANGUAGE=ru`. |
 | `WHISPER_TIMEOUT` | No | `60s` | Timeout for the speech transcription HTTP request. Formats: `60s`, `2m`, or seconds. |
+| `DEBUG` | No | `false` (empty) | Debug mode. When set to `true` or `1`, Telegram quote messages display performance metrics (STT Latency, Audio Duration, RTF). |
 
 ### Example `.env`
 
@@ -335,6 +337,7 @@ SQLITE_DB_PATH=data/bot.db
 WHISPER_SERVER_URL=http://127.0.0.1:8080/inference
 WHISPER_MODEL=small
 WHISPER_LANGUAGE=en
+DEBUG=
 ```
 
 ---

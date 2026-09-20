@@ -33,6 +33,8 @@ const (
 	envWhisperModel     = "WHISPER_MODEL"
 	envWhisperLanguage  = "WHISPER_LANGUAGE"
 	envWhisperTimeout   = "WHISPER_TIMEOUT"
+	envDebug            = "DEBUG"
+	envDebugLower       = "debug"
 )
 
 // Значения по умолчанию для необязательных параметров.
@@ -70,6 +72,9 @@ type Config struct {
 	WhisperModel     string
 	WhisperLanguage  string
 	WhisperTimeout   time.Duration
+
+	// Debug режим
+	Debug bool
 }
 
 // executablePath подменяется в тестах: это единственная часть Load, которая смотрит
@@ -167,6 +172,12 @@ func Load() (Config, error) {
 	}
 	cfg.WhisperTimeout = durationOrDefault(envWhisperTimeout, defaultWhisperTimeout)
 
+	rawDebug := envTrim(envDebug)
+	if rawDebug == "" {
+		rawDebug = envTrim(envDebugLower)
+	}
+	cfg.Debug = parseBool(rawDebug)
+
 	if len(problems) > 0 {
 		return Config{}, fmt.Errorf("конфигурация: %s", strings.Join(problems, "; "))
 	}
@@ -192,6 +203,7 @@ func Apply(c Config) {
 	WhisperModel = c.WhisperModel
 	WhisperLanguage = c.WhisperLanguage
 	WhisperTimeout = c.WhisperTimeout
+	Debug = c.Debug
 }
 
 // BotToken возвращает токен бота, нигде его не сохраняя.
@@ -257,3 +269,11 @@ func durationOrDefault(name string, def time.Duration) time.Duration {
 func envTrim(name string) string {
 	return strings.TrimSpace(os.Getenv(name))
 }
+
+// parseBool преобразует строку в булево значение. Пустая строка и некорректные
+// значения возвращают false.
+func parseBool(raw string) bool {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	return raw == "true" || raw == "1" || raw == "yes" || raw == "on"
+}
+

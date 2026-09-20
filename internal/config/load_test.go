@@ -35,6 +35,7 @@ func setEnv(t *testing.T, env map[string]string) {
 		envQuestionTimeout, envStepTimeout, envChatTimeout, envBotDir, envServiceName,
 		envDBPath, envScriptsDir,
 		envWhisperServerURL, envWhisperAPIKey, envWhisperModel, envWhisperLanguage, envWhisperTimeout,
+		envDebug, envDebugLower,
 	}
 	for _, name := range all {
 		if value, ok := env[name]; ok {
@@ -191,6 +192,59 @@ func TestLoadFillsDefaults(t *testing.T) {
 	if cfg.WhisperTimeout != defaultWhisperTimeout {
 		t.Errorf("WhisperTimeout = %v, ожидалось %v", cfg.WhisperTimeout, defaultWhisperTimeout)
 	}
+	if cfg.Debug {
+		t.Errorf("Debug = %v, ожидалось false", cfg.Debug)
+	}
+}
+
+func TestLoadDebugFlag(t *testing.T) {
+	botDir := t.TempDir()
+
+	// 1. По умолчанию DEBUG не задан -> false
+	setEnv(t, validEnv(botDir))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Debug {
+		t.Errorf("expected Debug to be false by default, got true")
+	}
+
+	// 2. DEBUG=true -> true
+	envWithDebug := validEnv(botDir)
+	envWithDebug[envDebug] = "true"
+	setEnv(t, envWithDebug)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if !cfg.Debug {
+		t.Errorf("expected Debug to be true, got false")
+	}
+
+	// 3. debug=1 (нижний регистр) -> true
+	envWithLower := validEnv(botDir)
+	envWithLower[envDebugLower] = "1"
+	setEnv(t, envWithLower)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if !cfg.Debug {
+		t.Errorf("expected Debug to be true for debug=1, got false")
+	}
+
+	// 4. DEBUG=false -> false
+	envWithFalse := validEnv(botDir)
+	envWithFalse[envDebug] = "false"
+	setEnv(t, envWithFalse)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Debug {
+		t.Errorf("expected Debug to be false for DEBUG=false, got true")
+	}
 }
 
 // TestLoadWarnsAboutBrokenOptionalTimeout — опечатка в необязательном таймауте не должна
@@ -334,6 +388,7 @@ func TestApplyPublishesEveryField(t *testing.T) {
 		WhisperModel:     "small",
 		WhisperLanguage:  "ru",
 		WhisperTimeout:   44 * time.Second,
+		Debug:            true,
 	}
 
 	Apply(cfg)
@@ -358,6 +413,7 @@ func TestApplyPublishesEveryField(t *testing.T) {
 		"WhisperModel":     WhisperModel,
 		"WhisperLanguage":  WhisperLanguage,
 		"WhisperTimeout":   WhisperTimeout,
+		"Debug":            Debug,
 	}
 
 	v := reflect.ValueOf(cfg)
