@@ -15,7 +15,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 > **Safety and Usage Disclaimer**:
 > - **Autonomous Command Execution & Elevated Privileges**: `bro-bot` executes AI agent CLIs (`agy`, `claude`) with elevated system permissions (`--dangerously-skip-permissions`). Autonomous agents can run shell commands, create, modify, or delete files, install dependencies, and push Git changes without manual approval for every action. Always run the bot under a dedicated non-root user account (e.g., `deploy`), restrict `sudoers` privileges, and strictly limit bot access via `TELEGRAM_ADMIN_ID` (never run the bot as `root`).
 > - **Account Suspension Risk with Subscription Plans (CLI Mode)**: Running CLI agents authenticated with personal subscriptions (Claude Pro/Team/Max, Google One AI Premium/Gemini Advanced) in automated bot workflows (`cli` mode) violates the Terms of Service of those providers (prohibition against automated or unattended use of non-API interfaces). Using `cli` mode is strictly at your own risk and may lead to account penalties or bans. In contrast, operating via official API keys (`api` mode) fully complies with provider policies and will not result in account bans.
-> - **Verification Responsibility**: While agents follow `AGENT.md` guidelines by running tests and linters, final validation of all generated code, commits, and Pull Requests before merging them into production remains the sole responsibility of the repository maintainer.
+> - **Verification Responsibility**: While agents follow `AGENTS.md` guidelines by running tests and linters, final validation of all generated code, commits, and Pull Requests before merging them into production remains the sole responsibility of the repository maintainer.
 > - **Token Quotas & API Costs**: Autonomous agents make numerous calls to advanced LLMs (Google Gemini, Anthropic Claude), consuming significant context, generation, and reasoning (thinking) tokens. Regularly inspect your quotas, credit balances, and provider dashboards, as well as bot commands `/usage` and `/tokens`, to prevent unexpected expenses.
 > - **Disclaimer of Warranty (AS IS)**: This open-source software is distributed under the MIT License on an "AS IS" basis, without warranty of any kind, express or implied. The authors and contributors accept no liability for data loss, system disruption, account suspensions, or financial expenses resulting from its operation.
 
@@ -32,8 +32,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 - [🛠 Systemd Setup & Autostart](#-systemd-setup--autostart)
 - [💬 Bot Command Reference](#-bot-command-reference)
 - [🌍 Interface Language & Localization](#-interface-language--localization)
-- [📋 Agent Guidelines (AGENT.md)](#-agent-guidelines-agentmd)
-- [🤖 Bot System Instructions (GEMINI.md / AGENTS.md)](#-bot-system-instructions-geminimd--agentsmd)
+- [📋 Agent Guidelines (AGENTS.md)](#-agent-guidelines-agentmd)
 - [🧪 Development & Testing](#-development--testing)
 - [🔒 Security](#-security)
 - [📄 License](#-license)
@@ -44,7 +43,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 
 - **Project and Repository Management**:
   - Instant switching between active project workspaces (`/projects`, `/use <name>`).
-  - On-the-fly Git cloning over SSH or HTTPS (`/clone <url> [name]`) with automatic provisioning of the `AGENT.md` rules template.
+  - On-the-fly Git cloning over SSH or HTTPS (`/clone <url> [name]`) with automatic provisioning of the `AGENTS.md` rules template.
 - **Conversational Mode (default)**:
   - A plain message is a conversation with the agent about the active project: context is preserved between messages, so `/resume` is no longer needed.
   - When a message looks like a code-change request, the bot does not run it silently — it offers buttons: answer in chat, draft a plan, or create a task.
@@ -466,9 +465,9 @@ A partially translated catalog still works: a missing key falls back to English 
 
 ---
 
-## 📋 Agent Guidelines (AGENT.md)
+## 📋 Agent Guidelines (AGENTS.md)
 
-Projects managed by `bro-bot` utilize an **`AGENT.md`** file (symlinked as **`AGENTS.md`**) in their repository root. The agent CLI automatically follows these instructions:
+Projects managed by `bro-bot` utilize an **`AGENTS.md`** file (symlinked as **`AGENTS.md`**) in their repository root. The agent CLI automatically follows these instructions:
 
 1. **Planning Mode**:
    - In planning mode, the agent creates no branches, alters no code, and formulates a step-by-step implementation plan for user review.
@@ -487,16 +486,7 @@ Projects managed by `bro-bot` utilize an **`AGENT.md`** file (symlinked as **`AG
      ```
    - The bot intercepts this URL via regex and sends a clickable link directly to the Telegram chat!
 
-> 💡 When cloning a new project with `/clone`, the bot automatically checks for `AGENT.md` and copies it from `PROJECTS_ROOT` if absent.
-
----
-
-## 🤖 Bot System Instructions (GEMINI.md / AGENTS.md)
-
-The **`AGENTS.md`** (and **`GEMINI.md`**) file contains repository-specific instructions for agents working directly on the `bro-bot` codebase:
-1. **Configuration Awareness**: Familiarity with environment parameters (`TELEGRAM_ADMIN_ID`, `PROJECTS_ROOT`, `DEFAULT_MODEL`, etc.).
-2. **Strict Security**: Explicit prohibition against reading, printing, or storing `TELEGRAM_BOT_TOKEN`.
-3. **Autonomous Lifecycle**: Adherence to planning mode, automated branch creation, linting, tests, and PR generation.
+> 💡 When cloning a new project with `/clone`, the bot automatically checks for `AGENTS.md` and copies it from `PROJECTS_ROOT` if absent.
 
 ---
 
