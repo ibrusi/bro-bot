@@ -44,7 +44,7 @@ func resolveClaudeModel(modelName string) string {
 	return modelName
 }
 
-func buildClaudeArgs(convID, modelName, prompt string) []string {
+func buildClaudeArgs(convID, modelName, prompt, systemPrompt string) []string {
 	args := []string{
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
@@ -53,6 +53,11 @@ func buildClaudeArgs(convID, modelName, prompt string) []string {
 	if convID != "" {
 		// В Claude для возобновления существующей сессии используется --resume (-r)
 		args = append(args, "--resume", convID)
+	} else if strings.TrimSpace(systemPrompt) != "" {
+		// На первом ходе новой сессии передаём системный промпт через --append-system-prompt.
+		// Claude сохраняет его в снэпшоте сессии (--system-prompt-snapshot on), поэтому при
+		// последующих вызовах с --resume повторная передача не требуется.
+		args = append(args, "--append-system-prompt", strings.TrimSpace(systemPrompt))
 	}
 	claudeModel := resolveClaudeModel(modelName)
 	if claudeModel != "" {
@@ -63,10 +68,10 @@ func buildClaudeArgs(convID, modelName, prompt string) []string {
 }
 
 // ExecuteTask запускает CLI-агента claude.
-// Поля args.History и args.SystemPrompt намеренно игнорируются: историю диалога claude хранит сам
-// и восстанавливает по флагу --resume, а преамбула подмешивается в текст промпта.
+// История диалога восстанавливается Claude по флагу --resume. На новой сессии системный
+// промпт передается через --append-system-prompt.
 func (a *ClaudeAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
-	cmdArgs := buildClaudeArgs(args.ConversationID, args.ModelName, args.Prompt)
+	cmdArgs := buildClaudeArgs(args.ConversationID, args.ModelName, args.Prompt, args.SystemPrompt)
 	cmd := exec.CommandContext(ctx, "claude", cmdArgs...)
 	cmd.Dir = args.WorkDir
 	cmd.Env = append(os.Environ(),

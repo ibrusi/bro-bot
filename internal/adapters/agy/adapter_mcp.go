@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/mcp"
 	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 
 	"github.com/creack/pty"
 )
@@ -33,6 +35,11 @@ func (a *AgyMCPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 	// Гарантируем наличие конфигурации bro_bot в ~/.gemini/config/mcp_config.json
 	_ = mcp.EnsureAgyMCPConfig()
 
+	finalPrompt := args.Prompt
+	if args.ConversationID == "" && strings.TrimSpace(args.SystemPrompt) != "" && !utils.HasLocalAgentsRules(args.WorkDir) {
+		finalPrompt = fmt.Sprintf("ИНСТРУКЦИИ ПРОЕКТА (AGENTS.md):\n%s\n\n---\n\n%s", strings.TrimSpace(args.SystemPrompt), args.Prompt)
+	}
+
 	cmdArgs := []string{
 		"--dangerously-skip-permissions",
 		"--print-timeout", "30m",
@@ -44,7 +51,7 @@ func (a *AgyMCPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 	if args.ModelName != "" {
 		cmdArgs = append(cmdArgs, models.BuildAgyModelArgs(args.ModelName)...)
 	}
-	cmdArgs = append(cmdArgs, "-p", args.Prompt)
+	cmdArgs = append(cmdArgs, "-p", finalPrompt)
 
 	cmd := exec.CommandContext(ctx, "agy", cmdArgs...)
 	cmd.Dir = args.WorkDir

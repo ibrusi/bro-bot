@@ -47,7 +47,7 @@ func chatShortReminder(lang string) string {
 // поэтому в промпте остаётся только текст пользователя. В cli-режиме у агента своя память сессии:
 // при первом ходе новой пары агент/режим подмешиваем преамбулу и краткий контекст прошлых реплик,
 // дальше достаточно короткого напоминания.
-func buildChatPrompt(session *domain.ChatSession, agent, mode, userText, lang string) string {
+func buildChatPrompt(session *domain.ChatSession, agent, mode, userText, lang, rules string) string {
 	if strings.EqualFold(mode, "api") {
 		return userText
 	}
@@ -59,6 +59,10 @@ func buildChatPrompt(session *domain.ChatSession, agent, mode, userText, lang st
 
 	var bldr strings.Builder
 	bldr.WriteString(chatSystemPreamble(lang))
+	if rules != "" {
+		bldr.WriteString("\n\n")
+		bldr.WriteString(rules)
+	}
 
 	if session.NeedsContextBootstrap(agent, mode) {
 		if prev := formatChatContext(session.HistoryForPrompt(chatBootstrapTurns, chatBootstrapChars), lang); prev != "" {
@@ -270,16 +274,28 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 	statusRef, _ := m.Send(context.Background(), chat, statusText, ports.Rich())
 
 	workDir := filepath.Join(config.ProjectsRoot, project)
+	isNewTurn := session.ConversationIDFor(agent, mode) == ""
+
+	var rules string
+	if isNewTurn {
+		rules = utils.LoadProjectAgentsRules(workDir, config.ProjectsRoot)
+	}
+
 	args := ports.ExecuteArgs{
 		ConversationID: session.ConversationIDFor(agent, mode),
 		ModelName:      model,
-		Prompt:         buildChatPrompt(session, agent, mode, userText, lang),
+		Prompt:         buildChatPrompt(session, agent, mode, userText, lang, rules),
 		WorkDir:        workDir,
 		History:        chatHistoryForAgent(session, mode),
 		ReadOnly:       true,
 	}
 	if strings.EqualFold(mode, "api") {
 		args.SystemPrompt = chatSystemPreamble(lang)
+		if rules != "" {
+			args.SystemPrompt = fmt.Sprintf("%s\n\n%s", args.SystemPrompt, rules)
+		}
+	} else if isNewTurn && rules != "" {
+		args.SystemPrompt = rules
 	}
 
 	startedAt := time.Now()

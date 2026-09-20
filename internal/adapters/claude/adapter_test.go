@@ -10,7 +10,8 @@ import (
 )
 
 func TestBuildClaudeArgs_NewSession(t *testing.T) {
-	args := buildClaudeArgs("", "sonnet", "Hello Claude")
+	systemPrompt := "Follow senior developer instructions from AGENTS.md"
+	args := buildClaudeArgs("", "sonnet", "Hello Claude", systemPrompt)
 
 	// Проверяем обязательные флаги
 	hasVerbose := false
@@ -19,6 +20,7 @@ func TestBuildClaudeArgs_NewSession(t *testing.T) {
 	hasPrompt := false
 	hasResume := false
 	hasSessionID := false
+	hasAppendSysPrompt := false
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -33,6 +35,10 @@ func TestBuildClaudeArgs_NewSession(t *testing.T) {
 		case "-p":
 			if i+1 < len(args) && args[i+1] == "Hello Claude" {
 				hasPrompt = true
+			}
+		case "--append-system-prompt":
+			if i+1 < len(args) && args[i+1] == systemPrompt {
+				hasAppendSysPrompt = true
 			}
 		case "--resume", "-r":
 			hasResume = true
@@ -53,6 +59,9 @@ func TestBuildClaudeArgs_NewSession(t *testing.T) {
 	if !hasPrompt {
 		t.Errorf("expected buildClaudeArgs to include -p 'Hello Claude'")
 	}
+	if !hasAppendSysPrompt {
+		t.Errorf("expected buildClaudeArgs to include --append-system-prompt")
+	}
 	if hasResume {
 		t.Errorf("expected buildClaudeArgs NOT to include --resume for new session")
 	}
@@ -63,10 +72,12 @@ func TestBuildClaudeArgs_NewSession(t *testing.T) {
 
 func TestBuildClaudeArgs_ResumeSession(t *testing.T) {
 	convID := "38f5a876-319b-4cf3-9716-5bdac15877c7"
-	args := buildClaudeArgs(convID, "claude-sonnet-4-6", "continue task")
+	// Even if systemPrompt is passed, for resumed session it must NOT be added to args
+	args := buildClaudeArgs(convID, "claude-sonnet-4-6", "continue task", "Ignore this system prompt on resume")
 
 	hasResume := false
 	hasSessionID := false
+	hasAppendSysPrompt := false
 
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--resume" && i+1 < len(args) && args[i+1] == convID {
@@ -75,10 +86,16 @@ func TestBuildClaudeArgs_ResumeSession(t *testing.T) {
 		if args[i] == "--session-id" {
 			hasSessionID = true
 		}
+		if args[i] == "--append-system-prompt" {
+			hasAppendSysPrompt = true
+		}
 	}
 
 	if !hasResume {
 		t.Errorf("expected buildClaudeArgs to include --resume %s for existing conversation", convID)
+	}
+	if hasAppendSysPrompt {
+		t.Errorf("expected buildClaudeArgs NOT to include --append-system-prompt on resumed session")
 	}
 	if hasSessionID {
 		t.Errorf("expected buildClaudeArgs NOT to include --session-id for existing conversation")
@@ -180,7 +197,7 @@ func TestClaudeAdapter_GetCredits(t *testing.T) {
 
 // История диалога в CLI-режиме не влияет на аргументы: claude восстанавливает контекст по --resume.
 func TestBuildClaudeArgs_IgnoresHistory(t *testing.T) {
-	args := buildClaudeArgs("sess-1", "sonnet", "вопрос")
+	args := buildClaudeArgs("sess-1", "sonnet", "вопрос", "")
 	joined := strings.Join(args, " ")
 
 	if !strings.Contains(joined, "--resume sess-1") {

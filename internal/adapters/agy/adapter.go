@@ -4,6 +4,7 @@ import (
 	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 	"context"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ func (a *AgyAdapter) ExecutionMode() string {
 	return "cli"
 }
 
-func buildAgyArgs(convID, modelName, prompt string) []string {
+func buildAgyArgs(convID, modelName, prompt, systemPrompt, workDir string) []string {
 	args := []string{
 		"--dangerously-skip-permissions",
 		"--print-timeout", "30m", // Hardcoded fallback or we can pass it
@@ -36,15 +37,24 @@ func buildAgyArgs(convID, modelName, prompt string) []string {
 	if modelName != "" {
 		args = append(args, models.BuildAgyModelArgs(modelName)...)
 	}
-	args = append(args, "-p", prompt)
+
+	finalPrompt := prompt
+	// Если это новая сессия (convID == "") и передан systemPrompt:
+	// agy CLI автоматически считывает AGENTS.md из workDir. Но если файла в workDir нет,
+	// подмешиваем системный промпт в начало первого пользовательского запроса.
+	if convID == "" && strings.TrimSpace(systemPrompt) != "" && !utils.HasLocalAgentsRules(workDir) {
+		finalPrompt = fmt.Sprintf("ИНСТРУКЦИИ ПРОЕКТА (AGENTS.md):\n%s\n\n---\n\n%s", strings.TrimSpace(systemPrompt), prompt)
+	}
+
+	args = append(args, "-p", finalPrompt)
 	return args
 }
 
 // ExecuteTask запускает CLI-агента agy.
-// Поля args.History и args.SystemPrompt намеренно игнорируются: историю диалога agy хранит сам
-// и восстанавливает по флагу --conversation, а преамбула подмешивается в текст промпта.
+// Историю диалога agy хранит сам и восстанавливает по флагу --conversation.
+// На первой сессии инструкции передаются через правила проекта или преамбулу промпта.
 func (a *AgyAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
-	cmdArgs := buildAgyArgs(args.ConversationID, args.ModelName, args.Prompt)
+	cmdArgs := buildAgyArgs(args.ConversationID, args.ModelName, args.Prompt, args.SystemPrompt, args.WorkDir)
 	cmd := exec.CommandContext(ctx, "agy", cmdArgs...)
 	cmd.Dir = args.WorkDir
 	cmd.Env = append(os.Environ(),
