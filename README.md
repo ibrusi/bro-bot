@@ -84,6 +84,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Voice notes and audio files sent in Telegram are transcribed automatically via `whisper-server`.
   - Audio is converted to 16kHz mono WAV via `ffmpeg` before transcription to ensure 100% compatibility with any Whisper server.
   - Quoting recognized text in chat (`🗣 «...»`) with immediate execution: recognized commands (`/status`, `/plan`, etc.) are executed directly, and conversational speech routes to chat or task creation.
+  - Voice recognition defaults to English (`en`). To switch the language, e.g. to Russian, set `WHISPER_LANGUAGE=ru` in your `.env`.
   - Easy setup via `sudo make install-whisper`.
 - **Hot-Rebuild & In-Bot CI/CD**:
   - `/restart` — clean, non-blocking systemd service restart.
@@ -314,7 +315,7 @@ nano .env
 | `WHISPER_SERVER_URL` | No | `http://127.0.0.1:8080/inference` (in `.env.example`) | HTTP endpoint of the Whisper speech-to-text server (e.g. `whisper.cpp`, `faster-whisper`, OpenAI API). Supports `/inference` and `/v1/audio/transcriptions` with automatic 404 fallback. Leave empty to disable voice recognition. |
 | `WHISPER_API_KEY` | No | — | Optional Bearer authorization token if your Whisper server requires authentication. |
 | `WHISPER_MODEL` | No | `small` | Model name sent to Whisper server. |
-| `WHISPER_LANGUAGE` | No | Auto-detected | Recognition language code (e.g. `ru`, `en`). Leave empty for automatic language detection. |
+| `WHISPER_LANGUAGE` | No | `en` | Speech recognition language code (`en`, `ru`, `auto`, etc.). Defaults to `en`. To switch the language, for example to Russian, set `WHISPER_LANGUAGE=ru`. |
 | `WHISPER_TIMEOUT` | No | `60s` | Timeout for the speech transcription HTTP request. Formats: `60s`, `2m`, or seconds. |
 
 ### Example `.env`
@@ -333,6 +334,7 @@ BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
 WHISPER_SERVER_URL=http://127.0.0.1:8080/inference
 WHISPER_MODEL=small
+WHISPER_LANGUAGE=en
 ```
 
 ---

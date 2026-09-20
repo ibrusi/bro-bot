@@ -173,9 +173,13 @@ func (c *Client) Transcribe(ctx context.Context, audio io.Reader, filename strin
 	if c.model != "" {
 		_ = writer.WriteField("model", c.model)
 	}
-	if c.language != "" {
-		_ = writer.WriteField("language", c.language)
+	lang := c.language
+	if lang == "" {
+		lang = "en"
 	}
+	_ = writer.WriteField("language", lang)
+	_ = writer.WriteField("translate", "false")
+	_ = writer.WriteField("task", "transcribe")
 	_ = writer.WriteField("response_format", "json")
 
 	if err := writer.Close(); err != nil {
