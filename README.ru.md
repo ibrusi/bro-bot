@@ -105,33 +105,72 @@
 │  internal/handlers/  ──► Команды и колбэки (мессенджеро-  │
 │                           независимо, через ports.Session)│
 │  internal/domain/    ──► Task Queue, Sessions & Tokens   │
+│  internal/agents/    ──► Реестр агентов и роутер режимов │
 │  internal/storage/   ──► SQLite Persistence & Migrations │
 │  internal/models/    ──► Model Registry & Aliases        │
+│  internal/mcp/       ──► Встроенный stdio MCP-сервер     │
+│  internal/tools/     ──► Файловые инструменты и shell    │
 │  internal/i18n/      ──► Каталоги сообщений (locales/*.json)│
 │  internal/system/    ──► Hot-Rebuild, Systemd & Top/PS   │
-│  internal/utils/     ──► Rich-текст (HTML-подмножество)/  │
-│                           Markdown парсер                │
-└──────────────┬─────────────────────────────┬─────────────┘
-               │ PTY (Pseudo-Terminal)       │ Git / FS
-               ▼                             ▼
-┌──────────────────────────────┐ ┌─────────────────────────┐
-│   Antigravity CLI (agy)      │ │   Projects Root Dir     │
-│  --stream-json / subagents   │ │   /home/deploy/projects │
-│  Autonomous Coding Agent     │ │   ├── project-1/        │
-└──────────────────────────────┘ │   └── project-2/        │
-                                 └─────────────────────────┘
-                                             ▲
-                                             │ WAL Mode
-                                 ┌─────────────────────────┐
-                                 │   SQLite Database       │
-                                 │   data/bot.db           │
-                                 └─────────────────────────┘
+│  internal/utils/     ──► Rich-текст и Markdown парсер    │
+└───────┬───────────────────┬────────────────────┬─────────┘
+        │ Режим: mcp        │ Режим: cli         │ Режим: api
+        │ (по умолчанию)    │ (PTY)              │ (Прямой REST)
+        ▼                   ▼                    ▼
+┌────────────────┐  ┌────────────────┐  ┌────────────────┐
+│ Claude / Agy c │  │ Процессы CLI   │  │ Клиенты        │
+│ поддержкой MCP │  │ agy и claude   │  │ провайдеров:   │
+│                │  │                │  │ • Gemini API   │
+│ • bot mcp-serve│  │ • stream-json  │  │ • Anthropic    │
+│ • JSON-RPC 2.0 │  │ • PTY-терминал │  │   Messages API │
+│ • Каналы, опрос│  │ • Парсинг      │  │ • Инструменты  │
+│   и прогресс   │  │   событий      │  │   чтения/записи│
+└───────┬────────┘  └───────┬────────┘  └───────┬────────┘
+        │                   │                   │
+        └───────────────────┼───────────────────┘
+                            ▼
+               ┌─────────────────────────┐
+               │   Каталог проектов      │
+               │   /home/deploy/projects │
+               │   ├── project-1/        │
+               │   └── project-2/        │
+               └────────────┬────────────┘
+                            │
+                            ▼ WAL Mode
+               ┌─────────────────────────┐
+               │   База данных SQLite    │
+               │   data/bot.db           │
+               │   (Задачи, планы, логи) │
+               └─────────────────────────┘
 ```
 
-Каждая задача изолируется в псевдотерминале (PTY) с передачей параметров:
-`agy --dangerously-skip-permissions --print-timeout 30m --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
+### Архитектура режимов выполнения
 
-Бот парсит потоковый NDJSON-вывод `stream-json`, перехватывает шаги рассуждений, вызовы инструментов и события завершения, транслируя их в удобные сообщения.
+`bro-bot` абстрагирует выполнение задач через интерфейс `ports.Agent` и реестр `agents.Registry`, предоставляя три независимых режима работы:
+
+1. **Режим MCP (`mcp`, по умолчанию)**:
+   - Взаимодействие локальных CLI-агентов (`claude`, `agy`) через встроенный сервер Model Context Protocol (MCP), работающий по протоколу JSON-RPC 2.0 stdio через подкоманду `bot mcp-serve`.
+   - `claude` подключается через флаг `--mcp-config` с поддержкой экспериментальных каналов (`claude/channel`) и автоматической очисткой временного конфигурационного файла после завершения процесса.
+   - `agy` подключается через глобальную конфигурацию в `~/.gemini/config/mcp_config.json`.
+   - Сервер предоставляет агентам разрешенные инструменты:
+     - `telegram_send_message`: отправка сообщений и уведомлений в чат Telegram;
+     - `ask_user`: интерактивный опрос пользователя с вариантами ответов;
+     - `report_progress`: передача контрольных точек и прогресса выполнения задачи.
+
+2. **Режим CLI (`cli`)**:
+   - Запуск бинарников CLI (`agy`, `claude`) внутри изолированных псевдотерминалов (PTY) с флагами:
+     `agy --dangerously-skip-permissions --print-timeout 30m --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
+     `claude --dangerously-skip-permissions --print --output-format stream-json [--resume <id>] --model <model> -p <prompt>`
+   - Бот считывает потоковый NDJSON-вывод `stream-json`, перехватывает фазы рассуждений (thinking), вызовы инструментов и события завершения, транслируя их в сообщения мессенджера в реальном времени.
+
+3. **Режим API (`api`)**:
+   - Прямой сетевой обмен через HTTP/REST с официальными API провайдеров:
+     - Google Gemini API (`GEMINI_API_KEY`) через Google GenAI SDK;
+     - Anthropic Messages API (`ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`).
+   - Встроенный движок инструментов работы с проектом (`internal/tools`):
+     - Безопасный доступ к файлам (`read_file`, `write_file`, `edit_file`, `list_dir`) со строгой изоляцией внутри директории активного проекта.
+     - Запуск команд shell (`run_command`) при реализации задач.
+     - Разграничение прав: в разговорном режиме (`/chat`) доступно только безопасное чтение, а изменение файлов и запуск команд разрешены только в задачах пайплайна (`/new`, `/plan`).
 
 ### Абстракция мессенджера
 

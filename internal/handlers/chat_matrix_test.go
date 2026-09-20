@@ -136,6 +136,10 @@ func TestChatSurvivesAgentSwitch(t *testing.T) {
 
 	sendText(t, mt, "а что по памяти диалога?")
 	waitFor(t, "ответ claude", func() bool { return len(claudeAgent.Calls()) == 1 })
+	waitFor(t, "завершение хода claude", func() bool {
+		session := domain.GlobalChatManager.Get("testproj")
+		return session != nil && !session.IsRunning()
+	})
 
 	call := claudeAgent.Calls()[0]
 	if call.ConversationID != "" {

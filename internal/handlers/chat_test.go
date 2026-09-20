@@ -142,6 +142,10 @@ func TestChatKeepsContextBetweenMessages(t *testing.T) {
 
 	sendText(t, mt, "а какая ты модель?")
 	waitFor(t, "второй ответ", func() bool { return len(agent.Calls()) == 2 })
+	waitFor(t, "завершение второго хода", func() bool {
+		session := domain.GlobalChatManager.Get("testproj")
+		return session != nil && !session.IsRunning()
+	})
 
 	calls := agent.Calls()
 	if calls[0].ConversationID != "" {

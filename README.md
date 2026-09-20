@@ -107,34 +107,72 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 │  internal/handlers/  ──► Commands & callbacks (agnostic   │
 │                           via ports.Session)             │
 │  internal/domain/    ──► Task Queue, Sessions & Tokens   │
+│  internal/agents/    ──► Agent Registry & Mode Router    │
 │  internal/storage/   ──► SQLite Persistence & Migrations │
 │  internal/models/    ──► Model Registry & Aliases        │
+│  internal/mcp/       ──► Built-in Stdio MCP Server       │
+│  internal/tools/     ──► Workspace File & Shell Tools    │
 │  internal/i18n/      ──► Message catalogs (locales/*.json)│
 │  internal/system/    ──► Hot-Rebuild, Systemd & Top/PS   │
-│  internal/utils/     ──► Rich-text (HTML subset) &       │
-│                           Markdown parser                │
-└──────────────┬─────────────────────────────┬─────────────┘
-               │ PTY (Pseudo-Terminal)       │ Git / FS
-               ▼                             ▼
-┌──────────────────────────────┐ ┌─────────────────────────┐
-│   Antigravity CLI (agy)      │ │   Projects Root Dir     │
-│   Claude Code CLI (claude)   │ │   /home/deploy/projects │
-│  --stream-json / subagents   │ │   ├── project-1/        │
-│  Autonomous Coding Agent     │ │   └── project-2/        │
-└──────────────────────────────┘ │                         │
-                                 └─────────────────────────┘
-                                             ▲
-                                             │ WAL Mode
-                                 ┌─────────────────────────┐
-                                 │   SQLite Database       │
-                                 │   data/bot.db           │
-                                 └─────────────────────────┘
+│  internal/utils/     ──► Rich-text & Markdown parser     │
+└───────┬───────────────────┬────────────────────┬─────────┘
+        │ Mode: mcp         │ Mode: cli          │ Mode: api
+        │ (Default)         │ (PTY)              │ (Direct REST)
+        ▼                   ▼                    ▼
+┌────────────────┐  ┌────────────────┐  ┌────────────────┐
+│ Claude / Agy   │  │ Claude / Agy   │  │ Direct API     │
+│ with MCP Tools │  │ CLI processes  │  │ Clients:       │
+│                │  │                │  │ • Gemini API   │
+│ • bot mcp-serve│  │ • stream-json  │  │ • Anthropic    │
+│ • JSON-RPC 2.0 │  │ • PTY terminal │  │   Messages API │
+│ • Channels &   │  │ • Raw stream   │  │ • File Tools   │
+│   Ask/Progress │  │   events       │  │   (read/write) │
+└───────┬────────┘  └───────┬────────┘  └───────┬────────┘
+        │                   │                   │
+        └───────────────────┼───────────────────┘
+                            ▼
+               ┌─────────────────────────┐
+               │   Projects Root Dir     │
+               │   /home/deploy/projects │
+               │   ├── project-1/        │
+               │   └── project-2/        │
+               └────────────┬────────────┘
+                            │
+                            ▼ WAL Mode
+               ┌─────────────────────────┐
+               │   SQLite Database       │
+               │   data/bot.db           │
+               │   (Tasks, Plans, Logs)  │
+               └─────────────────────────┘
 ```
 
-Each task runs inside an isolated pseudo-terminal (PTY) with invocation flags:
-`agy --dangerously-skip-permissions --print-timeout 30m --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
+### Execution Modes Architecture
 
-The bot parses the NDJSON `stream-json` stream, intercepts thinking phases, tool calls, and completion events, and formats them into intuitive Telegram updates.
+`bro-bot` abstracts agent execution behind `ports.Agent` and `agents.Registry`, supporting three distinct operation modes:
+
+1. **MCP Mode (`mcp`, default)**:
+   - Integrates local CLI agents (`claude`, `agy`) with a built-in Model Context Protocol (MCP) server running via the `bot mcp-serve` subcommand over stdio JSON-RPC 2.0.
+   - `claude` connects using `--mcp-config` with experimental `claude/channel` notification capabilities and automatic cleanup of ephemeral config files.
+   - `agy` connects via global configuration in `~/.gemini/config/mcp_config.json`.
+   - Exposes authorized tools directly to the agent:
+     - `telegram_send_message`: sends notifications or messages to Telegram;
+     - `ask_user`: requests clarification with selectable options;
+     - `report_progress`: streams execution milestones and status updates.
+
+2. **CLI Mode (`cli`)**:
+   - Spawns agent CLI processes (`agy`, `claude`) inside isolated pseudo-terminals (PTY) with invocation flags:
+     `agy --dangerously-skip-permissions --print-timeout 30m --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
+     `claude --dangerously-skip-permissions --print --output-format stream-json [--resume <id>] --model <model> -p <prompt>`
+   - The bot parses the NDJSON `stream-json` stream, intercepts thinking phases, tool calls, and completion events, and formats them into intuitive Telegram updates.
+
+3. **API Mode (`api`)**:
+   - Direct HTTP/REST communication with model provider endpoints:
+     - Google Gemini API (`GEMINI_API_KEY`) via Google GenAI SDK;
+     - Anthropic Messages API (`ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`).
+   - Integrated workspace tool engine (`internal/tools`):
+     - Safe file system access (`read_file`, `write_file`, `edit_file`, `list_dir`) with strict containment to the active project path.
+     - Shell command execution (`run_command`) for pipeline tasks.
+     - Sandboxed read-only permissions in conversational mode (`/chat`) and full workspace manipulation in pipeline tasks (`/new`, `/plan`).
 
 ### Messenger Abstraction
 
