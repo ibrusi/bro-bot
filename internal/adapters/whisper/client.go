@@ -15,24 +15,30 @@ import (
 
 // Config задаёт параметры подключения к Whisper HTTP-серверу.
 type Config struct {
-	BaseURL    string
-	APIKey     string
-	Model      string
-	Language   string
-	Timeout    time.Duration
-	ConvertWAV bool
-	HTTPClient *http.Client
+	BaseURL     string
+	APIKey      string
+	Model       string
+	Language    string
+	Prompt      string
+	Temperature float64
+	Loudnorm    bool
+	Timeout     time.Duration
+	ConvertWAV  bool
+	HTTPClient  *http.Client
 }
 
 // Client — реализация ports.Transcriber для взаимодействия с Whisper через HTTP API.
 type Client struct {
-	mu         sync.RWMutex
-	endpoint   string
-	apiKey     string
-	model      string
-	language   string
-	convertWAV bool
-	client     *http.Client
+	mu          sync.RWMutex
+	endpoint    string
+	apiKey      string
+	model       string
+	language    string
+	prompt      string
+	temperature float64
+	loudnorm    bool
+	convertWAV  bool
+	client      *http.Client
 }
 
 // New создает новый клиент Whisper.
@@ -54,12 +60,15 @@ func New(cfg Config) *Client {
 	endpoint := normalizeEndpoint(cfg.BaseURL)
 
 	return &Client{
-		endpoint:   endpoint,
-		apiKey:     cfg.APIKey,
-		model:      model,
-		language:   cfg.Language,
-		convertWAV: cfg.ConvertWAV,
-		client:     httpClient,
+		endpoint:    endpoint,
+		apiKey:      cfg.APIKey,
+		model:       model,
+		language:    cfg.Language,
+		prompt:      cfg.Prompt,
+		temperature: cfg.Temperature,
+		loudnorm:    cfg.Loudnorm,
+		convertWAV:  cfg.ConvertWAV,
+		client:      httpClient,
 	}
 }
 
@@ -146,7 +155,7 @@ func (c *Client) Transcribe(ctx context.Context, audio io.Reader, filename strin
 
 	if c.convertWAV || !strings.HasSuffix(strings.ToLower(filename), ".wav") {
 		var err error
-		audioData, err = ConvertToWAV16k(ctx, audio)
+		audioData, err = ConvertToWAV16k(ctx, audio, c.loudnorm)
 		if err != nil {
 			return "", fmt.Errorf("whisper: audio conversion: %w", err)
 		}
@@ -178,6 +187,10 @@ func (c *Client) Transcribe(ctx context.Context, audio io.Reader, filename strin
 		lang = "en"
 	}
 	_ = writer.WriteField("language", lang)
+	if strings.TrimSpace(c.prompt) != "" {
+		_ = writer.WriteField("prompt", strings.TrimSpace(c.prompt))
+	}
+	_ = writer.WriteField("temperature", fmt.Sprintf("%.2f", c.temperature))
 	_ = writer.WriteField("translate", "false")
 	_ = writer.WriteField("task", "transcribe")
 	_ = writer.WriteField("response_format", "json")

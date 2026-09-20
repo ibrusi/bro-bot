@@ -110,6 +110,8 @@ func TestTranscribeSuccess(t *testing.T) {
 	var receivedAuth string
 	var receivedModel string
 	var receivedLanguage string
+	var receivedPrompt string
+	var receivedTemperature string
 	var receivedTranslate string
 	var receivedTask string
 	var receivedResponseFormat string
@@ -130,6 +132,8 @@ func TestTranscribeSuccess(t *testing.T) {
 
 		receivedModel = r.FormValue("model")
 		receivedLanguage = r.FormValue("language")
+		receivedPrompt = r.FormValue("prompt")
+		receivedTemperature = r.FormValue("temperature")
 		receivedTranslate = r.FormValue("translate")
 		receivedTask = r.FormValue("task")
 		receivedResponseFormat = r.FormValue("response_format")
@@ -150,11 +154,13 @@ func TestTranscribeSuccess(t *testing.T) {
 	defer server.Close()
 
 	client := New(Config{
-		BaseURL:    server.URL,
-		APIKey:     "test-secret-key",
-		Model:      "small",
-		Language:   "ru",
-		ConvertWAV: false, // в тесте передаем WAV напрямую
+		BaseURL:     server.URL,
+		APIKey:      "test-secret-key",
+		Model:       "small",
+		Language:    "ru",
+		Prompt:      "дебаг режим, код",
+		Temperature: 0.0,
+		ConvertWAV:  false, // в тесте передаем WAV напрямую
 	})
 
 	dummyWAV := []byte("RIFF1234WAVEfmt ")
@@ -174,6 +180,12 @@ func TestTranscribeSuccess(t *testing.T) {
 	}
 	if receivedLanguage != "ru" {
 		t.Errorf("got language %q, want %q", receivedLanguage, "ru")
+	}
+	if receivedPrompt != "дебаг режим, код" {
+		t.Errorf("got prompt %q, want %q", receivedPrompt, "дебаг режим, код")
+	}
+	if receivedTemperature != "0.00" {
+		t.Errorf("got temperature %q, want %q", receivedTemperature, "0.00")
 	}
 	if receivedTranslate != "false" {
 		t.Errorf("got translate %q, want %q", receivedTranslate, "false")
@@ -290,18 +302,53 @@ func TestTranscribeEmptyURL(t *testing.T) {
 	}
 }
 
+func TestTranscribePromptOmittedWhenEmpty(t *testing.T) {
+	var promptFieldPresent bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(10 << 20)
+		if r.MultipartForm != nil {
+			if _, ok := r.MultipartForm.Value["prompt"]; ok {
+				promptFieldPresent = true
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"text": "Hello"})
+	}))
+	defer server.Close()
+
+	client := New(Config{
+		BaseURL:    server.URL,
+		Prompt:     "", // пустой промпт
+		ConvertWAV: false,
+	})
+
+	_, err := client.Transcribe(context.Background(), strings.NewReader("RIFF1234WAVEfmt "), "test.wav")
+	if err != nil {
+		t.Fatalf("Transcribe failed: %v", err)
+	}
+
+	if promptFieldPresent {
+		t.Errorf("expected prompt field to be omitted when empty")
+	}
+}
+
 func TestFFmpegAudioConversion(t *testing.T) {
 	if !HasFFmpeg() {
 		t.Skip("ffmpeg not installed, skipping conversion test")
 	}
 
-	// Создаем минимальный валидный аудиопоток или проверяем вызов ffmpeg
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Пустой ввод должен давать понятную ошибку от ffmpeg
-	_, err := ConvertToWAV16k(ctx, strings.NewReader(""))
+	// Пустой ввод должен давать понятную ошибку от ffmpeg (с loudnorm=false и loudnorm=true)
+	_, err := ConvertToWAV16k(ctx, strings.NewReader(""), false)
 	if err == nil {
 		t.Fatal("expected error on empty input, got nil")
+	}
+
+	_, err = ConvertToWAV16k(ctx, strings.NewReader(""), true)
+	if err == nil {
+		t.Fatal("expected error on empty input with loudnorm, got nil")
 	}
 }

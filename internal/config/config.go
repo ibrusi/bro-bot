@@ -30,11 +30,14 @@ var (
 	ScriptsDir  string
 
 	// Whisper (распознавание голосовых сообщений)
-	WhisperServerURL string
-	WhisperAPIKey    string
-	WhisperModel     string
-	WhisperLanguage  string
-	WhisperTimeout   time.Duration
+	WhisperServerURL   string
+	WhisperAPIKey      string
+	WhisperModel       string
+	WhisperLanguage    string
+	WhisperPrompt      string
+	WhisperTemperature float64
+	WhisperLoudnorm    bool
+	WhisperTimeout     time.Duration
 
 	// Debug включает режим отладки (расширенные метрики в чат).
 	Debug bool

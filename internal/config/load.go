@@ -27,25 +27,42 @@ const (
 	envBotDir          = "BOT_DIR"
 	envServiceName     = "BOT_SERVICE_NAME"
 	envDBPath          = "SQLITE_DB_PATH"
-	envScriptsDir      = "SCRIPTS_DIR"
-	envWhisperServerURL = "WHISPER_SERVER_URL"
-	envWhisperAPIKey    = "WHISPER_API_KEY"
-	envWhisperModel     = "WHISPER_MODEL"
-	envWhisperLanguage  = "WHISPER_LANGUAGE"
-	envWhisperTimeout   = "WHISPER_TIMEOUT"
-	envDebug            = "DEBUG"
-	envDebugLower       = "debug"
+	envScriptsDir         = "SCRIPTS_DIR"
+	envWhisperServerURL   = "WHISPER_SERVER_URL"
+	envWhisperAPIKey      = "WHISPER_API_KEY"
+	envWhisperModel       = "WHISPER_MODEL"
+	envWhisperLanguage    = "WHISPER_LANGUAGE"
+	envWhisperPrompt      = "WHISPER_PROMPT"
+	envWhisperTemperature = "WHISPER_TEMPERATURE"
+	envWhisperLoudnorm    = "WHISPER_LOUDNORM"
+	envWhisperTimeout     = "WHISPER_TIMEOUT"
+	envDebug              = "DEBUG"
+	envDebugLower         = "debug"
 )
 
 // Значения по умолчанию для необязательных параметров.
 const (
-	defaultMessenger      = "telegram"
-	defaultStepTimeout    = 30 * time.Minute
-	defaultChatTimeout    = 5 * time.Minute
-	defaultWhisperTimeout  = 60 * time.Second
-	defaultWhisperModel    = "small"
-	defaultWhisperLanguage = "en"
+	defaultMessenger          = "telegram"
+	defaultStepTimeout        = 30 * time.Minute
+	defaultChatTimeout        = 5 * time.Minute
+	defaultWhisperTimeout      = 60 * time.Second
+	defaultWhisperModel        = "small"
+	defaultWhisperLanguage     = "en"
+	defaultWhisperPromptEN     = "debug mode, code, commit, pull request, git, bot, deploy, status, tasks, logs, review, build, release, terminal"
+	defaultWhisperPromptRU     = "дебаг режим, код, коммит, пулл реквест, git, бот, деплой, статус, таски, логи, фикс, ревью, билд, релиз, debug mode, PR"
+	defaultWhisperTemperature  = 0.0
+	defaultWhisperLoudnorm     = true
 )
+
+// defaultPromptForLanguage возвращает доменный словарь терминов по умолчанию в зависимости от языка.
+func defaultPromptForLanguage(lang string) string {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "ru":
+		return defaultWhisperPromptRU
+	default:
+		return defaultWhisperPromptEN
+	}
+}
 
 // Config — снимок настроек окружения, снятый один раз при старте процесса.
 //
@@ -67,11 +84,14 @@ type Config struct {
 	ScriptsDir      string
 
 	// Whisper (распознавание речи)
-	WhisperServerURL string
-	WhisperAPIKey    string
-	WhisperModel     string
-	WhisperLanguage  string
-	WhisperTimeout   time.Duration
+	WhisperServerURL   string
+	WhisperAPIKey      string
+	WhisperModel       string
+	WhisperLanguage    string
+	WhisperPrompt      string
+	WhisperTemperature float64
+	WhisperLoudnorm    bool
+	WhisperTimeout     time.Duration
 
 	// Debug режим
 	Debug bool
@@ -172,6 +192,31 @@ func Load() (Config, error) {
 	}
 	cfg.WhisperTimeout = durationOrDefault(envWhisperTimeout, defaultWhisperTimeout)
 
+	cfg.WhisperPrompt = envTrim(envWhisperPrompt)
+	if cfg.WhisperPrompt == "" {
+		cfg.WhisperPrompt = defaultPromptForLanguage(cfg.WhisperLanguage)
+	} else if strings.ToLower(cfg.WhisperPrompt) == "none" || strings.ToLower(cfg.WhisperPrompt) == "off" || strings.ToLower(cfg.WhisperPrompt) == "false" {
+		cfg.WhisperPrompt = ""
+	}
+
+	if rawTemp := envTrim(envWhisperTemperature); rawTemp != "" {
+		temp, err := strconv.ParseFloat(rawTemp, 64)
+		if err != nil || temp < 0 {
+			logf("Предупреждение: некорректный формат %s (%q), используется значение по умолчанию %v", envWhisperTemperature, rawTemp, defaultWhisperTemperature)
+			cfg.WhisperTemperature = defaultWhisperTemperature
+		} else {
+			cfg.WhisperTemperature = temp
+		}
+	} else {
+		cfg.WhisperTemperature = defaultWhisperTemperature
+	}
+
+	if rawLoudnorm := envTrim(envWhisperLoudnorm); rawLoudnorm != "" {
+		cfg.WhisperLoudnorm = parseBool(rawLoudnorm)
+	} else {
+		cfg.WhisperLoudnorm = defaultWhisperLoudnorm
+	}
+
 	rawDebug := envTrim(envDebug)
 	if rawDebug == "" {
 		rawDebug = envTrim(envDebugLower)
@@ -202,6 +247,9 @@ func Apply(c Config) {
 	WhisperAPIKey = c.WhisperAPIKey
 	WhisperModel = c.WhisperModel
 	WhisperLanguage = c.WhisperLanguage
+	WhisperPrompt = c.WhisperPrompt
+	WhisperTemperature = c.WhisperTemperature
+	WhisperLoudnorm = c.WhisperLoudnorm
 	WhisperTimeout = c.WhisperTimeout
 	Debug = c.Debug
 }

@@ -34,7 +34,8 @@ func setEnv(t *testing.T, env map[string]string) {
 		envMessenger, envAdminID, envProjectsRoot, envDefaultProject, envDefaultModel,
 		envQuestionTimeout, envStepTimeout, envChatTimeout, envBotDir, envServiceName,
 		envDBPath, envScriptsDir,
-		envWhisperServerURL, envWhisperAPIKey, envWhisperModel, envWhisperLanguage, envWhisperTimeout,
+		envWhisperServerURL, envWhisperAPIKey, envWhisperModel, envWhisperLanguage,
+		envWhisperPrompt, envWhisperTemperature, envWhisperLoudnorm, envWhisperTimeout,
 		envDebug, envDebugLower,
 	}
 	for _, name := range all {
@@ -247,6 +248,92 @@ func TestLoadDebugFlag(t *testing.T) {
 	}
 }
 
+func TestLoadWhisperOptions(t *testing.T) {
+	botDir := t.TempDir()
+
+	// 1a. По умолчанию (язык en)
+	setEnv(t, validEnv(botDir))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.WhisperPrompt != defaultWhisperPromptEN {
+		t.Errorf("expected default English WhisperPrompt %q, got %q", defaultWhisperPromptEN, cfg.WhisperPrompt)
+	}
+	if cfg.WhisperTemperature != defaultWhisperTemperature {
+		t.Errorf("expected default WhisperTemperature %v, got %v", defaultWhisperTemperature, cfg.WhisperTemperature)
+	}
+	if cfg.WhisperLoudnorm != defaultWhisperLoudnorm {
+		t.Errorf("expected default WhisperLoudnorm %v, got %v", defaultWhisperLoudnorm, cfg.WhisperLoudnorm)
+	}
+
+	// 1b. По умолчанию для русского языка (WHISPER_LANGUAGE=ru)
+	envRU := validEnv(botDir)
+	envRU[envWhisperLanguage] = "ru"
+	setEnv(t, envRU)
+	cfgRU, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfgRU.WhisperPrompt != defaultWhisperPromptRU {
+		t.Errorf("expected default Russian WhisperPrompt %q, got %q", defaultWhisperPromptRU, cfgRU.WhisperPrompt)
+	}
+
+	// 2. Явные пользовательские значения
+	envCustom := validEnv(botDir)
+	envCustom[envWhisperPrompt] = "дебаг, код, тестирование"
+	envCustom[envWhisperTemperature] = "0.2"
+	envCustom[envWhisperLoudnorm] = "false"
+	setEnv(t, envCustom)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.WhisperPrompt != "дебаг, код, тестирование" {
+		t.Errorf("expected WhisperPrompt 'дебаг, код, тестирование', got %q", cfg.WhisperPrompt)
+	}
+	if cfg.WhisperTemperature != 0.2 {
+		t.Errorf("expected WhisperTemperature 0.2, got %v", cfg.WhisperTemperature)
+	}
+	if cfg.WhisperLoudnorm {
+		t.Errorf("expected WhisperLoudnorm false, got true")
+	}
+
+	// 3. Отключение промпта (none / off / false)
+	envDisabledPrompt := validEnv(botDir)
+	envDisabledPrompt[envWhisperPrompt] = "none"
+	setEnv(t, envDisabledPrompt)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.WhisperPrompt != "" {
+		t.Errorf("expected empty WhisperPrompt for 'none', got %q", cfg.WhisperPrompt)
+	}
+
+	// 4. Некорректная температура (откат к значению по умолчанию с предупреждением)
+	var warnings []string
+	prev := logf
+	logf = func(format string, args ...any) {
+		warnings = append(warnings, format)
+	}
+	defer func() { logf = prev }()
+
+	envBadTemp := validEnv(botDir)
+	envBadTemp[envWhisperTemperature] = "invalid_temp"
+	setEnv(t, envBadTemp)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.WhisperTemperature != defaultWhisperTemperature {
+		t.Errorf("expected default WhisperTemperature on invalid input, got %v", cfg.WhisperTemperature)
+	}
+	if len(warnings) == 0 {
+		t.Errorf("expected warning for bad temperature, got none")
+	}
+}
+
 // TestLoadWarnsAboutBrokenOptionalTimeout — опечатка в необязательном таймауте не должна
 // ронять бота, но и молчать о ней нельзя: иначе бот тихо работает не с тем значением.
 func TestLoadWarnsAboutBrokenOptionalTimeout(t *testing.T) {
@@ -385,10 +472,13 @@ func TestApplyPublishesEveryField(t *testing.T) {
 		ScriptsDir:       "/bot/scripts",
 		WhisperServerURL: "http://127.0.0.1:8080",
 		WhisperAPIKey:    "secret",
-		WhisperModel:     "small",
-		WhisperLanguage:  "ru",
-		WhisperTimeout:   44 * time.Second,
-		Debug:            true,
+		WhisperModel:       "small",
+		WhisperLanguage:    "ru",
+		WhisperPrompt:      "дебаг, код",
+		WhisperTemperature: 0.2,
+		WhisperLoudnorm:    true,
+		WhisperTimeout:     44 * time.Second,
+		Debug:              true,
 	}
 
 	Apply(cfg)
@@ -397,23 +487,26 @@ func TestApplyPublishesEveryField(t *testing.T) {
 	// Messenger живёт только в снимке: адаптер мессенджера выбирают один раз в
 	// корне композиции, глобальная переменная для этого не нужна.
 	published := map[string]any{
-		"AdminID":          AdminID,
-		"ProjectsRoot":     ProjectsRoot,
-		"DefaultProject":   DefaultProject,
-		"DefaultModel":     DefaultModel,
-		"QuestionTimeout":  QuestionTimeout,
-		"StepTimeout":      StepTimeout,
-		"ChatTimeout":      ChatTimeout,
-		"BotDir":           BotDir,
-		"ServiceName":      ServiceName,
-		"DBPath":           DBPath,
-		"ScriptsDir":       ScriptsDir,
-		"WhisperServerURL": WhisperServerURL,
-		"WhisperAPIKey":    WhisperAPIKey,
-		"WhisperModel":     WhisperModel,
-		"WhisperLanguage":  WhisperLanguage,
-		"WhisperTimeout":   WhisperTimeout,
-		"Debug":            Debug,
+		"AdminID":            AdminID,
+		"ProjectsRoot":       ProjectsRoot,
+		"DefaultProject":     DefaultProject,
+		"DefaultModel":       DefaultModel,
+		"QuestionTimeout":    QuestionTimeout,
+		"StepTimeout":        StepTimeout,
+		"ChatTimeout":        ChatTimeout,
+		"BotDir":             BotDir,
+		"ServiceName":        ServiceName,
+		"DBPath":             DBPath,
+		"ScriptsDir":         ScriptsDir,
+		"WhisperServerURL":   WhisperServerURL,
+		"WhisperAPIKey":      WhisperAPIKey,
+		"WhisperModel":       WhisperModel,
+		"WhisperLanguage":    WhisperLanguage,
+		"WhisperPrompt":      WhisperPrompt,
+		"WhisperTemperature": WhisperTemperature,
+		"WhisperLoudnorm":    WhisperLoudnorm,
+		"WhisperTimeout":     WhisperTimeout,
+		"Debug":              Debug,
 	}
 
 	v := reflect.ValueOf(cfg)
