@@ -72,6 +72,10 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - `/tokens` (or `/stats`) — granular token statistics for the current/completed task: Input, Output, Thinking, Cache Read, and Cache Hit Rate.
   - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
   - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, and active `agy`/`claude` processes.
+- **Execution Modes: CLI & API (`/mode [cli|api]`)**:
+  - `cli`: spawns local `agy` and `claude` CLI tools via PTY.
+  - `api`: connects directly to provider APIs (Google Gemini API & Anthropic Messages API) with built-in workspace file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`).
+  - Safe sandboxing: chat mode (`/chat`) provides strictly read-only file access, while file writes and command executions are enabled for pipeline tasks. All paths are validated within the project directory.
 - **Multilingual Interface**:
   - Every bot reply, button, command description and agent prompt comes from a message catalog — English and Russian ship out of the box.
   - English is the default until a language is picked; the choice is made with `/language` and survives restarts.
@@ -369,6 +373,7 @@ so the conversation continues. Reset it with `/chat new`.
 | `/models` | List all available models from the agent CLI with descriptions and aliases. | `/models` |
 | `/model [name]` | Switch active model for future tasks. | `/model flash` or `/model claude-sonnet-4-6` |
 | `/agent [name]` | Switch the active agent engine (`agy` or `claude`). | `/agent claude` |
+| `/mode [cli|api]` | Switch agent execution mode (local CLI or direct API with workspace file tools). | `/mode api` |
 | `/usage` (or `/limits`) | Check remaining free quotas and paid credit balances for Antigravity. | `/usage` |
 | `/tokens` (or `/stats`) | Token usage stats for the task: Input, Output, Thinking, Cache Read, and Hit Rate. | `/tokens` |
 | `/context [id]` | Visual breakdown of model context window utilization. | `/context` |

@@ -656,3 +656,47 @@ func TestFormatToolAction_ClaudeTools(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatToolAction_APIModeTools(t *testing.T) {
+	tests := []struct {
+		name     string
+		info     *StreamToolInfo
+		expected string
+	}{
+		{
+			name:     "read_file",
+			info:     &StreamToolInfo{Name: "read_file", Parameters: map[string]interface{}{"path": "internal/handlers/chat.go"}},
+			expected: "👁 view: chat.go",
+		},
+		{
+			name:     "write_file",
+			info:     &StreamToolInfo{Name: "write_file", Parameters: map[string]interface{}{"path": "cmd/bot/main.go"}},
+			expected: "📝 write: main.go",
+		},
+		{
+			name:     "edit_file",
+			info:     &StreamToolInfo{Name: "edit_file", Parameters: map[string]interface{}{"path": "README.md"}},
+			expected: "✏️ edit: README.md",
+		},
+		{
+			name:     "list_dir",
+			info:     &StreamToolInfo{Name: "list_dir", Parameters: map[string]interface{}{"path": "internal/tools"}},
+			expected: "📁 list: internal/tools",
+		},
+		{
+			name:     "run_command",
+			info:     &StreamToolInfo{Name: "run_command", Parameters: map[string]interface{}{"command": "go test ./..."}},
+			expected: "⚡ go test ./...",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FormatToolAction(tc.name, tc.info)
+			if got != tc.expected {
+				t.Errorf("FormatToolAction(%s) = %q, expected %q", tc.name, got, tc.expected)
+			}
+		})
+	}
+}
+

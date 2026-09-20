@@ -276,6 +276,7 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 		Prompt:         buildChatPrompt(session, agent, mode, userText, lang),
 		WorkDir:        workDir,
 		History:        chatHistoryForAgent(session, mode),
+		ReadOnly:       true,
 	}
 	if strings.EqualFold(mode, "api") {
 		args.SystemPrompt = chatSystemPreamble(lang)
