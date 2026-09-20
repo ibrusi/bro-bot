@@ -218,7 +218,7 @@ sudo make install LANG=ru
 ```
 
 The `make install` command performs the following sequence:
-1. **`step1-user`**: Installs essential system dependencies (`git`, `curl`, `wget`, `build-essential`, `sudo`, `python3`, `python3-pip`), creates the `deploy` system user with passwordless `sudo`, and initializes workspace directories (`~/.local/bin`, `~/projects`).
+1. **`step1-user`**: Installs essential system dependencies (`git`, `curl`, `wget`, `build-essential`, `sudo`, `python3`, `python3-pip`, `ffmpeg`), creates the `deploy` system user with passwordless `sudo`, and initializes workspace directories (`~/.local/bin`, `~/projects`).
 2. **`step2-agents`** (or **`step2-agy`**): Checks and restores `agy`, installs Claude Code CLI, and configures the `bro_bot` MCP server for both agents.
 3. **`step3-service`**: Generates systemd unit `/etc/systemd/system/bro-bot.service` with automatic restart and `.env` support, then registers and enables the service.
 4. **`step4-clone-build`**: Checks for Go 1.23+ (downloads and installs it if missing), clones or updates the repository at `/home/deploy/bro-bot`, prepares `.env` from `.env.example`, and compiles the `bot` binary.
@@ -231,6 +231,8 @@ sudo systemctl restart bro-bot.service
 
 #### Useful Makefile Targets for Development:
 - `make help` — displays help for all available targets (`make help LANG=ru` for Russian);
+- `sudo make install-ffmpeg` — installs `ffmpeg` (required for voice message conversion);
+- `sudo make install-whisper` — builds `whisper-server`, downloads model, and registers systemd service;
 - `make build` — compiles the Go binary `./bot` (`go build -o bot ./cmd/bot`);
 - `make test` — runs all project tests (`go test ./...`);
 - `make run` — runs the bot directly from source (`go run ./cmd/bot`);
