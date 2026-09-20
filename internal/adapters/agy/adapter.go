@@ -20,6 +20,10 @@ func NewAgyAdapter() *AgyAdapter {
 	return &AgyAdapter{}
 }
 
+func (a *AgyAdapter) ExecutionMode() string {
+	return "cli"
+}
+
 func buildAgyArgs(convID, modelName, prompt string) []string {
 	args := []string{
 		"--dangerously-skip-permissions",
@@ -55,8 +59,9 @@ func (a *AgyAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (p
 	}
 
 	return &AgyProcess{
-		cmd:  cmd,
-		ptmx: ptmx,
+		cmd:    cmd,
+		ptmx:   ptmx,
+		stdout: cliproc.NewPTYReader(ptmx),
 	}, nil
 }
 
@@ -86,12 +91,19 @@ func (a *AgyAdapter) GetCredits(ctx context.Context) ([]byte, error) {
 
 // AgyProcess реализует интерфейс AgentProcess для PTY-ориентированного процесса agy
 type AgyProcess struct {
-	cmd  *exec.Cmd
-	ptmx *os.File
+	cmd    *exec.Cmd
+	ptmx   *os.File
+	stdout io.Reader
 }
 
 func (p *AgyProcess) Stdout() io.Reader {
-	return p.ptmx
+	if p.stdout != nil {
+		return p.stdout
+	}
+	if p.ptmx != nil {
+		return cliproc.NewPTYReader(p.ptmx)
+	}
+	return nil
 }
 
 func (p *AgyProcess) Stdin() io.WriteCloser {

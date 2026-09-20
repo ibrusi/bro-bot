@@ -39,6 +39,10 @@ func (a *AgyAPIAdapter) AgentName() string {
 	return "agy-api"
 }
 
+func (a *AgyAPIAdapter) ExecutionMode() string {
+	return "api"
+}
+
 func (a *AgyAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
 	apiKey := agents.FirstEnv(apiKeyEnv...)
 	if apiKey == "" {

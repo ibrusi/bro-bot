@@ -232,6 +232,16 @@ func TestAgentFrameworkForRespectsExecutionMode(t *testing.T) {
 	} else if _, ok := framework.(*agy.AgyAPIAdapter); !ok {
 		t.Errorf("agy/api: получили %T, ожидали API-адаптер", framework)
 	}
+
+	// Проверяем случай, когда активный агент уже собран для CLI, но режим переключили в API:
+	// agentFrameworkFor не должен слепо возвращать CLI-адаптер из-за совпадения имени.
+	SetActiveAgent(claude.NewClaudeAdapter(), "claude")
+	config.ProjectState.SetExecutionMode("api")
+	if framework, err := agentFrameworkFor("claude"); err != nil {
+		t.Fatalf("claude/api with active cli: %v", err)
+	} else if _, ok := framework.(*claude.ClaudeAPIAdapter); !ok {
+		t.Errorf("claude/api with active cli: получили %T, ожидали ClaudeAPIAdapter", framework)
+	}
 }
 
 // TestAgentFrameworkForRequiresAPIKey — без ключа api-режим сообщает об этом понятной ошибкой.
