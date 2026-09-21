@@ -49,7 +49,7 @@ const (
 	defaultWhisperModel       = "base-q5_1"
 	defaultWhisperLanguage    = "en"
 	defaultWhisperTemperature = 0.0
-	defaultWhisperLoudnorm    = false
+	defaultWhisperLoudnorm    = true
 )
 
 // Config — снимок настроек окружения, снятый один раз при старте процесса.

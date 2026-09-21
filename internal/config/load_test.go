@@ -271,7 +271,7 @@ func TestLoadWhisperOptions(t *testing.T) {
 	envCustom := validEnv(botDir)
 	envCustom[envWhisperPrompt] = "дебаг, код, тестирование"
 	envCustom[envWhisperTemperature] = "0.2"
-	envCustom[envWhisperLoudnorm] = "true"
+	envCustom[envWhisperLoudnorm] = "false"
 	setEnv(t, envCustom)
 	cfg, err = Load()
 	if err != nil {
@@ -283,8 +283,8 @@ func TestLoadWhisperOptions(t *testing.T) {
 	if cfg.WhisperTemperature != 0.2 {
 		t.Errorf("expected WhisperTemperature 0.2, got %v", cfg.WhisperTemperature)
 	}
-	if !cfg.WhisperLoudnorm {
-		t.Errorf("expected WhisperLoudnorm true, got false")
+	if cfg.WhisperLoudnorm {
+		t.Errorf("expected WhisperLoudnorm false, got true")
 	}
 
 	// 3. Отключение промпта (none / off / false)

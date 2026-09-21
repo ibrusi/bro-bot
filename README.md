@@ -319,7 +319,7 @@ nano .env
 | `WHISPER_LANGUAGE` | No | `en` | Speech recognition language code (`en`, `ru`, `auto`, etc.). Defaults to `en`. To switch the language, for example to Russian, set `WHISPER_LANGUAGE=ru`. |
 | `WHISPER_PROMPT` | No | — (empty) | Initial prompt / vocabulary hint to guide Whisper context and reduce phonetic distortion of domain terms. Managed via `.env` (pre-filled in `.env.example`). Leave empty or set to `none` to disable. |
 | `WHISPER_TEMPERATURE` | No | `0.0` | Sampling temperature (`0.0` for deterministic greedy search, avoiding hallucinations). |
-| `WHISPER_LOUDNORM` | No | `false` | Audio loudness normalization via ffmpeg (`-af loudnorm`). Disabled by default for minimal inference latency. Set to `true` to enable. |
+| `WHISPER_LOUDNORM` | No | `true` | Audio loudness normalization via ffmpeg (`-af loudnorm`) to enhance quiet voices and whispering. Set to `false` to disable. |
 | `WHISPER_TIMEOUT` | No | `60s` | Timeout for the speech transcription HTTP request. Formats: `60s`, `2m`, or seconds. |
 | `DEBUG` | No | `false` (empty) | Debug mode. When set to `true` or `1`, Telegram quote messages display performance metrics (STT Latency, Audio Duration, RTF). |
 
@@ -342,7 +342,7 @@ WHISPER_MODEL=base-q5_1
 WHISPER_LANGUAGE=en
 WHISPER_PROMPT="debug mode, code, commit, pull request, git, bot, deploy, status, tasks, logs, review, build, release, terminal"
 WHISPER_TEMPERATURE=0.0
-WHISPER_LOUDNORM=false
+WHISPER_LOUDNORM=true
 DEBUG=
 ```
 
