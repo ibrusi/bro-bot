@@ -123,6 +123,9 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 				view.InitialPrompt, existingPlan, feedback, pendingSection)
 		}
 
+		// autoContinues — сколько раз подряд шаг планирования продолжен автоматически
+		// после выхода агента с прерванными фоновыми задачами.
+		autoContinues := 0
 		for {
 			var (
 				cancelled   bool
@@ -158,6 +161,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 					return
 				}
 				planningPrompt = answer
+				autoContinues = 0
 				continue
 			}
 
@@ -169,6 +173,22 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			if res.Outcome == StepOutcomeError {
 				handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, res.Error, lang)
 				return
+			}
+
+			if res.Outcome == StepOutcomeIncomplete {
+				prompt, ok := continueIncompleteStep(m, chat, task, &autoContinues, true, lang)
+				if !ok {
+					handleTaskStepIncomplete(m, chat, task, projectName, projectsRoot, taskID, true, lang)
+					return
+				}
+				// Оборванный ход не содержит готового плана: агент выведет его заново целиком,
+				// а обрывки прошлого хода не должны склеиться с ним в план на утверждение.
+				task.Update(func(t *domain.TaskSession) {
+					t.ResetOutputLocked()
+				})
+				planningPrompt = prompt
+				domain.GlobalTokenTracker.StartNextStep(activeModel)
+				continue
 			}
 
 			break
@@ -201,6 +221,10 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		currentPrompt = view3.CurrentPrompt
 	}
 
+	// autoContinues — сколько раз подряд шаг выполнения продолжен автоматически после
+	// выхода агента с прерванными фоновыми задачами. Ответ пользователя и взятые
+	// в работу дополнения начинают новый отсчёт: это уже новый контекст.
+	autoContinues := 0
 	for {
 		var (
 			cancelled   bool
@@ -235,6 +259,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 				return
 			}
 			currentPrompt = answer
+			autoContinues = 0
 			continue
 		}
 
@@ -246,6 +271,19 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		if res.Outcome == StepOutcomeError {
 			handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, res.Error, lang)
 			return
+		}
+
+		// Агент вышел, прервав свои фоновые задачи (обычно долгие тесты): работа не
+		// доведена до коммита и PR, поэтому «завершена» здесь ставить нельзя.
+		if res.Outcome == StepOutcomeIncomplete {
+			prompt, ok := continueIncompleteStep(m, chat, task, &autoContinues, false, lang)
+			if !ok {
+				handleTaskStepIncomplete(m, chat, task, projectName, projectsRoot, taskID, false, lang)
+				return
+			}
+			currentPrompt = prompt
+			domain.GlobalTokenTracker.StartNextStep(activeModel)
+			continue
 		}
 
 		// Раньше этот блок держал лок задачи от проверки очереди дополнений до конца
@@ -365,6 +403,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		bldr.WriteString(i18n.T(lang, "pipeline.followup_prompt_footer"))
 
 		currentPrompt = bldr.String()
+		autoContinues = 0
 		task.Update(func(t *domain.TaskSession) {
 			t.CurrentPrompt = strings.Join(followups, "; ")
 			t.StartedAt = time.Now()
@@ -454,37 +493,73 @@ func isAgyPrintTimeoutLine(rawLine string) bool {
 		strings.HasPrefix(trimmed, "Print mode: print timeout after")
 }
 
+// agyBackgroundTerminatedRegex — системная строка agy о том, что print-режим завершился,
+// прервав фоновые задачи агента (например, долгий `make test`). Перед ней agy пишет
+// "root agent idle; waiting up to 5s for N background task(s)" и ждёт всего несколько секунд.
+var agyBackgroundTerminatedRegex = regexp.MustCompile(`^terminating \d+ background task\(s\) on exit`)
+
+// isAgyBackgroundTerminatedLine проверяет, что agy прервал фоновые задачи агента при выходе.
+// JSON-события стрима исключаются по той же причине, что и в isAgyPrintTimeoutLine:
+// фраза может встретиться в просматриваемом коде, дифах или ответах модели.
+func isAgyBackgroundTerminatedLine(rawLine string) bool {
+	trimmed := strings.TrimSpace(rawLine)
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		return false
+	}
+	return agyBackgroundTerminatedRegex.MatchString(trimmed)
+}
+
+// stepCompletion — наблюдения за завершившимся шагом, по которым определяется его исход.
+type stepCompletion struct {
+	IsPlanning bool
+	// AskQuestionCalled — агент явно вызвал инструмент ask_question.
+	AskQuestionCalled      bool
+	PendingQuestionText    string
+	PendingQuestionOptions []string
+	PRURL                  string
+	FinalResponse          string
+	// BackgroundTerminated — процесс агента вышел, прервав свои фоновые задачи:
+	// ход закончился раньше, чем работа, которую агент ждал.
+	BackgroundTerminated bool
+}
+
 // evaluateStepCompletion determines the outcome and question state of a completed task step.
-func evaluateStepCompletion(
-	isPlanning bool,
-	hasAskQuestionToolCall bool,
-	pendingQuestionText string,
-	pendingQuestionOptions []string,
-	lastPR string,
-	fullResp string,
-) (outcome StepOutcome, isQuestion bool, questionText string, questionOptions []string) {
-	// 1. В режиме составления плана (isPlanning):
+func evaluateStepCompletion(c stepCompletion) (outcome StepOutcome, isQuestion bool, questionText string, questionOptions []string) {
+	explicitQuestion := c.AskQuestionCalled && c.PendingQuestionText != ""
+
+	// 1. В режиме составления плана (IsPlanning):
 	// Весь сгенерированный агентом текст является планом реализации.
 	// Обычный текст со знаками '?' НИКОГДА не перехватывается как вопрос.
 	// Исключение: только если агент явно вызвал инструмент ask_question.
-	if isPlanning {
-		if hasAskQuestionToolCall && pendingQuestionText != "" {
-			return StepOutcomeWaitingInput, true, pendingQuestionText, pendingQuestionOptions
+	if c.IsPlanning {
+		if explicitQuestion {
+			return StepOutcomeWaitingInput, true, c.PendingQuestionText, c.PendingQuestionOptions
+		}
+		if c.BackgroundTerminated {
+			return StepOutcomeIncomplete, false, "", nil
 		}
 		return StepOutcomeSuccess, false, "", nil
 	}
 
 	// 2. В режиме выполнения (Execution phase):
 	// Если создан PR — задача успешно выполнена, вопросов нет!
-	if lastPR != "" {
+	if c.PRURL != "" {
 		return StepOutcomeSuccess, false, "", nil
 	}
 
-	// Если PR нет, проверяем, был ли задан вопрос (инструментом ask_question или в завершении ответа)
-	if hasAskQuestionToolCall && pendingQuestionText != "" {
-		return StepOutcomeWaitingInput, true, pendingQuestionText, pendingQuestionOptions
-	} else if utils.IsFinalResponseAQuestion(fullResp) {
-		return StepOutcomeWaitingInput, true, utils.ExtractQuestionFromResponse(fullResp), nil
+	// Явный вопрос через ask_question адресован человеку — его нельзя подменять автопродолжением.
+	if explicitQuestion {
+		return StepOutcomeWaitingInput, true, c.PendingQuestionText, c.PendingQuestionOptions
+	}
+
+	// Прерванные фоновые задачи — детерминированный сигнал CLI, он важнее эвристики
+	// по тексту: «Запустил тесты, дождёмся?» не должно превращаться в вопрос пользователю.
+	if c.BackgroundTerminated {
+		return StepOutcomeIncomplete, false, "", nil
+	}
+
+	if utils.IsFinalResponseAQuestion(c.FinalResponse) {
+		return StepOutcomeWaitingInput, true, utils.ExtractQuestionFromResponse(c.FinalResponse), nil
 	}
 
 	return StepOutcomeSuccess, false, "", nil
@@ -657,6 +732,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}()
 
 	var stepTimedOut bool
+	var backgroundTerminated bool
 	var hasResult bool
 	var resultStatus string
 	var resultError string
@@ -753,6 +829,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 			if isAgyPrintTimeoutLine(cleanLine) {
 				stepTimedOut = true
 			}
+			if isAgyBackgroundTerminatedLine(cleanLine) {
+				backgroundTerminated = true
+			}
 
 			// Fallback для текстового вывода или не-JSON строк
 			task.AppendLog(cleanLine)
@@ -810,14 +889,15 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}
 
 	// Оцениваем результат шага и детекцию вопросов
-	outcome, isQuestion, qText, qOpts := evaluateStepCompletion(
-		isPlanning,
-		hasAskQuestionToolCall,
-		pendingQuestionText,
-		pendingQuestionOptions,
-		lastPR,
-		fullResp,
-	)
+	outcome, isQuestion, qText, qOpts := evaluateStepCompletion(stepCompletion{
+		IsPlanning:             isPlanning,
+		AskQuestionCalled:      hasAskQuestionToolCall,
+		PendingQuestionText:    pendingQuestionText,
+		PendingQuestionOptions: pendingQuestionOptions,
+		PRURL:                  lastPR,
+		FinalResponse:          fullResp,
+		BackgroundTerminated:   backgroundTerminated,
+	})
 
 	if isQuestion {
 		task.Update(func(t *domain.TaskSession) {
@@ -856,19 +936,80 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}
 }
 
-func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, isPlanning bool, lang string) {
-	var convID string
-	var tAgent string
+// continueIncompleteStep решает, продолжать ли автоматически шаг, оборванный выходом агента
+// с прерванными фоновыми задачами. Возвращает промпт продолжения той же сессии и true,
+// пока подряд идущих автопродолжений меньше config.AutoContinueMax.
+func continueIncompleteStep(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, attempt *int, isPlanning bool, lang string) (string, bool) {
+	limit := config.AutoContinueMax
+	if *attempt >= limit {
+		return "", false
+	}
+	*attempt++
+
+	taskID := task.Snapshot().ID
+	task.AppendLog(i18n.Tf(lang, "pipeline.auto_continue_log", *attempt, limit))
+	if m != nil && chat != "" {
+		ref, _ := m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.auto_continue_notice", taskID, *attempt, limit), ports.Rich())
+		if ref.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(ref, taskID)
+		}
+	}
+
+	promptKey := "pipeline.auto_continue_prompt"
+	if isPlanning {
+		promptKey = "pipeline.auto_continue_plan_prompt"
+	}
+	return i18n.T(lang, promptKey), true
+}
+
+// pauseTaskForResume переводит задачу в паузу с сохранённой сессией агента и возвращает
+// её идентификатор и имя агента — для сообщения о том, как продолжить.
+func pauseTaskForResume(task *domain.TaskSession) (convID, agent string) {
 	task.Update(func(t *domain.TaskSession) {
 		t.Status = domain.TaskStatusPaused
 		convID = t.ConversationID
-		tAgent = t.Agent
-		if tAgent == "" {
-			tAgent = "agy"
+		agent = t.Agent
+		if agent == "" {
+			agent = "agy"
 		}
 	})
-
 	syncLegacySession(task)
+	return convID, agent
+}
+
+// sendResumeNotice отправляет сообщение о паузе задачи с кнопками «Продолжить» и «Отменить».
+func sendResumeNotice(m ports.Messenger, chat ports.ChatID, taskID int, text, lang string) {
+	if m == nil || chat == "" {
+		return
+	}
+	defer func() { _ = recover() }()
+	ref, _ := m.Send(context.Background(), chat, text, ports.RichWith(buildResumeMarkup(taskID, lang)))
+	if ref.ID != "" {
+		domain.GlobalTaskManager.RegisterMessageTask(ref, taskID)
+	}
+}
+
+// handleTaskStepIncomplete ставит на паузу задачу, шаг которой агент раз за разом обрывал,
+// не дождавшись своих фоновых задач: завершённой её считать нельзя, а сессия и изменения
+// сохранены, и пользователь продолжит её кнопкой или /resume.
+func handleTaskStepIncomplete(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, isPlanning bool, lang string) {
+	convID, _ := pauseTaskForResume(task)
+
+	phaseName := i18n.T(lang, "pipeline.phase_running")
+	if isPlanning {
+		phaseName = i18n.T(lang, "pipeline.phase_planning")
+	}
+	task.AppendLog(i18n.Tf(lang, "pipeline.incomplete_log", phaseName, convID))
+
+	sendResumeNotice(m, chat, taskID, i18n.Tf(lang, "pipeline.incomplete_message",
+		taskID, html.EscapeString(projectName), phaseName, i18n.T(lang, "btn.resume"), taskID,
+	), lang)
+
+	checkAndStartQueuedTask(m, projectName, projectsRoot)
+}
+
+func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, isPlanning bool, lang string) {
+	convID, tAgent := pauseTaskForResume(task)
 
 	stepTimeout := config.StepTimeout
 	if stepTimeout <= 0 {
@@ -882,19 +1023,10 @@ func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.Ta
 
 	task.AppendLog(i18n.Tf(lang, "pipeline.timeout_log", phaseName, stepTimeout, convID))
 
-	resumeMenu := buildResumeMarkup(taskID, lang)
-	timeoutMsg := i18n.Tf(lang, "pipeline.timeout_message",
+	sendResumeNotice(m, chat, taskID, i18n.Tf(lang, "pipeline.timeout_message",
 		taskID, html.EscapeString(projectName), phaseName, stepTimeout,
 		html.EscapeString(tAgent), html.EscapeString(convID), i18n.T(lang, "btn.resume"), taskID,
-	)
-
-	if m != nil && chat != "" {
-		defer func() { _ = recover() }()
-		tRef, _ := m.Send(context.Background(), chat, timeoutMsg, ports.RichWith(resumeMenu))
-		if tRef.ID != "" {
-			domain.GlobalTaskManager.RegisterMessageTask(tRef, taskID)
-		}
-	}
+	), lang)
 
 	checkAndStartQueuedTask(m, projectName, projectsRoot)
 }
@@ -1008,6 +1140,9 @@ const (
 	StepOutcomeTimeout
 	StepOutcomeCancelled
 	StepOutcomeError
+	// StepOutcomeIncomplete — процесс агента вышел, прервав свои фоновые задачи:
+	// работа не доведена до конца, хотя ошибки и таймаута не было.
+	StepOutcomeIncomplete
 )
 
 type StepResult struct {

@@ -309,6 +309,7 @@ nano .env
 | `CLAUDE_API_MODEL` | No | Auto-selected | Explicit Claude API model name for `api` mode (e.g. `claude-sonnet-5`). When unset, the model is picked from `/v1/models`: the junior family among the senior ones (sonnet) at its highest available version. Retired model ids are automatically replaced with a live model of the same family. |
 | `QUESTION_TIMEOUT` | **Yes** | — | Timeout waiting for user response to agent questions (`ask_question`). Formats: `15m`, `300s`, `1h`, or seconds. When elapsed, the task pauses. |
 | `STEP_TIMEOUT` | No | `30m` | Execution timeout for a single agent step (`--print-timeout`). Formats: `30m`, `1h`, `1800s`, or seconds. When exceeded, the task is paused while preserving the session. |
+| `AUTO_CONTINUE_MAX` | No | `2` | How many times in a row a step is continued automatically when the agent ends its turn without waiting for its own background commands (agy prints `terminating N background task(s) on exit`). The step continues in the same agent session. When the limit is reached, the task is paused with a «Resume» button instead of being reported as completed. `0` disables auto-continue. |
 | `CHAT_TIMEOUT` | No | `5m` | Timeout for a single answer in conversational mode (`/chat`). Formats: `5m`, `300s`, or seconds. |
 | `BOT_DIR` | No | Executable's directory | Path to the bot's source code for `/rebuild` and storing restart markers. When unset, the executable's directory is used — but only if a `go.mod` sits next to it. Otherwise the bot refuses to start and says so. |
 | `BOT_SERVICE_NAME` | **Yes** | — | Name of the systemd service unit for `/restart` and `/rebuild`. |
@@ -333,6 +334,7 @@ DEFAULT_PROJECT=bro-bot
 DEFAULT_MODEL=gemini-3.1-flash-high
 QUESTION_TIMEOUT=15m
 STEP_TIMEOUT=30m
+AUTO_CONTINUE_MAX=2
 CHAT_TIMEOUT=5m
 BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service

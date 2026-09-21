@@ -767,7 +767,7 @@ func TestEvaluateStepCompletion_PlanningImmunity(t *testing.T) {
    - Вариант 2: Postgres
 Что вы думаете по поводу этого плана? Подтвердите выбор.`
 
-	outcome, isQ, qText, qOpts := evaluateStepCompletion(true, false, "", nil, "", planWithQuestions)
+	outcome, isQ, qText, qOpts := evaluateStepCompletion(stepCompletion{IsPlanning: true, FinalResponse: planWithQuestions})
 	if outcome != StepOutcomeSuccess {
 		t.Errorf("expected StepOutcomeSuccess for plan with questions, got %v", outcome)
 	}
@@ -781,7 +781,9 @@ func TestEvaluateStepCompletion_PlanningImmunity(t *testing.T) {
 	// 2. Planning phase with explicit ask_question tool call should trigger waiting_input
 	toolQText := "Выберите базовую ветку для фичи"
 	toolOpts := []string{"main", "develop"}
-	outcome2, isQ2, qText2, qOpts2 := evaluateStepCompletion(true, true, toolQText, toolOpts, "", "thinking...")
+	outcome2, isQ2, qText2, qOpts2 := evaluateStepCompletion(stepCompletion{
+		IsPlanning: true, AskQuestionCalled: true, PendingQuestionText: toolQText, PendingQuestionOptions: toolOpts, FinalResponse: "thinking...",
+	})
 	if outcome2 != StepOutcomeWaitingInput {
 		t.Errorf("expected StepOutcomeWaitingInput for ask_question tool call during planning, got %v", outcome2)
 	}
@@ -801,7 +803,7 @@ func TestEvaluateStepCompletion_ExecutionWithPR(t *testing.T) {
 	respWithQuestion := "Задача выполнена, PR создан. Хотите внести дополнительные изменения?"
 	prURL := "https://github.com/org/repo/pull/123"
 
-	outcome, isQ, _, _ := evaluateStepCompletion(false, false, "", nil, prURL, respWithQuestion)
+	outcome, isQ, _, _ := evaluateStepCompletion(stepCompletion{PRURL: prURL, FinalResponse: respWithQuestion})
 	if outcome != StepOutcomeSuccess {
 		t.Errorf("expected StepOutcomeSuccess when PR URL is present, got %v", outcome)
 	}
@@ -814,7 +816,7 @@ func TestEvaluateStepCompletion_ExecutionQuestions(t *testing.T) {
 	// 1. Ask question tool call without PR
 	toolQ := "Какой порт использовать для сервиса?"
 	toolOpts := []string{"8080", "3000"}
-	outcome1, isQ1, qText1, qOpts1 := evaluateStepCompletion(false, true, toolQ, toolOpts, "", "")
+	outcome1, isQ1, qText1, qOpts1 := evaluateStepCompletion(stepCompletion{AskQuestionCalled: true, PendingQuestionText: toolQ, PendingQuestionOptions: toolOpts})
 	if outcome1 != StepOutcomeWaitingInput || !isQ1 || qText1 != toolQ || len(qOpts1) != 2 {
 		t.Errorf("expected StepOutcomeWaitingInput with tool question, got outcome=%v isQ=%v text=%q opts=%v",
 			outcome1, isQ1, qText1, qOpts1)
@@ -822,7 +824,7 @@ func TestEvaluateStepCompletion_ExecutionQuestions(t *testing.T) {
 
 	// 2. Final response ending with question without PR
 	questionResp := "Я реализовал логику валидации. Нужно ли также добавить интеграционные тесты?"
-	outcome2, isQ2, qText2, _ := evaluateStepCompletion(false, false, "", nil, "", questionResp)
+	outcome2, isQ2, qText2, _ := evaluateStepCompletion(stepCompletion{FinalResponse: questionResp})
 	if outcome2 != StepOutcomeWaitingInput || !isQ2 {
 		t.Errorf("expected StepOutcomeWaitingInput for final response question, got outcome=%v isQ=%v", outcome2, isQ2)
 	}
@@ -832,9 +834,77 @@ func TestEvaluateStepCompletion_ExecutionQuestions(t *testing.T) {
 
 	// 3. Normal completion without question without PR
 	normalResp := "Все изменения успешно внесены и скомпилированы. Код готов к ревью."
-	outcome3, isQ3, _, _ := evaluateStepCompletion(false, false, "", nil, "", normalResp)
+	outcome3, isQ3, _, _ := evaluateStepCompletion(stepCompletion{FinalResponse: normalResp})
 	if outcome3 != StepOutcomeSuccess || isQ3 {
 		t.Errorf("expected StepOutcomeSuccess for normal completion, got outcome=%v isQ=%v", outcome3, isQ3)
+	}
+}
+
+func TestEvaluateStepCompletion_BackgroundTerminated(t *testing.T) {
+	const toolQ = "Какую базу данных использовать?"
+	cases := []struct {
+		name string
+		in   stepCompletion
+		want StepOutcome
+	}{
+		{
+			name: "выполнение без PR — шаг не завершён",
+			in:   stepCompletion{BackgroundTerminated: true, FinalResponse: "Запустил тесты, ожидаю завершения."},
+			want: StepOutcomeIncomplete,
+		},
+		{
+			name: "выполнение с PR — готовый PR важнее",
+			in:   stepCompletion{BackgroundTerminated: true, PRURL: "https://github.com/org/repo/pull/1"},
+			want: StepOutcomeSuccess,
+		},
+		{
+			name: "выполнение: эвристический вопрос не перебивает сигнал CLI",
+			in:   stepCompletion{BackgroundTerminated: true, FinalResponse: "Тесты запущены в фоне. Дождёмся результата?"},
+			want: StepOutcomeIncomplete,
+		},
+		{
+			name: "выполнение: явный ask_question важнее",
+			in:   stepCompletion{BackgroundTerminated: true, AskQuestionCalled: true, PendingQuestionText: toolQ},
+			want: StepOutcomeWaitingInput,
+		},
+		{
+			name: "планирование — шаг не завершён",
+			in:   stepCompletion{IsPlanning: true, BackgroundTerminated: true, FinalResponse: "# План"},
+			want: StepOutcomeIncomplete,
+		},
+		{
+			name: "планирование: явный ask_question важнее",
+			in:   stepCompletion{IsPlanning: true, BackgroundTerminated: true, AskQuestionCalled: true, PendingQuestionText: toolQ},
+			want: StepOutcomeWaitingInput,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _, _, _ := evaluateStepCompletion(tc.in)
+			if got != tc.want {
+				t.Errorf("outcome = %v, ожидалось %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsAgyBackgroundTerminatedLine(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"terminating 1 background task(s) on exit", true},
+		{"  terminating 12 background task(s) on exit  ", true},
+		{"root agent idle; waiting up to 5s for 1 background task(s)", false},
+		{`{"type":"assistant","text":"terminating 1 background task(s) on exit"}`, false},
+		{"log: terminating 1 background task(s) on exit", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isAgyBackgroundTerminatedLine(tc.line); got != tc.want {
+			t.Errorf("isAgyBackgroundTerminatedLine(%q) = %v, ожидалось %v", tc.line, got, tc.want)
+		}
 	}
 }
 

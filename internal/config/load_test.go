@@ -32,7 +32,7 @@ func setEnv(t *testing.T, env map[string]string) {
 
 	all := []string{
 		envMessenger, envAdminID, envProjectsRoot, envDefaultProject, envDefaultModel,
-		envQuestionTimeout, envStepTimeout, envChatTimeout, envBotDir, envServiceName,
+		envQuestionTimeout, envStepTimeout, envChatTimeout, envAutoContinueMax, envBotDir, envServiceName,
 		envDBPath, envScriptsDir,
 		envWhisperServerURL, envWhisperAPIKey, envWhisperModel, envWhisperLanguage,
 		envWhisperPrompt, envWhisperTemperature, envWhisperLoudnorm, envWhisperTimeout,
@@ -154,6 +154,49 @@ func TestLoadParsesDurationFormats(t *testing.T) {
 	}
 }
 
+func TestLoadAutoContinueMax(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		want    int
+		warning bool
+	}{
+		{name: "не задан — значение по умолчанию", raw: "", want: defaultAutoContinueMax},
+		{name: "ноль отключает автопродолжение", raw: "0", want: 0},
+		{name: "положительное число", raw: " 5 ", want: 5},
+		{name: "отрицательное — значение по умолчанию", raw: "-1", want: defaultAutoContinueMax, warning: true},
+		{name: "мусор — значение по умолчанию", raw: "abc", want: defaultAutoContinueMax, warning: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := validEnv(t.TempDir())
+			env[envAutoContinueMax] = tc.raw
+			setEnv(t, env)
+
+			var warned bool
+			prevLogf := logf
+			logf = func(format string, args ...any) {
+				if strings.Contains(format, "%s") && len(args) > 0 && args[0] == envAutoContinueMax {
+					warned = true
+				}
+			}
+			t.Cleanup(func() { logf = prevLogf })
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.AutoContinueMax != tc.want {
+				t.Errorf("AutoContinueMax = %d, ожидалось %d", cfg.AutoContinueMax, tc.want)
+			}
+			if warned != tc.warning {
+				t.Errorf("предупреждение = %v, ожидалось %v", warned, tc.warning)
+			}
+		})
+	}
+}
+
 func TestLoadFillsDefaults(t *testing.T) {
 	botDir := t.TempDir()
 	setEnv(t, validEnv(botDir))
@@ -171,6 +214,9 @@ func TestLoadFillsDefaults(t *testing.T) {
 	}
 	if cfg.ChatTimeout != defaultChatTimeout {
 		t.Errorf("ChatTimeout = %v, ожидалось %v", cfg.ChatTimeout, defaultChatTimeout)
+	}
+	if cfg.AutoContinueMax != defaultAutoContinueMax {
+		t.Errorf("AutoContinueMax = %d, ожидалось %d", cfg.AutoContinueMax, defaultAutoContinueMax)
 	}
 	if want := filepath.Join(botDir, "data", "bot.db"); cfg.DBPath != want {
 		t.Errorf("DBPath = %q, ожидалось %q", cfg.DBPath, want)
@@ -456,6 +502,7 @@ func TestApplyPublishesEveryField(t *testing.T) {
 		QuestionTimeout: 11 * time.Minute,
 		StepTimeout:     22 * time.Minute,
 		ChatTimeout:     33 * time.Minute,
+		AutoContinueMax: 5,
 		BotDir:          "/bot",
 		ServiceName:     "bro-bot.service",
 		DBPath:           "/bot/data/bot.db",
@@ -484,6 +531,7 @@ func TestApplyPublishesEveryField(t *testing.T) {
 		"QuestionTimeout":    QuestionTimeout,
 		"StepTimeout":        StepTimeout,
 		"ChatTimeout":        ChatTimeout,
+		"AutoContinueMax":    AutoContinueMax,
 		"BotDir":             BotDir,
 		"ServiceName":        ServiceName,
 		"DBPath":             DBPath,
