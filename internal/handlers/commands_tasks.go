@@ -490,7 +490,8 @@ func onTaskAgentRestart(s ports.Session) error {
 		proj = t.Project
 		t.ConversationID = ""
 		t.Agent = ActiveAgentName()
-		if t.RequiresPlan && !t.PlanApproved {
+		if t.RequiresPlan {
+			t.PlanApproved = false
 			t.Status = domain.TaskStatusPlanning
 		} else {
 			t.Status = domain.TaskStatusRunning
@@ -722,36 +723,9 @@ func handleResume(s ports.Session) error {
 	return s.Send(i18n.Tf(lang, "task.resumed", targetID, html.EscapeString(proj)), ports.Rich())
 }
 
-// handleRetry — обработчик команды /retry.
-func handleRetry(s ports.Session) error {
+// handleRetryTaskByID выполняет сброс сессии и перезапуск задачи по её ID.
+func handleRetryTaskByID(s ports.Session, targetID int) error {
 	lang := uiLang()
-
-	args := s.Args()
-	var targetID int
-	if len(args) > 0 {
-		idStr := strings.TrimPrefix(args[0], "#")
-		targetID, _ = strconv.Atoi(idStr)
-	}
-	if targetID == 0 {
-		active := domain.GlobalTaskManager.GetActiveTask()
-		if active != nil {
-			targetID = active.Snapshot().ID
-		}
-	}
-	if targetID == 0 {
-		all := domain.GlobalTaskManager.ListTasks()
-		for i := len(all) - 1; i >= 0; i-- {
-			t := all[i]
-			st := t.Snapshot().Status
-			if st == domain.TaskStatusPaused || st == domain.TaskStatusFailed {
-				targetID = t.ID
-				break
-			}
-		}
-	}
-	if targetID == 0 {
-		return s.Send(i18n.T(lang, "task.usage_retry"), ports.Rich())
-	}
 
 	task := domain.GlobalTaskManager.GetTask(targetID)
 	if task == nil {
@@ -774,7 +748,8 @@ func handleRetry(s ports.Session) error {
 		t.ConversationID = ""
 		t.Agent = newAgent
 		t.Status = domain.TaskStatusRunning
-		if t.RequiresPlan && !t.PlanApproved {
+		if t.RequiresPlan {
+			t.PlanApproved = false
 			t.Status = domain.TaskStatusPlanning
 		}
 		t.CurrentPrompt = t.InitialPrompt
@@ -792,10 +767,61 @@ func handleRetry(s ports.Session) error {
 	domain.GlobalTaskManager.ClearTaskConversationID(targetID)
 	domain.GlobalTaskManager.SetTaskAgent(targetID, ActiveAgentName())
 	syncLegacySession(task)
+	domain.GlobalTaskManager.SaveTask(task)
 
 	workDir := filepath.Join(config.ProjectsRoot, proj)
 	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir, config.ProjectsRoot)
 	return s.Send(i18n.Tf(lang, "task.retried", targetID, html.EscapeString(ActiveAgentName()), html.EscapeString(proj)), ports.Rich())
+}
+
+// onTaskRetry — обработчик инлайн-кнопки task_retry.
+func onTaskRetry(s ports.Session) error {
+	lang := uiLang()
+
+	taskID, err := strconv.Atoi(s.Callback().Payload)
+	if err != nil {
+		return s.Respond(i18n.T(lang, "task.toast_bad_id"))
+	}
+	task := domain.GlobalTaskManager.GetTask(taskID)
+	if task == nil {
+		return s.Respond(i18n.T(lang, "task.toast_not_found"))
+	}
+	_ = s.Respond(i18n.Tf(lang, "task.toast_restarting_with", ActiveAgentName()))
+	return handleRetryTaskByID(s, taskID)
+}
+
+// handleRetry — обработчик команды /retry.
+func handleRetry(s ports.Session) error {
+	lang := uiLang()
+
+	args := s.Args()
+	var targetID int
+	if len(args) > 0 {
+		idStr := strings.TrimPrefix(args[0], "#")
+		targetID, _ = strconv.Atoi(idStr)
+	}
+	if targetID == 0 {
+		active := domain.GlobalTaskManager.GetActiveTask()
+		if active != nil {
+			targetID = active.Snapshot().ID
+		}
+	}
+	if targetID == 0 {
+		all := domain.GlobalTaskManager.ListTasks()
+		for i := len(all) - 1; i >= 0; i-- {
+			t := all[i]
+			st := t.Snapshot().Status
+			if st == domain.TaskStatusPaused || st == domain.TaskStatusFailed || st == domain.TaskStatusCompleted {
+				targetID = t.ID
+				break
+			}
+		}
+	}
+	if targetID == 0 {
+		return s.Send(i18n.T(lang, "task.usage_retry"), ports.Rich())
+	}
+
+	return handleRetryTaskByID(s, targetID)
 }
 
 func handleCreateNewTask(s ports.Session, text string) error {

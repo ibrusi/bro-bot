@@ -306,7 +306,7 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 		projectName = t.Project
 		modelName = t.Model
 		initialPrompt = t.InitialPrompt
-		t.CurrentPrompt = buildImplementationPrompt(t.InitialPrompt, t.Plan, variantInstruction, lang)
+		t.CurrentPrompt = buildImplementationPrompt(t.InitialPrompt, utils.SanitizePlanText(t.Plan), variantInstruction, lang)
 	})
 
 	if wrongStatus {
@@ -392,7 +392,10 @@ func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.Task
 	taskID := view4.ID
 	projectName := view4.Project
 	initialPrompt := view4.InitialPrompt
-	planText := strings.TrimSpace(view4.Plan)
+	planText := strings.TrimSpace(utils.SanitizePlanText(view4.Plan))
+	if planText == "" {
+		planText = i18n.T(lang, "plan.empty_fallback")
+	}
 
 	var rows [][]ports.Button
 

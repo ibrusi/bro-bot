@@ -8,11 +8,13 @@ import (
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"html"
 	"log"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -172,7 +174,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			break
 		}
 
-		planText := strings.TrimSpace(task.Snapshot().Output)
+		planText := strings.TrimSpace(utils.SanitizePlanText(task.Snapshot().Output))
 		if isLikelyErrorMessage(planText) {
 			handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, errors.New(planText), lang)
 			return
@@ -284,8 +286,11 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			statsSummary := metrics.FormatCompletionSummary(lang)
 
 			var compBldr strings.Builder
+			noChanges := hasPlan && prURL == "" && !hasGitChanges(workDir)
 			if prURL != "" {
 				compBldr.WriteString(i18n.Tf(lang, "pipeline.completed_with_pr", taskID, html.EscapeString(projectName), html.EscapeString(prURL)))
+			} else if noChanges {
+				compBldr.WriteString(i18n.Tf(lang, "pipeline.completed_no_changes", taskID, html.EscapeString(projectName)))
 			} else {
 				compBldr.WriteString(i18n.Tf(lang, "pipeline.completed", taskID, html.EscapeString(projectName)))
 			}
@@ -305,6 +310,8 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			var actButtons []ports.Button
 			if prURL != "" {
 				actButtons = append(actButtons, ports.Button{Text: i18n.T(lang, "btn.open_pr"), URL: prURL})
+			} else if noChanges {
+				actButtons = append(actButtons, ports.Button{Text: i18n.T(lang, "btn.retry"), Action: "task_retry", Payload: strconv.Itoa(taskID)})
 			}
 			if hasPlan {
 				actButtons = append(actButtons, ports.Button{Text: i18n.T(lang, "btn.download_plan"), Action: "plan_doc", Payload: strconv.Itoa(taskID)})
@@ -318,7 +325,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 				domain.GlobalTaskManager.RegisterMessageTask(compRef, taskID)
 			}
 
-			finalReport = strings.TrimSpace(finalReport)
+			finalReport = strings.TrimSpace(utils.SanitizePlanText(finalReport))
 			if finalReport != "" {
 				reportRunes := []rune(finalReport)
 				if len(reportRunes) > 1500 {
@@ -1009,4 +1016,37 @@ type StepResult struct {
 	HasResult    bool
 	ResultStatus string
 	PRURL        string
+}
+
+// hasGitChanges проверяет наличие незакоммиченных изменений, untracked файлов
+// или локальных коммитов в ветке репозитория workDir.
+func hasGitChanges(workDir string) bool {
+	if workDir == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 1. Проверяем рабочий каталог (изменённые, добавленные или неотслеживаемые файлы)
+	statusCmd := exec.CommandContext(ctx, "git", "-C", workDir, "status", "--porcelain")
+	if out, err := statusCmd.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+		return true
+	}
+
+	// 2. Проверяем имя текущей ветки: если это ветка фичи/фикса, а не main/master/HEAD
+	branchCmd := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "--abbrev-ref", "HEAD")
+	if out, err := branchCmd.Output(); err == nil {
+		branch := strings.TrimSpace(string(out))
+		if branch != "" && branch != "main" && branch != "master" && branch != "HEAD" {
+			return true
+		}
+	}
+
+	// 3. Проверяем локальные коммиты относительно upstream
+	diffCmd := exec.CommandContext(ctx, "git", "-C", workDir, "log", "@{upstream}..HEAD", "--oneline")
+	if out, err := diffCmd.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+		return true
+	}
+
+	return false
 }

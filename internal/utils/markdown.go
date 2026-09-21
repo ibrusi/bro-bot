@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -1035,4 +1036,89 @@ func ExtractQuestionFromResponse(text string) string {
 	}
 
 	return text
+}
+
+var promptWrapperTagRegex = regexp.MustCompile(`(?s)^\s*<(?:USER_REQUEST|SYSTEM_PROMPT|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>[\s\S]*?</(?:USER_REQUEST|SYSTEM_PROMPT|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>\s*`)
+var leadingDividerRegex = regexp.MustCompile(`^(?:---|===|\*\*\*)\s*`)
+
+var planningPromptEchoMarkers = []string{
+	"внимание: сейчас выполняется этап планирования",
+	"внимание: это этап планирования",
+	"attention: the planning stage is in progress",
+	"attention: the planning stage",
+	"не создавай git-ветку",
+	"do not create a git branch",
+	"инструкции проекта (agents.md)",
+	"project instructions (agents.md)",
+	"задача пользователя:",
+	"user task:",
+	"твоя цель сейчас:",
+	"your goal right now:",
+	"выведи итоговый план",
+	"output the resulting plan",
+	"утверждённый план реализации:",
+	"approved implementation plan:",
+}
+
+func isPromptListOrQuoteLine(l string) bool {
+	if l == "" || strings.HasPrefix(l, ">") || strings.HasPrefix(l, "-") || strings.HasPrefix(l, "*") || l == "---" || l == "===" {
+		return true
+	}
+	dot := strings.Index(l, ".")
+	if dot > 0 && dot <= 3 {
+		_, err := strconv.Atoi(l[:dot])
+		return err == nil
+	}
+	return false
+}
+
+// SanitizePlanText очищает текст плана от эха системных промптов (тегов <USER_REQUEST>,
+// преамбул AGENTS.md, системных инструкций этапа планирования и запретов на создание веток).
+func SanitizePlanText(planText string) string {
+	s := strings.TrimSpace(planText)
+	if s == "" {
+		return ""
+	}
+
+	for {
+		loc := promptWrapperTagRegex.FindStringIndex(s)
+		if loc != nil && loc[0] == 0 {
+			s = strings.TrimSpace(s[loc[1]:])
+		} else {
+			break
+		}
+	}
+
+	lines := strings.Split(s, "\n")
+	idx := 0
+	inEcho := false
+	for i, line := range lines {
+		l := strings.TrimSpace(line)
+		lower := strings.ToLower(l)
+
+		hasMarker := false
+		for _, marker := range planningPromptEchoMarkers {
+			if strings.Contains(lower, marker) {
+				hasMarker = true
+				break
+			}
+		}
+
+		if hasMarker {
+			inEcho = true
+			idx = i + 1
+		} else if inEcho && isPromptListOrQuoteLine(l) {
+			idx = i + 1
+		} else if inEcho {
+			break
+		} else if !inEcho && l == "" {
+			idx = i + 1
+		} else {
+			break
+		}
+	}
+
+	rest := strings.TrimSpace(strings.Join(lines[idx:], "\n"))
+	rest = strings.TrimSpace(leadingDividerRegex.ReplaceAllString(rest, ""))
+	return rest
 }

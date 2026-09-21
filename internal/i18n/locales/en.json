@@ -30,6 +30,7 @@
     "btn.chat_task": "🚀 Create a task",
     "btn.agent_restart": "🔄 Start over",
     "btn.agent_switch": "🔀 Switch to %s",
+    "btn.retry": "🔄 Retry task",
 
     "lang.title": "Language",
     "lang.choose": "Choose the interface language:",
@@ -307,6 +308,7 @@
     "pipeline.question_header_planning": "❓ <b>Question about the plan of task #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Reply with a chat message or pick an option with a button.</i>",
     "pipeline.completed_with_pr": "🎉 <b>Task #%d is done!</b>\n📁 Project: <code>%s</code>\n🔗 <a href=\"%s\">Open Pull Request</a>\n",
     "pipeline.completed": "✅ <b>Task #%d finished!</b> (<code>%s</code>)\n",
+    "pipeline.completed_no_changes": "⚠️ <b>Task #%d finished without code changes</b> (<code>%s</code>)\n<i>The agent completed the turn, but made no repository changes and opened no Pull Request.</i>\n",
     "pipeline.completed_prompt": "📝 <b>Task:</b> <i>«%s»</i>\n",
     "pipeline.completed_plan_link": "📄 <b>Implementation plan:</b> /planfile_%d\n",
     "pipeline.report_summary": "📑 <b>Execution report of task #%d:</b>\n\n%s\n\n📄 <i>The full report (%d characters) is attached as a file.</i>",

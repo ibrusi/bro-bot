@@ -556,3 +556,103 @@ func TestExtractQuestionFromResponse(t *testing.T) {
 		t.Errorf("expected early paragraphs to be excluded for long text, got %q", got)
 	}
 }
+
+func TestSanitizePlanText(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Empty input",
+			input:    "",
+			expected: "",
+		},
+		{
+			name: "Normal clean plan untouched",
+			input: `# План реализации
+1. Создать модели
+2. Написать тесты`,
+			expected: `# План реализации
+1. Создать модели
+2. Написать тесты`,
+		},
+		{
+			name: "Plan with leading XML request tag and prompt echo",
+			input: `<USER_REQUEST>
+Задача пользователя: Добавить фичу X
+
+ВНИМАНИЕ: Сейчас выполняется ЭТАП ПЛАНИРОВАНИЯ.
+НЕ создавай git-ветку, НЕ модифицируй файлы проекта, НЕ делай git commit, НЕ делай git push и НЕ открывай PR.
+Твоя цель сейчас:
+1. Тщательно исследуй кодовую базу и архитектуру проекта.
+2. Сформируй чёткий, пошаговый и структурированный план реализации задачи.
+3. Опиши:
+   - Какие файлы и компоненты будут созданы или изменены.
+   - Ключевые архитектурные решения и интерфейсы.
+   - План тестирования и проверки работоспособности.
+   - Возможные риски, краевые случаи и пути их решения.
+4. Выведи итоговый план в понятном и структурированном виде для пользователя.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-09-21T09:22:31Z.
+</ADDITIONAL_METADATA>
+
+---
+
+# Архитектурный план: Фича X
+
+## Шаг 1. Реализация`,
+			expected: `# Архитектурный план: Фича X
+
+## Шаг 1. Реализация`,
+		},
+		{
+			name: "English prompt echo stripped",
+			input: `User task: Fix issue Y
+
+ATTENTION: the PLANNING STAGE is in progress right now.
+Do NOT create a git branch, do NOT modify project files, do NOT run git commit, do NOT run git push and do NOT open a PR.
+Your goal right now:
+1. Thoroughly explore the codebase.
+2. Output the resulting plan in a clear form.
+
+---
+
+### Step 1: Fix bug in handlers`,
+			expected: `### Step 1: Fix bug in handlers`,
+		},
+		{
+			name: "Input consisting ONLY of planning prompt echo returns empty",
+			input: `ВНИМАНИЕ: Сейчас выполняется ЭТАП ПЛАНИРОВАНИЯ.
+НЕ создавай git-ветку, НЕ модифицируй файлы проекта, НЕ делай git commit, НЕ делай git push и НЕ открывай PR.
+Твоя цель сейчас:
+1. Тщательно исследуй кодовую базу и архитектуру проекта.
+2. Сформируй чёткий, пошаговый план.`,
+			expected: "",
+		},
+		{
+			name: "Plan with disclaimer note at end is preserved",
+			input: `# План
+1. Сделать А
+
+> [!NOTE]
+> В соответствии с инструкцией этапа планирования файлы проекта не изменялись.`,
+			expected: `# План
+1. Сделать А
+
+> [!NOTE]
+> В соответствии с инструкцией этапа планирования файлы проекта не изменялись.`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizePlanText(tc.input)
+			if got != tc.expected {
+				t.Errorf("SanitizePlanText() =\n%q\nwant:\n%q", got, tc.expected)
+			}
+		})
+	}
+}
+

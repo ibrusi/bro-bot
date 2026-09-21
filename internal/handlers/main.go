@@ -181,6 +181,7 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	t.OnCallback("q_resume", onQuestionResume)
 	t.OnCallback("task_agent_restart", onTaskAgentRestart)
 	t.OnCallback("task_agent_switch", onTaskAgentSwitch)
+	t.OnCallback("task_retry", onTaskRetry)
 	onCmd("pause", handlePause)
 	onCmd("resume", handleResume)
 	onCmd("retry", handleRetry)
