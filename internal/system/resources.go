@@ -88,6 +88,11 @@ type ResourcesReport struct {
 	AgyInstalled      bool
 	ClaudeVersion     string
 	ClaudeInstalled   bool
+	WhisperProc       *ProcessResourceInfo
+	OtherWhisperProcs []ProcessResourceInfo
+	WhisperURL        string
+	WhisperModel      string
+	WhisperInstalled  bool
 	HasActiveTask     bool
 	ProjectName       string
 	TaskPrompt        string
@@ -527,6 +532,68 @@ func findSystemClaudePids() []int {
 	return findSystemPids("claude")
 }
 
+func findSystemWhisperPids() []int {
+	pids := findSystemPids("whisper-server")
+	if len(pids) == 0 {
+		if sp := findWhisperSystemdPid(); sp > 0 {
+			pids = append(pids, sp)
+		}
+	}
+	return pids
+}
+
+func findWhisperSystemdPid() int {
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "systemctl", "show", "whisper-server.service", "--property=MainPID").Output()
+	if err == nil {
+		line := strings.TrimSpace(string(out))
+		if strings.HasPrefix(line, "MainPID=") {
+			if pid, err := strconv.Atoi(strings.TrimPrefix(line, "MainPID=")); err == nil && pid > 0 {
+				return pid
+			}
+		}
+	}
+	return 0
+}
+
+func extractWhisperModel(commandLine string) string {
+	fields := strings.Fields(commandLine)
+	for i := 0; i < len(fields)-1; i++ {
+		if fields[i] == "-m" || fields[i] == "--model" {
+			modelPath := fields[i+1]
+			base := filepath.Base(modelPath)
+			base = strings.TrimPrefix(base, "ggml-")
+			base = strings.TrimSuffix(base, ".bin")
+			return base
+		}
+	}
+	return ""
+}
+
+func isWhisperInstalled(proc *ProcessResourceInfo) bool {
+	if proc != nil {
+		return true
+	}
+	if _, err := exec.LookPath("whisper-server"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/etc/systemd/system/whisper-server.service"); err == nil {
+		return true
+	}
+	commonPaths := []string{
+		"/home/deploy/whisper.cpp/build/bin/whisper-server",
+		"/usr/local/bin/whisper-server",
+		"/usr/bin/whisper-server",
+	}
+	for _, p := range commonPaths {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	cliInfoLock   sync.RWMutex
 	cachedCLIInfo = make(map[string]*AgentCLIInfo)
@@ -678,6 +745,7 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 
 	allAgyPids := findSystemAgyPids()
 	allClaudePids := findSystemClaudePids()
+	allWhisperPids := findSystemWhisperPids()
 
 	// If activeWorkerPid is in allClaudePids or allAgyPids, refine activeWorkerAgent
 	for _, p := range allClaudePids {
@@ -706,6 +774,9 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 		pidSet[p] = true
 	}
 	for _, p := range allClaudePids {
+		pidSet[p] = true
+	}
+	for _, p := range allWhisperPids {
 		pidSet[p] = true
 	}
 
@@ -754,6 +825,26 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 		}
 	}
 
+	var whisperInfo *ProcessResourceInfo
+	var otherWhisper []ProcessResourceInfo
+	if len(allWhisperPids) > 0 {
+		whisperInfo = collectProcessInfo(allWhisperPids[0], "Whisper Server", psMetrics, topCpu)
+		for _, p := range allWhisperPids[1:] {
+			if pInfo := collectProcessInfo(p, "Background whisper", psMetrics, topCpu); pInfo != nil {
+				otherWhisper = append(otherWhisper, *pInfo)
+			}
+		}
+	}
+
+	whisperModel := config.WhisperModel
+	if whisperInfo != nil && whisperInfo.Command != "" {
+		if parsed := extractWhisperModel(whisperInfo.Command); parsed != "" {
+			whisperModel = parsed
+		}
+	}
+	whisperURL := config.WhisperServerURL
+	whisperInstalled := isWhisperInstalled(whisperInfo)
+
 	agyInfo := queryAgyInfo()
 	claudeInfo := queryClaudeInfo()
 
@@ -777,6 +868,11 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 		AgyInstalled:      agyInfo.Installed,
 		ClaudeVersion:     claudeInfo.Version,
 		ClaudeInstalled:   claudeInfo.Installed,
+		WhisperProc:       whisperInfo,
+		OtherWhisperProcs: otherWhisper,
+		WhisperURL:        whisperURL,
+		WhisperModel:      whisperModel,
+		WhisperInstalled:  whisperInstalled,
 		HasActiveTask:     hasActive,
 		ProjectName:       projName,
 		TaskPrompt:        prompt,
@@ -953,11 +1049,52 @@ func FormatResourcesMessage(r ResourcesReport, lang string) string {
 		TaskElapsed:  r.TaskElapsed,
 	}, lang)
 
+	// 6. Speech-to-Text Server (whisper-server)
+	formatWhisperResourceSection(&sb, r, lang)
+
 	sb.WriteString(i18n.T(lang, "res.tip"))
 	sb.WriteString("<code>systemctl status tg-bot.service</code>\n")
 	sb.WriteString(i18n.T(lang, "res.tip_dynamic"))
 
 	return sb.String()
+}
+
+func formatWhisperResourceSection(sb *strings.Builder, r ResourcesReport, lang string) {
+	sb.WriteString(i18n.T(lang, "res.whisper_header"))
+
+	if r.WhisperProc != nil {
+		sb.WriteString(i18n.Tf(lang, "res.bot_pid", r.WhisperProc.PID))
+		sb.WriteString(i18n.Tf(lang, "res.memory",
+			formatBytes(r.WhisperProc.MemoryBytes), r.WhisperProc.MemoryPct))
+		sb.WriteString(i18n.Tf(lang, "res.cpu", r.WhisperProc.CPUPercent))
+		if r.WhisperProc.Elapsed != "" {
+			sb.WriteString(i18n.Tf(lang, "res.bot_uptime",
+				r.WhisperProc.Elapsed, r.WhisperProc.Threads))
+		}
+	} else {
+		sb.WriteString(i18n.T(lang, "res.whisper_idle"))
+	}
+
+	if r.WhisperURL != "" {
+		sb.WriteString(i18n.Tf(lang, "res.whisper_endpoint", html.EscapeString(r.WhisperURL)))
+	}
+	if r.WhisperModel != "" {
+		sb.WriteString(i18n.Tf(lang, "res.whisper_model", html.EscapeString(r.WhisperModel)))
+	}
+
+	if r.WhisperInstalled {
+		sb.WriteString(i18n.T(lang, "res.whisper_ready"))
+	} else {
+		sb.WriteString(i18n.T(lang, "res.whisper_missing"))
+	}
+
+	if len(r.OtherWhisperProcs) > 0 {
+		sb.WriteString(i18n.Tf(lang, "res.whisper_background", len(r.OtherWhisperProcs)))
+		for _, other := range r.OtherWhisperProcs {
+			sb.WriteString(i18n.Tf(lang, "res.agent_background_item",
+				other.PID, formatBytes(other.MemoryBytes), other.CPUPercent, other.Elapsed))
+		}
+	}
 }
 
 func FormatCompactResourceSnippet(r ResourcesReport, lang string) string {
@@ -970,22 +1107,34 @@ func FormatCompactResourceSnippet(r ResourcesReport, lang string) string {
 			r.BotProc.PID, formatBytes(r.BotProc.MemoryBytes), r.BotProc.CPUPercent))
 	}
 
-	workerAgent := r.ActiveWorkerAgent
-	if workerAgent == "" {
-		if r.ActiveAgent != "" {
-			workerAgent = r.ActiveAgent
-		} else {
-			workerAgent = "agy"
-		}
+	// 1. agy
+	agyActive := r.HasActiveTask && (r.ActiveWorkerAgent == "" || r.ActiveWorkerAgent == "agy")
+	if agyActive && r.ActiveWorker != nil {
+		parts = append(parts, fmt.Sprintf("agy (PID %d): RAM <b>%s</b>, CPU <b>%.1f%%</b>",
+			r.ActiveWorker.PID, formatBytes(r.ActiveWorker.MemoryBytes), r.ActiveWorker.CPUPercent))
+	} else if agyActive {
+		parts = append(parts, i18n.Tf(lang, "res.compact_starting", "agy"))
+	} else {
+		parts = append(parts, i18n.Tf(lang, "res.compact_idle", "agy"))
 	}
 
-	if r.HasActiveTask && r.ActiveWorker != nil {
-		parts = append(parts, fmt.Sprintf("%s (PID %d): RAM <b>%s</b>, CPU <b>%.1f%%</b>",
-			workerAgent, r.ActiveWorker.PID, formatBytes(r.ActiveWorker.MemoryBytes), r.ActiveWorker.CPUPercent))
-	} else if r.HasActiveTask {
-		parts = append(parts, i18n.Tf(lang, "res.compact_starting", workerAgent))
+	// 2. claude
+	claudeActive := r.HasActiveTask && r.ActiveWorkerAgent == "claude"
+	if claudeActive && r.ActiveWorker != nil {
+		parts = append(parts, fmt.Sprintf("claude (PID %d): RAM <b>%s</b>, CPU <b>%.1f%%</b>",
+			r.ActiveWorker.PID, formatBytes(r.ActiveWorker.MemoryBytes), r.ActiveWorker.CPUPercent))
+	} else if claudeActive {
+		parts = append(parts, i18n.Tf(lang, "res.compact_starting", "claude"))
 	} else {
-		parts = append(parts, i18n.Tf(lang, "res.compact_idle", workerAgent))
+		parts = append(parts, i18n.Tf(lang, "res.compact_idle", "claude"))
+	}
+
+	// 3. whisper-server
+	if r.WhisperProc != nil {
+		parts = append(parts, fmt.Sprintf("whisper-server (PID %d): RAM <b>%s</b>, CPU <b>%.1f%%</b>",
+			r.WhisperProc.PID, formatBytes(r.WhisperProc.MemoryBytes), r.WhisperProc.CPUPercent))
+	} else {
+		parts = append(parts, i18n.Tf(lang, "res.compact_idle", "whisper-server"))
 	}
 
 	for _, p := range parts {
