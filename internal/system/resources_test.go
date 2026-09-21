@@ -388,3 +388,233 @@ func TestFormatResourcesMessageDefaultLanguageIsEnglish(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatCompactResourceSnippetAllComponents(t *testing.T) {
+	// Case 1: All idle
+	repIdle := ResourcesReport{
+		BotProc: &ProcessResourceInfo{
+			PID:         100,
+			CPUPercent:  0.2,
+			MemoryBytes: 25 * 1024 * 1024,
+		},
+		HasActiveTask: false,
+	}
+	compactIdle := FormatCompactResourceSnippet(repIdle, "ru")
+	for _, want := range []string{
+		"Bot (PID 100): RAM <b>25.0 MB</b>, CPU <b>0.2%</b>",
+		"• agy: 💤 <i>idle</i>",
+		"• claude: 💤 <i>idle</i>",
+		"• whisper-server: 💤 <i>idle</i>",
+	} {
+		if !strings.Contains(compactIdle, want) {
+			t.Errorf("expected %q in compact snippet, got:\n%s", want, compactIdle)
+		}
+	}
+
+	// Case 2: Agy active task, Claude idle, Whisper running
+	repAgy := ResourcesReport{
+		BotProc: &ProcessResourceInfo{
+			PID:         100,
+			CPUPercent:  0.2,
+			MemoryBytes: 25 * 1024 * 1024,
+		},
+		ActiveAgent:       "agy",
+		ActiveWorkerAgent: "agy",
+		HasActiveTask:     true,
+		ActiveWorker: &ProcessResourceInfo{
+			PID:         200,
+			CPUPercent:  15.0,
+			MemoryBytes: 150 * 1024 * 1024,
+		},
+		WhisperProc: &ProcessResourceInfo{
+			PID:         300,
+			CPUPercent:  1.0,
+			MemoryBytes: 200 * 1024 * 1024,
+		},
+	}
+	compactAgy := FormatCompactResourceSnippet(repAgy, "ru")
+	for _, want := range []string{
+		"Bot (PID 100): RAM <b>25.0 MB</b>, CPU <b>0.2%</b>",
+		"• agy (PID 200): RAM <b>150.0 MB</b>, CPU <b>15.0%</b>",
+		"• claude: 💤 <i>idle</i>",
+		"• whisper-server (PID 300): RAM <b>200.0 MB</b>, CPU <b>1.0%</b>",
+	} {
+		if !strings.Contains(compactAgy, want) {
+			t.Errorf("expected %q in compact snippet, got:\n%s", want, compactAgy)
+		}
+	}
+
+	// Case 3: Claude active task, Agy idle, Whisper running
+	repClaude := ResourcesReport{
+		BotProc: &ProcessResourceInfo{
+			PID:         100,
+			CPUPercent:  0.2,
+			MemoryBytes: 25 * 1024 * 1024,
+		},
+		ActiveAgent:       "claude",
+		ActiveWorkerAgent: "claude",
+		HasActiveTask:     true,
+		ActiveWorker: &ProcessResourceInfo{
+			PID:         400,
+			CPUPercent:  20.5,
+			MemoryBytes: 180 * 1024 * 1024,
+		},
+		WhisperProc: &ProcessResourceInfo{
+			PID:         300,
+			CPUPercent:  0.5,
+			MemoryBytes: 190 * 1024 * 1024,
+		},
+	}
+	compactClaude := FormatCompactResourceSnippet(repClaude, "ru")
+	for _, want := range []string{
+		"Bot (PID 100): RAM <b>25.0 MB</b>, CPU <b>0.2%</b>",
+		"• agy: 💤 <i>idle</i>",
+		"• claude (PID 400): RAM <b>180.0 MB</b>, CPU <b>20.5%</b>",
+		"• whisper-server (PID 300): RAM <b>190.0 MB</b>, CPU <b>0.5%</b>",
+	} {
+		if !strings.Contains(compactClaude, want) {
+			t.Errorf("expected %q in compact snippet, got:\n%s", want, compactClaude)
+		}
+	}
+}
+
+func TestFormatResourcesMessageWithWhisperServer(t *testing.T) {
+	// Case 1: Whisper server running
+	reportRunning := ResourcesReport{
+		Host: HostLoadStats{Load1: 0.5, Cores: 4},
+		Memory: HostMemoryStats{
+			TotalBytes:  8 * 1024 * 1024 * 1024,
+			UsedBytes:   2 * 1024 * 1024 * 1024,
+			UsedPercent: 25.0,
+		},
+		BotProc: &ProcessResourceInfo{
+			PID:         100,
+			CPUPercent:  0.1,
+			MemoryBytes: 20 * 1024 * 1024,
+		},
+		WhisperProc: &ProcessResourceInfo{
+			PID:         500,
+			CPUPercent:  2.5,
+			MemoryBytes: 172 * 1024 * 1024,
+			MemoryPct:   2.1,
+			Elapsed:     "01:23:45",
+			Threads:     11,
+		},
+		WhisperURL:       "http://127.0.0.1:8080/inference",
+		WhisperModel:     "base-q5_1",
+		WhisperInstalled: true,
+		OtherWhisperProcs: []ProcessResourceInfo{
+			{
+				PID:         501,
+				CPUPercent:  0.0,
+				MemoryBytes: 100 * 1024 * 1024,
+				Elapsed:     "00:10",
+			},
+		},
+		GeneratedAt: time.Now(),
+	}
+
+	msgRunning := FormatResourcesMessage(reportRunning, "ru")
+	for _, want := range []string{
+		"🎙 <b>Сервер распознавания речи (whisper-server):</b>",
+		"• PID: <code>500</code> | Состояние: 🟢 <i>active</i>",
+		"• Память (RSS): <b>172.0 MB</b> (<code>2.1%</code> RAM)",
+		"• Нагрузка CPU: <b>2.5%</b>",
+		"• Аптайм: <code>01:23:45</code> | Потоков: <code>11</code>",
+		"• Эндпоинт: <code>http://127.0.0.1:8080/inference</code>",
+		"• Модель: <code>base-q5_1</code>",
+		"• Служба: 🟢 <i>установлена (whisper-server.service)</i>",
+		"• Фоновые процессы whisper-server: <code>1</code> шт.",
+		"501",
+		"top -p $(pgrep -d, -f 'bot|agy|claude|whisper')",
+	} {
+		if !strings.Contains(msgRunning, want) {
+			t.Errorf("expected %q in /top output, got:\n%s", want, msgRunning)
+		}
+	}
+
+	// Case 2: Whisper server idle / stopped
+	reportIdle := ResourcesReport{
+		Host:        HostLoadStats{Load1: 0.2, Cores: 4},
+		Memory:      HostMemoryStats{TotalBytes: 8 << 30, UsedBytes: 1 << 30},
+		BotProc:     &ProcessResourceInfo{PID: 100, CPUPercent: 0.1, MemoryBytes: 20 << 20},
+		WhisperURL:  "http://127.0.0.1:8080/inference",
+		GeneratedAt: time.Now(),
+	}
+
+	msgIdle := FormatResourcesMessage(reportIdle, "ru")
+	for _, want := range []string{
+		"🎙 <b>Сервер распознавания речи (whisper-server):</b>",
+		"• Состояние: 💤 <i>Простаивает (процесс не запущен)</i>",
+		"• Эндпоинт: <code>http://127.0.0.1:8080/inference</code>",
+		"• Служба: 🔴 <i>не найдена (make install-whisper)</i>",
+	} {
+		if !strings.Contains(msgIdle, want) {
+			t.Errorf("expected %q in /top idle output, got:\n%s", want, msgIdle)
+		}
+	}
+}
+
+func TestFormatResourcesMessageWhisperEnglish(t *testing.T) {
+	report := ResourcesReport{
+		Host:    HostLoadStats{Load1: 0.5, Cores: 2},
+		Memory:  HostMemoryStats{TotalBytes: 4 << 30, UsedBytes: 1 << 30},
+		BotProc: &ProcessResourceInfo{PID: 100, CPUPercent: 0.1, MemoryBytes: 20 << 20},
+		WhisperProc: &ProcessResourceInfo{
+			PID:         600,
+			CPUPercent:  0.0,
+			MemoryBytes: 150 << 20,
+			MemoryPct:   3.5,
+			Elapsed:     "00:30",
+			Threads:     4,
+		},
+		WhisperURL:       "http://127.0.0.1:8080/inference",
+		WhisperModel:     "small",
+		WhisperInstalled: true,
+		GeneratedAt:      time.Now(),
+	}
+
+	msg := FormatResourcesMessage(report, "en")
+	for _, want := range []string{
+		"Speech recognition server (whisper-server):",
+		"PID: <code>600</code> | State: 🟢 <i>active</i>",
+		"Endpoint: <code>http://127.0.0.1:8080/inference</code>",
+		"Model: <code>small</code>",
+		"Service: 🟢 <i>installed (whisper-server.service)</i>",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("expected %q in English /top output, got:\n%s", want, msg)
+		}
+	}
+}
+
+func TestExtractWhisperModel(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want string
+	}{
+		{
+			cmd:  "/home/deploy/whisper.cpp/build/bin/whisper-server -m /models/ggml-base-q5_1.bin --port 8080",
+			want: "base-q5_1",
+		},
+		{
+			cmd:  "whisper-server --model /opt/whisper/models/ggml-small.bin -t 4",
+			want: "small",
+		},
+		{
+			cmd:  "whisper-server -m /models/custom-model.bin",
+			want: "custom-model",
+		},
+		{
+			cmd:  "whisper-server --port 8080",
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		got := extractWhisperModel(tc.cmd)
+		if got != tc.want {
+			t.Errorf("extractWhisperModel(%q) = %q, want %q", tc.cmd, got, tc.want)
+		}
+	}
+}

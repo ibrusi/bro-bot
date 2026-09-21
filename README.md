@@ -54,7 +54,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Independent, per-project task queues.
   - Pre-planning mode (`/plan <task>`, `/planmode [on|off]`): the agent inspects the repository, composes and justifies an architectural plan, awaits user confirmation via interactive inline buttons (`/approve`, `/confirm`), and only then starts writing code.
   - Pause and resume (`/pause [id]`, `/resume [id] [answer]`).
-  - Live execution streaming, recent logs, and step tracking (`/status [id]`, `/tasks`).
+  - Live execution streaming, recent logs, compact system resources (Bot, `agy`, `claude`, `whisper-server`), and step tracking (`/status [id]`, `/tasks`).
   - Dialogue transcript inspection (`/history [id]`): view the full conversation and agent actions directly from the session logs.
   - Safe cancellation of stuck or outdated tasks (`/cancel [id]`).
 - **Interactive Dialogues & Clarifying Questions (`ask_question`)**:
@@ -70,7 +70,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - `/usage` (or `/limits`) — live quota limits and credit balances (`agy /quota`, `agy /credits`).
   - `/tokens` (or `/stats`) — granular token statistics for the current/completed task: Input, Output, Thinking, Cache Read, and Cache Hit Rate.
   - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
-  - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, and active `agy`/`claude` processes.
+  - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, active `agy`/`claude` processes, and the `whisper-server` speech recognition engine.
 - **Execution Modes: MCP, CLI & API (`/mode [mcp|cli|api]`)**:
   - `mcp` (default): integrates agents with a built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`), providing authorized channels and tools (`telegram_send_message`, `ask_user`, `report_progress`).
   - `cli`: spawns local `agy` and `claude` CLI tools via PTY.
@@ -484,7 +484,7 @@ so the conversation continues. Reset it with `/chat new`.
 | `/usage` (or `/limits`) | Check remaining free quotas and paid credit balances for Antigravity. | `/usage` |
 | `/tokens` (or `/stats`) | Token usage stats for the task: Input, Output, Thinking, Cache Read, and Hit Rate. | `/tokens` |
 | `/context [id]` | Visual breakdown of model context window utilization. | `/context` |
-| `/top` (or `/ps`, `/resources`) | Real-time server telemetry: CPU, RAM, disk space, Load Average, cgroup, and agent processes. | `/top` |
+| `/top` (or `/ps`, `/resources`) | Real-time server telemetry: CPU, RAM, disk space, Load Average, cgroup, agent processes (`agy`, `claude`), and `whisper-server`. | `/top` |
 
 ---
 
