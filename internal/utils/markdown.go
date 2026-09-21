@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"bro-bot/internal/i18n"
 )
@@ -27,6 +28,319 @@ func escapeHTML(s string) string {
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	return s
+}
+
+// tableColumnAlign задаёт выравнивание содержимого ячеек в колонке таблицы.
+type tableColumnAlign int
+
+const (
+	alignLeft tableColumnAlign = iota
+	alignCenter
+	alignRight
+)
+
+// runeVisualWidth возвращает визуальную ширину символа в моноширинном шрифте (0, 1 или 2).
+func runeVisualWidth(r rune) int {
+	if r < 32 || (r >= 0x7f && r < 0xa0) {
+		return 0
+	}
+	if r == 0x200b || r == 0x200c || r == 0x200d || r == 0xfeff || (r >= 0xfe00 && r <= 0xfe0f) {
+		return 0
+	}
+	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || unicode.Is(unicode.Mc, r) {
+		return 0
+	}
+	if (r >= 0x1F300 && r <= 0x1FAFF) || // Emojis, Pictographs
+		(r >= 0x2600 && r <= 0x27BF) ||   // Dingbats (❌ 0x274c, ✅ 0x2705)
+		(r >= 0x2B50 && r <= 0x2B55) ||   // Звёзды и символы
+		(r >= 0x1F1E6 && r <= 0x1F1FF) || // Флаги
+		(r >= 0x2300 && r <= 0x23FF) ||   // Часы, таймеры
+		(r >= 0x2E80 && r <= 0x9FFF) ||   // CJK Ideographs
+		(r >= 0xF900 && r <= 0xFAFF) ||   // CJK Compatibility
+		(r >= 0xFF01 && r <= 0xFF60) ||   // Полноширинные формы
+		(r >= 0xFFE0 && r <= 0xFFE6) {
+		return 2
+	}
+	return 1
+}
+
+// stringVisualWidth возвращает экранную ширину строки в моноширинном шрифте с учётом широких символов и эмодзи.
+func stringVisualWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		w += runeVisualWidth(r)
+	}
+	return w
+}
+
+// cleanTableCell очищает ячейку от избыточного Markdown-форматирования для моноширинного вывода.
+func cleanTableCell(cell string) string {
+	s := strings.TrimSpace(cell)
+	if s == "" {
+		return ""
+	}
+
+	// Снятие инлайн-кода: `code` -> code внутри ячейки
+	if strings.Contains(s, "`") {
+		var b strings.Builder
+		for i := 0; i < len(s); i++ {
+			if s[i] == '`' {
+				end := strings.IndexByte(s[i+1:], '`')
+				if end != -1 {
+					b.WriteString(s[i+1 : i+1+end])
+					i += 1 + end
+					continue
+				}
+			}
+			b.WriteByte(s[i])
+		}
+		s = b.String()
+	}
+
+	// Снятие жирного начертания: **text** -> text или __text__ -> text
+	s = boldRegex.ReplaceAllStringFunc(s, func(m string) string {
+		sub := boldRegex.FindStringSubmatch(m)
+		if len(sub) > 1 && sub[1] != "" {
+			return sub[1]
+		}
+		if len(sub) > 2 && sub[2] != "" {
+			return sub[2]
+		}
+		return m
+	})
+
+	// Снятие курсива: *text* -> text
+	s = italicStarRegex.ReplaceAllStringFunc(s, func(m string) string {
+		sub := italicStarRegex.FindStringSubmatch(m)
+		if len(sub) > 1 {
+			return sub[1]
+		}
+		return m
+	})
+
+	// Снятие зачёркивания: ~~text~~ -> text
+	s = strikeRegex.ReplaceAllStringFunc(s, func(m string) string {
+		sub := strikeRegex.FindStringSubmatch(m)
+		if len(sub) > 1 && sub[1] != "" {
+			return sub[1]
+		}
+		if len(sub) > 2 && sub[2] != "" {
+			return sub[2]
+		}
+		return m
+	})
+
+	return strings.TrimSpace(s)
+}
+
+// splitTableRowRaw разбивает строку таблицы на ячейки без очистки форматирования.
+func splitTableRowRaw(line string) []string {
+	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "|") {
+		line = line[1:]
+	}
+	if strings.HasSuffix(line, "|") {
+		line = line[:len(line)-1]
+	}
+
+	var cells []string
+	var cur strings.Builder
+	escaped := false
+
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if escaped {
+			cur.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '|' {
+			cells = append(cells, strings.TrimSpace(cur.String()))
+			cur.Reset()
+			continue
+		}
+		cur.WriteByte(ch)
+	}
+	cells = append(cells, strings.TrimSpace(cur.String()))
+	return cells
+}
+
+// splitTableRow разбивает строку таблицы на ячейки с очисткой форматирования.
+func splitTableRow(line string) []string {
+	raw := splitTableRowRaw(line)
+	cells := make([]string, len(raw))
+	for i, r := range raw {
+		cells[i] = cleanTableCell(r)
+	}
+	return cells
+}
+
+// isDelimiterCell проверяет, является ли ячейка разделителем GFM (например, ---, :---, :---:).
+func isDelimiterCell(c string) bool {
+	c = strings.TrimSpace(c)
+	if len(c) == 0 {
+		return false
+	}
+	hasHyphen := false
+	for _, r := range c {
+		if r == '-' {
+			hasHyphen = true
+		} else if r != ':' && !unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return hasHyphen
+}
+
+// isValidTableStart проверяет, образуют ли две последовательные строки корректный заголовок и разделитель таблицы.
+func isValidTableStart(headerLine, delimLine string) bool {
+	hCells := splitTableRowRaw(headerLine)
+	dCells := splitTableRowRaw(delimLine)
+	if len(hCells) == 0 || len(dCells) == 0 {
+		return false
+	}
+	if len(hCells) != len(dCells) {
+		return false
+	}
+	if len(hCells) == 1 && !strings.HasPrefix(strings.TrimSpace(headerLine), "|") {
+		return false
+	}
+	for _, c := range dCells {
+		if !isDelimiterCell(c) {
+			return false
+		}
+	}
+	return true
+}
+
+// parseColumnAlign определяет выравнивание по содержимому ячейки строки-разделителя.
+func parseColumnAlign(c string) tableColumnAlign {
+	c = strings.TrimSpace(c)
+	if strings.HasPrefix(c, ":") && strings.HasSuffix(c, ":") {
+		return alignCenter
+	}
+	if strings.HasSuffix(c, ":") {
+		return alignRight
+	}
+	return alignLeft
+}
+
+// padTableCell выравнивает ячейку пробелами с учётом визуальной ширины и режима выравнивания.
+func padTableCell(content string, targetWidth int, align tableColumnAlign) string {
+	curWidth := stringVisualWidth(content)
+	if curWidth >= targetWidth {
+		return content
+	}
+	diff := targetWidth - curWidth
+	switch align {
+	case alignRight:
+		return strings.Repeat(" ", diff) + content
+	case alignCenter:
+		left := diff / 2
+		right := diff - left
+		return strings.Repeat(" ", left) + content + strings.Repeat(" ", right)
+	default: // alignLeft
+		return content + strings.Repeat(" ", diff)
+	}
+}
+
+// formatMarkdownTable форматирует Markdown-таблицу в аккуратный моноширинный блок <pre>.
+func formatMarkdownTable(headerLine, delimLine string, dataLines []string) string {
+	headers := splitTableRow(headerLine)
+	delims := splitTableRowRaw(delimLine)
+
+	numCols := len(headers)
+	if len(delims) > numCols {
+		numCols = len(delims)
+	}
+
+	var rows [][]string
+	for _, dLine := range dataLines {
+		dCells := splitTableRow(dLine)
+		if len(dCells) > numCols {
+			numCols = len(dCells)
+		}
+		rows = append(rows, dCells)
+	}
+
+	aligns := make([]tableColumnAlign, numCols)
+	for i := 0; i < numCols; i++ {
+		if i < len(delims) {
+			aligns[i] = parseColumnAlign(delims[i])
+		} else {
+			aligns[i] = alignLeft
+		}
+	}
+
+	colWidths := make([]int, numCols)
+	for i := 0; i < numCols; i++ {
+		colWidths[i] = 3 // минимальная ширина под "---"
+		if i < len(headers) {
+			if w := stringVisualWidth(headers[i]); w > colWidths[i] {
+				colWidths[i] = w
+			}
+		}
+		for _, row := range rows {
+			if i < len(row) {
+				if w := stringVisualWidth(row[i]); w > colWidths[i] {
+					colWidths[i] = w
+				}
+			}
+		}
+	}
+
+	var b strings.Builder
+
+	// Строка заголовка
+	b.WriteString("|")
+	for i := 0; i < numCols; i++ {
+		val := ""
+		if i < len(headers) {
+			val = headers[i]
+		}
+		b.WriteString(" " + padTableCell(val, colWidths[i], aligns[i]) + " |")
+	}
+	b.WriteString("\n")
+
+	// Строка-разделитель
+	b.WriteString("|")
+	for i := 0; i < numCols; i++ {
+		w := colWidths[i]
+		switch aligns[i] {
+		case alignCenter:
+			if w >= 2 {
+				b.WriteString(" :" + strings.Repeat("-", w-2) + ": |")
+			} else {
+				b.WriteString(" " + strings.Repeat("-", w) + " |")
+			}
+		case alignRight:
+			if w >= 1 {
+				b.WriteString(" " + strings.Repeat("-", w-1) + ": |")
+			} else {
+				b.WriteString(" " + strings.Repeat("-", w) + " |")
+			}
+		default: // alignLeft
+			b.WriteString(" " + strings.Repeat("-", w) + " |")
+		}
+	}
+
+	// Строки данных
+	for _, row := range rows {
+		b.WriteString("\n|")
+		for i := 0; i < numCols; i++ {
+			val := ""
+			if i < len(row) {
+				val = row[i]
+			}
+			b.WriteString(" " + padTableCell(val, colWidths[i], aligns[i]) + " |")
+		}
+	}
+
+	return fmt.Sprintf("<pre>%s</pre>", escapeHTML(b.String()))
 }
 
 // MarkdownToTelegramHTML преобразует стандартный Markdown в HTML, поддерживаемый Telegram Bot API.
@@ -94,6 +408,43 @@ func MarkdownToTelegramHTML(md string) string {
 		codeBlocks = append(codeBlocks, htmlBlock)
 		processedLines = append(processedLines, placeholder)
 	}
+
+	// 1.5. Извлечение и форматирование Markdown-таблиц
+	var tableBlocks []string
+	var linesWithoutTables []string
+	lineIdx := 0
+	for lineIdx < len(processedLines) {
+		line := processedLines[lineIdx]
+
+		// Проверяем, может ли текущая строка быть началом таблицы (заголовок + строка разделителя)
+		if strings.Contains(line, "|") && lineIdx+1 < len(processedLines) && isValidTableStart(line, processedLines[lineIdx+1]) {
+			headerLine := line
+			delimLine := processedLines[lineIdx+1]
+			lineIdx += 2
+
+			var dataLines []string
+			for lineIdx < len(processedLines) {
+				cur := processedLines[lineIdx]
+				curTrimmed := strings.TrimSpace(cur)
+				// Пустая строка, другой блочный плейсхолдер или разделитель hr завершают таблицу
+				if curTrimmed == "" || !strings.Contains(cur, "|") || strings.HasPrefix(curTrimmed, "\x00CB_") || hrRegex.MatchString(curTrimmed) {
+					break
+				}
+				dataLines = append(dataLines, cur)
+				lineIdx++
+			}
+
+			htmlTable := formatMarkdownTable(headerLine, delimLine, dataLines)
+			placeholder := fmt.Sprintf("\x00TB_%d\x00", len(tableBlocks))
+			tableBlocks = append(tableBlocks, htmlTable)
+			linesWithoutTables = append(linesWithoutTables, placeholder)
+			continue
+		}
+
+		linesWithoutTables = append(linesWithoutTables, line)
+		lineIdx++
+	}
+	processedLines = linesWithoutTables
 
 	text := strings.Join(processedLines, "\n")
 
@@ -247,6 +598,12 @@ func MarkdownToTelegramHTML(md string) string {
 	for i, cb := range codeBlocks {
 		placeholder := fmt.Sprintf("\x00CB_%d\x00", i)
 		text = strings.ReplaceAll(text, placeholder, cb)
+	}
+
+	// 6.5. Восстановление блоков таблиц
+	for i, tb := range tableBlocks {
+		placeholder := fmt.Sprintf("\x00TB_%d\x00", i)
+		text = strings.ReplaceAll(text, placeholder, tb)
 	}
 
 	// 7. Проверка баланса тегов для исключения ошибок парсера Telegram

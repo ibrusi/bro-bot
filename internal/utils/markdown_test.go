@@ -84,6 +84,209 @@ func TestMarkdownToTelegramHTML_Basic(t *testing.T) {
 	}
 }
 
+func TestMarkdownToTelegramHTML_Tables(t *testing.T) {
+	t.Run("User case with emojis and Cyrillic", func(t *testing.T) {
+		input := "| Критерий | language = auto без словаря | language = ru + расширенный словарь |\n" +
+			"| :--- | :--- | :--- |\n" +
+			"| Слово «дебаг» | ❌ Превращается в «ты, бак» | ✅ Распознаётся идеально |\n" +
+			"| Скорость | Медленнее на ~100 мс | Максимальная (нет шага LID) |\n" +
+			"| Короткие фразы («да», «ок») | ❌ Риск улететь в другой язык | ✅ 100% стабильность |\n" +
+			"| Английские команды (git, docker)| Средне | Отлично (за счёт словаря) |"
+
+		actual := MarkdownToTelegramHTML(input)
+		if !strings.HasPrefix(actual, "<pre>") || !strings.HasSuffix(actual, "</pre>") {
+			t.Fatalf("expected <pre>...</pre> block, got:\n%s", actual)
+		}
+
+		content := strings.TrimPrefix(strings.TrimSuffix(actual, "</pre>"), "<pre>")
+		lines := strings.Split(content, "\n")
+		if len(lines) != 6 {
+			t.Fatalf("expected 6 lines in formatted table, got %d:\n%s", len(lines), content)
+		}
+
+		// Проверяем, что в моноширинном отображении все строки имеют строго одинаковую визуальную ширину
+		headerWidth := stringVisualWidth(lines[0])
+		for i, line := range lines {
+			w := stringVisualWidth(line)
+			if w != headerWidth {
+				t.Errorf("line %d visual width mismatch: got %d, expected %d\nLine: %q", i, w, headerWidth, line)
+			}
+		}
+	})
+
+	t.Run("Alignments (left, center, right)", func(t *testing.T) {
+		input := "| Left | Center | Right |\n" +
+			"| :--- | :---: | ---: |\n" +
+			"| L1 | C1 | R1 |\n" +
+			"| LeftLong | Mid | 100 |"
+
+		actual := MarkdownToTelegramHTML(input)
+		if !strings.HasPrefix(actual, "<pre>") || !strings.HasSuffix(actual, "</pre>") {
+			t.Fatalf("expected <pre> block, got:\n%s", actual)
+		}
+
+		content := strings.TrimPrefix(strings.TrimSuffix(actual, "</pre>"), "<pre>")
+		lines := strings.Split(content, "\n")
+		if len(lines) != 4 {
+			t.Fatalf("expected 4 lines, got %d", len(lines))
+		}
+
+		// В строке-разделителе должны присутствовать маркеры выравнивания
+		delim := lines[1]
+		if !strings.Contains(delim, ":") {
+			t.Errorf("expected alignment markers in delimiter line: %q", delim)
+		}
+
+		// Проверяем одинаковую визуальную ширину всех строк
+		expectedWidth := stringVisualWidth(lines[0])
+		for i, line := range lines {
+			if w := stringVisualWidth(line); w != expectedWidth {
+				t.Errorf("line %d visual width %d != %d", i, w, expectedWidth)
+			}
+		}
+	})
+
+	t.Run("HTML escaping inside cells", func(t *testing.T) {
+		input := "| Tag | Condition |\n" +
+			"| --- | --- |\n" +
+			"| <div> | x < 5 && y > 10 |"
+
+		actual := MarkdownToTelegramHTML(input)
+		if !strings.Contains(actual, "&lt;div&gt;") {
+			t.Errorf("expected &lt;div&gt; in output, got:\n%s", actual)
+		}
+		if !strings.Contains(actual, "x &lt; 5 &amp;&amp; y &gt; 10") {
+			t.Errorf("expected escaped condition in output, got:\n%s", actual)
+		}
+
+		// Проверяем, что экранированные символы не сломали визуальное выравнивание
+		content := strings.TrimPrefix(strings.TrimSuffix(actual, "</pre>"), "<pre>")
+		lines := strings.Split(content, "\n")
+		// При unescape (как рендерит клиент Telegram) ширина должна идеально совпадать
+		unescapedHeader := strings.ReplaceAll(lines[0], "&lt;", "<")
+		unescapedHeader = strings.ReplaceAll(unescapedHeader, "&gt;", ">")
+		unescapedHeader = strings.ReplaceAll(unescapedHeader, "&amp;", "&")
+
+		unescapedRow := strings.ReplaceAll(lines[2], "&lt;", "<")
+		unescapedRow = strings.ReplaceAll(unescapedRow, "&gt;", ">")
+		unescapedRow = strings.ReplaceAll(unescapedRow, "&amp;", "&")
+
+		if stringVisualWidth(unescapedHeader) != stringVisualWidth(unescapedRow) {
+			t.Errorf("rendered visual width mismatch: %d != %d", stringVisualWidth(unescapedHeader), stringVisualWidth(unescapedRow))
+		}
+	})
+
+	t.Run("Table without outer pipes", func(t *testing.T) {
+		input := "Name | Age | Role\n" +
+			"--- | --- | ---\n" +
+			"Alice | 30 | Admin\n" +
+			"Bob | 25 | User"
+
+		actual := MarkdownToTelegramHTML(input)
+		if !strings.HasPrefix(actual, "<pre>") || !strings.HasSuffix(actual, "</pre>") {
+			t.Fatalf("expected <pre>...</pre>, got:\n%s", actual)
+		}
+		if !strings.Contains(actual, "Alice") || !strings.Contains(actual, "Admin") {
+			t.Errorf("expected Alice and Admin in output, got:\n%s", actual)
+		}
+	})
+
+	t.Run("Uneven rows with missing and extra cells", func(t *testing.T) {
+		input := "| A | B | C |\n" +
+			"| --- | --- | --- |\n" +
+			"| 1 | 2 |\n" +
+			"| 1 | 2 | 3 | 4 |"
+
+		actual := MarkdownToTelegramHTML(input)
+		if !strings.HasPrefix(actual, "<pre>") || !strings.HasSuffix(actual, "</pre>") {
+			t.Fatalf("expected <pre>...</pre>, got:\n%s", actual)
+		}
+		content := strings.TrimPrefix(strings.TrimSuffix(actual, "</pre>"), "<pre>")
+		lines := strings.Split(content, "\n")
+		expectedW := stringVisualWidth(lines[0])
+		for i, line := range lines {
+			if w := stringVisualWidth(line); w != expectedW {
+				t.Errorf("line %d visual width %d != %d", i, w, expectedW)
+			}
+		}
+	})
+
+	t.Run("Escaped pipes in cell", func(t *testing.T) {
+		input := "| Syntax | Description |\n" +
+			"| --- | --- |\n" +
+			"| a \\| b | bitwise OR |"
+
+		actual := MarkdownToTelegramHTML(input)
+		if !strings.Contains(actual, "a | b") {
+			t.Errorf("expected unescaped pipe in cell, got:\n%s", actual)
+		}
+	})
+
+	t.Run("Single pipe in text is not a table", func(t *testing.T) {
+		input := "Choose option A | option B\nNext line is normal text."
+		actual := MarkdownToTelegramHTML(input)
+		if strings.Contains(actual, "<pre>") {
+			t.Errorf("should not create <pre> for regular text with pipe, got:\n%s", actual)
+		}
+		if !strings.Contains(actual, "Choose option A | option B") {
+			t.Errorf("expected original text preserved, got:\n%s", actual)
+		}
+	})
+
+	t.Run("Table inside code block is preserved verbatim", func(t *testing.T) {
+		input := "```markdown\n" +
+			"| Col1 | Col2 |\n" +
+			"| --- | --- |\n" +
+			"| Val1 | Val2 |\n" +
+			"```"
+
+		actual := MarkdownToTelegramHTML(input)
+		// Не должно быть двойного <pre> или поломки структуры блока кода
+		if strings.Count(actual, "<pre>") != 1 {
+			t.Errorf("expected exactly 1 <pre> block, got:\n%s", actual)
+		}
+		if !strings.Contains(actual, "language-markdown") {
+			t.Errorf("expected language-markdown code block, got:\n%s", actual)
+		}
+	})
+
+	t.Run("Table surrounded by Markdown content", func(t *testing.T) {
+		input := "# Report\n\n" +
+			"Here is the comparison:\n\n" +
+			"| Metric | Value |\n" +
+			"| --- | --- |\n" +
+			"| CPU | 15% |\n\n" +
+			"Conclusion: all good."
+
+		actual := MarkdownToTelegramHTML(input)
+		if !strings.Contains(actual, "<b>Report</b>") {
+			t.Errorf("expected header <b>Report</b>, got:\n%s", actual)
+		}
+		if !strings.Contains(actual, "<pre>") {
+			t.Errorf("expected <pre> table block, got:\n%s", actual)
+		}
+		if !strings.Contains(actual, "Conclusion: all good.") {
+			t.Errorf("expected conclusion text, got:\n%s", actual)
+		}
+	})
+
+	t.Run("Markdown formatting in cells is cleaned for monospace output", func(t *testing.T) {
+		input := "| **Name** | *Role* | `Command` |\n" +
+			"| --- | --- | --- |\n" +
+			"| **Alice** | *Admin* | `sudo apt update` |\n" +
+			"| Bob_dev | Member | `git status` |"
+
+		actual := MarkdownToTelegramHTML(input)
+		if strings.Contains(actual, "**") || strings.Contains(actual, "`") {
+			t.Errorf("expected stripped markdown markers inside <pre> table, got:\n%s", actual)
+		}
+		// Имя переменной с подчеркиванием должно остаться нетронутым
+		if !strings.Contains(actual, "Bob_dev") {
+			t.Errorf("expected Bob_dev preserved, got:\n%s", actual)
+		}
+	})
+}
+
 func TestEnsureTagsClosed(t *testing.T) {
 	tests := []struct {
 		name     string
