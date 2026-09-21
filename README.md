@@ -317,7 +317,7 @@ nano .env
 | `WHISPER_API_KEY` | No | — | Optional Bearer authorization token if your Whisper server requires authentication. |
 | `WHISPER_MODEL` | No | `small` | Model name sent to Whisper server. |
 | `WHISPER_LANGUAGE` | No | `en` | Speech recognition language code (`en`, `ru`, `auto`, etc.). Defaults to `en`. To switch the language, for example to Russian, set `WHISPER_LANGUAGE=ru`. |
-| `WHISPER_PROMPT` | No | Language-specific IT terms | Initial prompt / vocabulary hint to guide Whisper context and terminology. Automatically selects IT domain terms based on `WHISPER_LANGUAGE` (`en` or `ru`). Set to `none` to disable. |
+| `WHISPER_PROMPT` | No | — (empty) | Initial prompt / vocabulary hint to guide Whisper context and reduce phonetic distortion of domain terms. Managed via `.env` (pre-filled in `.env.example`). Leave empty or set to `none` to disable. |
 | `WHISPER_TEMPERATURE` | No | `0.0` | Sampling temperature (`0.0` for deterministic greedy search, avoiding hallucinations). |
 | `WHISPER_LOUDNORM` | No | `true` | Audio loudness normalization via ffmpeg (`-af loudnorm`) to enhance quiet voices and whispering. Set to `false` to disable. |
 | `WHISPER_TIMEOUT` | No | `60s` | Timeout for the speech transcription HTTP request. Formats: `60s`, `2m`, or seconds. |

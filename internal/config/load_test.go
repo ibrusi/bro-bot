@@ -251,32 +251,20 @@ func TestLoadDebugFlag(t *testing.T) {
 func TestLoadWhisperOptions(t *testing.T) {
 	botDir := t.TempDir()
 
-	// 1a. По умолчанию (язык en)
+	// 1. По умолчанию (WHISPER_PROMPT не задан в env — словарь пуст)
 	setEnv(t, validEnv(botDir))
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
-	if cfg.WhisperPrompt != defaultWhisperPromptEN {
-		t.Errorf("expected default English WhisperPrompt %q, got %q", defaultWhisperPromptEN, cfg.WhisperPrompt)
+	if cfg.WhisperPrompt != "" {
+		t.Errorf("expected empty WhisperPrompt by default, got %q", cfg.WhisperPrompt)
 	}
 	if cfg.WhisperTemperature != defaultWhisperTemperature {
 		t.Errorf("expected default WhisperTemperature %v, got %v", defaultWhisperTemperature, cfg.WhisperTemperature)
 	}
 	if cfg.WhisperLoudnorm != defaultWhisperLoudnorm {
 		t.Errorf("expected default WhisperLoudnorm %v, got %v", defaultWhisperLoudnorm, cfg.WhisperLoudnorm)
-	}
-
-	// 1b. По умолчанию для русского языка (WHISPER_LANGUAGE=ru)
-	envRU := validEnv(botDir)
-	envRU[envWhisperLanguage] = "ru"
-	setEnv(t, envRU)
-	cfgRU, err := Load()
-	if err != nil {
-		t.Fatalf("Load() failed: %v", err)
-	}
-	if cfgRU.WhisperPrompt != defaultWhisperPromptRU {
-		t.Errorf("expected default Russian WhisperPrompt %q, got %q", defaultWhisperPromptRU, cfgRU.WhisperPrompt)
 	}
 
 	// 2. Явные пользовательские значения
@@ -300,15 +288,17 @@ func TestLoadWhisperOptions(t *testing.T) {
 	}
 
 	// 3. Отключение промпта (none / off / false)
-	envDisabledPrompt := validEnv(botDir)
-	envDisabledPrompt[envWhisperPrompt] = "none"
-	setEnv(t, envDisabledPrompt)
-	cfg, err = Load()
-	if err != nil {
-		t.Fatalf("Load() failed: %v", err)
-	}
-	if cfg.WhisperPrompt != "" {
-		t.Errorf("expected empty WhisperPrompt for 'none', got %q", cfg.WhisperPrompt)
+	for _, val := range []string{"none", "off", "false", "NONE", "Off"} {
+		envDisabled := validEnv(botDir)
+		envDisabled[envWhisperPrompt] = val
+		setEnv(t, envDisabled)
+		cfgDisabled, err := Load()
+		if err != nil {
+			t.Fatalf("Load() failed for %q: %v", val, err)
+		}
+		if cfgDisabled.WhisperPrompt != "" {
+			t.Errorf("expected empty WhisperPrompt for %q, got %q", val, cfgDisabled.WhisperPrompt)
+		}
 	}
 
 	// 4. Некорректная температура (откат к значению по умолчанию с предупреждением)
