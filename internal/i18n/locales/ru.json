@@ -30,6 +30,7 @@
     "btn.chat_task": "🚀 Создать задачу",
     "btn.agent_restart": "🔄 Начать заново",
     "btn.agent_switch": "🔀 Переключиться на %s",
+    "btn.retry": "🔄 Повторить задачу",
 
     "lang.title": "Язык",
     "lang.choose": "Выберите язык интерфейса:",
@@ -307,6 +308,7 @@
     "pipeline.question_header_planning": "❓ <b>Вопрос по плану задачи #%d (<code>%s</code>):</b>\n\n%s\n\n<i>Ответьте сообщением в чат или выберите вариант кнопкой.</i>",
     "pipeline.completed_with_pr": "🎉 <b>Задача #%d выполнена!</b>\n📁 Проект: <code>%s</code>\n🔗 <a href=\"%s\">Открыть Pull Request</a>\n",
     "pipeline.completed": "✅ <b>Задача #%d завершена!</b> (<code>%s</code>)\n",
+    "pipeline.completed_no_changes": "⚠️ <b>Задача #%d: завершена без изменений в коде</b> (<code>%s</code>)\n<i>Агент завершил работу, но не внёс изменений в репозиторий и не открыл Pull Request.</i>\n",
     "pipeline.completed_prompt": "📝 <b>Задача:</b> <i>«%s»</i>\n",
     "pipeline.completed_plan_link": "📄 <b>План реализации:</b> /planfile_%d\n",
     "pipeline.report_summary": "📑 <b>Отчёт о выполнении задачи #%d:</b>\n\n%s\n\n📄 <i>Полный отчёт (%d знаков) прикреплён файлом.</i>",

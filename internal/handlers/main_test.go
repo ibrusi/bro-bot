@@ -2036,3 +2036,156 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 		t.Errorf("expected agy back models message to contain gemini or sync error, got: %s", lastAgy2.Text)
 	}
 }
+
+func TestTaskRetryResetsPlanApprovedWhenRequiresPlan(t *testing.T) {
+	mt := setupTestApp(t)
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "agy", "build feature", testChatID, true)
+	taskID := task.Snapshot().ID
+	task.Update(func(t *domain.TaskSession) {
+		t.PlanApproved = true
+		t.Status = domain.TaskStatusCompleted
+	})
+
+	sess := &mock.Session{
+		M:       mt.Messenger,
+		ChatID:  testChatID,
+		Sender:  string(testChatID),
+		ArgsVal: []string{strconv.Itoa(taskID)},
+	}
+
+	if err := handleRetry(sess); err != nil {
+		t.Fatalf("handleRetry failed: %v", err)
+	}
+
+	view := task.Snapshot()
+	if view.PlanApproved {
+		t.Errorf("expected PlanApproved to be reset to false on retry, got true")
+	}
+	if view.Status != domain.TaskStatusPlanning {
+		t.Errorf("expected Status to be planning on retry, got: %s", view.Status)
+	}
+}
+
+func TestTaskAgentRestartResetsPlanApprovedWhenRequiresPlan(t *testing.T) {
+	mt := setupTestApp(t)
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "claude", "initial prompt", testChatID, true)
+	taskID := task.Snapshot().ID
+	task.Update(func(t *domain.TaskSession) {
+		t.PlanApproved = true
+		t.Status = domain.TaskStatusPaused
+	})
+
+	cb, ok := mt.callbacks["task_agent_restart"]
+	if !ok {
+		t.Fatalf("task_agent_restart callback not registered")
+	}
+
+	sess := &mock.Session{
+		M:      mt.Messenger,
+		ChatID: testChatID,
+		Sender: string(testChatID),
+		CB: &ports.CallbackQuery{
+			Action:      "task_agent_restart",
+			Payload:     strconv.Itoa(taskID),
+			MessageText: "restarting",
+		},
+	}
+
+	if err := cb(sess); err != nil {
+		t.Fatalf("task_agent_restart failed: %v", err)
+	}
+
+	view := task.Snapshot()
+	if view.PlanApproved {
+		t.Errorf("expected PlanApproved to be reset to false on agent restart, got true")
+	}
+	if view.Status != domain.TaskStatusPlanning {
+		t.Errorf("expected Status to be planning on agent restart, got: %s", view.Status)
+	}
+}
+
+func TestTaskRetryCallbackRegistered(t *testing.T) {
+	mt := setupTestApp(t)
+
+	cb, ok := mt.callbacks["task_retry"]
+	if !ok {
+		t.Fatalf("task_retry callback not registered in main.go")
+	}
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "model", "agy", "build feature", testChatID, true)
+	taskID := task.Snapshot().ID
+	task.Update(func(t *domain.TaskSession) {
+		t.PlanApproved = true
+		t.Status = domain.TaskStatusCompleted
+	})
+
+	sess := &mock.Session{
+		M:      mt.Messenger,
+		ChatID: testChatID,
+		Sender: string(testChatID),
+		CB: &ports.CallbackQuery{
+			Action:  "task_retry",
+			Payload: strconv.Itoa(taskID),
+		},
+	}
+
+	if err := cb(sess); err != nil {
+		t.Fatalf("task_retry callback failed: %v", err)
+	}
+
+	view := task.Snapshot()
+	if view.PlanApproved {
+		t.Errorf("expected PlanApproved to be reset to false via task_retry callback")
+	}
+	if view.Status != domain.TaskStatusPlanning {
+		t.Errorf("expected Status to be planning via task_retry callback, got: %s", view.Status)
+	}
+}
+
+func TestHasGitChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Empty dir is not git repo -> false
+	if hasGitChanges(tmpDir) {
+		t.Errorf("expected hasGitChanges to be false for non-git dir")
+	}
+
+	// Init git repo
+	cmd := exec.Command("git", "init", "-b", "main", tmpDir)
+	if err := cmd.Run(); err != nil {
+		// Fallback for older git
+		_ = exec.Command("git", "init", tmpDir).Run()
+		_ = exec.Command("git", "-C", tmpDir, "checkout", "-b", "main").Run()
+	}
+
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Tester").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "tester@example.com").Run()
+
+	// Initial commit
+	initFile := filepath.Join(tmpDir, "init.txt")
+	_ = os.WriteFile(initFile, []byte("init"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", "init.txt").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "initial commit").Run()
+
+	// Clean repo on main -> false
+	if hasGitChanges(tmpDir) {
+		t.Errorf("expected hasGitChanges to be false for clean main branch")
+	}
+
+	// Create an untracked file -> true
+	untracked := filepath.Join(tmpDir, "newfile.txt")
+	_ = os.WriteFile(untracked, []byte("hello"), 0644)
+	if !hasGitChanges(tmpDir) {
+		t.Errorf("expected hasGitChanges to be true when untracked file exists")
+	}
+	_ = os.Remove(untracked)
+
+	// Checkout feature branch -> true
+	_ = exec.Command("git", "-C", tmpDir, "checkout", "-b", "feat/my-feature").Run()
+	if !hasGitChanges(tmpDir) {
+		t.Errorf("expected hasGitChanges to be true when on feature branch")
+	}
+}
+
