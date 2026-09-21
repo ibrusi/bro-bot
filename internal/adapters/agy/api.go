@@ -2,6 +2,7 @@ package agy
 
 import (
 	"bro-bot/internal/agents"
+	"bro-bot/internal/config"
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/tools"
@@ -329,7 +330,7 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 	isReadOnly := args.ReadOnly || strings.Contains(args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(args.SystemPrompt, "CHAT MODE")
 	model.Tools = tools.GeminiToolDeclarations(isReadOnly)
 
-	executor := tools.NewExecutor(args.WorkDir)
+	executor := tools.NewExecutorWithSandbox(args.WorkDir, config.SandboxEnabled)
 
 	// История диалога проигрывается на нашей стороне: Gemini API не хранит сессии.
 	chat := model.StartChat()

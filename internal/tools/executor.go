@@ -35,12 +35,25 @@ var (
 
 // Executor выполняет файловые операции и команды внутри рабочей директории проекта.
 type Executor struct {
-	WorkDir string
+	WorkDir    string
+	UseSandbox bool
 }
 
 // NewExecutor создаёт новый исполнитель инструментов для указанной директории.
 func NewExecutor(workDir string) *Executor {
 	return &Executor{WorkDir: workDir}
+}
+
+// NewExecutorWithSandbox создаёт новый исполнитель инструментов с явным указанием режима песочницы.
+func NewExecutorWithSandbox(workDir string, useSandbox bool) *Executor {
+	return &Executor{WorkDir: workDir, UseSandbox: useSandbox}
+}
+
+var lookPath = exec.LookPath
+
+func hasBwrap() bool {
+	_, err := lookPath("bwrap")
+	return err == nil
 }
 
 // SafeResolvePath проверяет и возвращает абсолютный путь к файлу,
@@ -255,6 +268,7 @@ func (e *Executor) ListDir(path string) (string, error) {
 }
 
 // RunCommand выполняет консольную команду внутри WorkDir.
+// При включённом UseSandbox команда изолируется с помощью bubblewrap (bwrap).
 func (e *Executor) RunCommand(ctx context.Context, command string) (string, error) {
 	if strings.TrimSpace(command) == "" {
 		return "", errors.New("command cannot be empty")
@@ -263,10 +277,29 @@ func (e *Executor) RunCommand(ctx context.Context, command string) (string, erro
 		return "", ErrWorkspaceNotSet
 	}
 
+	absWorkDir, err := filepath.Abs(e.WorkDir)
+	if err != nil {
+		return "", fmt.Errorf("invalid workspace directory %q: %w", e.WorkDir, err)
+	}
+
 	cmdCtx, cancel := context.WithTimeout(ctx, defaultCommandTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, "bash", "-c", command)
+	var cmd *exec.Cmd
+	if e.UseSandbox && hasBwrap() {
+		cmd = exec.CommandContext(cmdCtx, "bwrap",
+			"--ro-bind", "/", "/",
+			"--bind", absWorkDir, absWorkDir,
+			"--bind", "/tmp", "/tmp",
+			"--proc", "/proc",
+			"--dev", "/dev",
+			"--die-with-parent",
+			"--",
+			"bash", "-c", command,
+		)
+	} else {
+		cmd = exec.CommandContext(cmdCtx, "bash", "-c", command)
+	}
 	cmd.Dir = e.WorkDir
 
 	out, err := cmd.CombinedOutput()

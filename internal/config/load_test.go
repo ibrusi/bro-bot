@@ -36,7 +36,7 @@ func setEnv(t *testing.T, env map[string]string) {
 		envDBPath, envScriptsDir,
 		envWhisperServerURL, envWhisperAPIKey, envWhisperModel, envWhisperLanguage,
 		envWhisperPrompt, envWhisperTemperature, envWhisperLoudnorm, envWhisperTimeout,
-		envDebug, envDebugLower,
+		envDebug, envDebugLower, envSandboxEnabled,
 	}
 	for _, name := range all {
 		if value, ok := env[name]; ok {
@@ -497,6 +497,7 @@ func TestApplyPublishesEveryField(t *testing.T) {
 		"WhisperLoudnorm":    WhisperLoudnorm,
 		"WhisperTimeout":     WhisperTimeout,
 		"Debug":              Debug,
+		"SandboxEnabled":     SandboxEnabled,
 	}
 
 	v := reflect.ValueOf(cfg)
@@ -527,3 +528,39 @@ func TestBotTokenNamesVariableWithoutValue(t *testing.T) {
 		t.Errorf("ошибка не называет переменную: %v", err)
 	}
 }
+
+func TestSandboxEnabledConfig(t *testing.T) {
+	botDir := t.TempDir()
+	base := validEnv(botDir)
+
+	// По умолчанию включено
+	setEnv(t, base)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.SandboxEnabled {
+		t.Errorf("expected SandboxEnabled to be true by default")
+	}
+
+	// Явное отключение
+	setEnv(t, with(base, envSandboxEnabled, "false"))
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SandboxEnabled {
+		t.Errorf("expected SandboxEnabled to be false when set to 'false'")
+	}
+
+	// Явное включение
+	setEnv(t, with(base, envSandboxEnabled, "1"))
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.SandboxEnabled {
+		t.Errorf("expected SandboxEnabled to be true when set to '1'")
+	}
+}
+

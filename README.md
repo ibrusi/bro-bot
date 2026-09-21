@@ -322,6 +322,7 @@ nano .env
 | `WHISPER_LOUDNORM` | No | `true` | Audio loudness normalization via ffmpeg (`-af loudnorm`) to enhance quiet voices and whispering. Set to `false` to disable. |
 | `WHISPER_TIMEOUT` | No | `60s` | Timeout for the speech transcription HTTP request. Formats: `60s`, `2m`, or seconds. |
 | `DEBUG` | No | `false` (empty) | Debug mode. When set to `true` or `1`, Telegram quote messages display performance metrics (STT Latency, Audio Duration, RTF). |
+| `SANDBOX_ENABLED` | No | `true` | Enable sandbox isolation for agent command execution. In CLI/MCP modes, agents run sandboxed (`--sandbox` / `CLAUDE_CODE_FORCE_SANDBOX=1`); in API mode, commands are isolated via bubblewrap (`bwrap`). |
 
 ### Example `.env`
 
@@ -337,6 +338,7 @@ CHAT_TIMEOUT=5m
 BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
+SANDBOX_ENABLED=true
 WHISPER_SERVER_URL=http://127.0.0.1:8080/inference
 WHISPER_MODEL=base-q5_1
 WHISPER_LANGUAGE=en
@@ -606,6 +608,12 @@ go test -cover ./...
 3. **Command Injection Prevention**:
    - Subprocesses (`git`, `go`, `systemctl`, `agy`) are executed directly via `exec.CommandContext` without an intervening shell (`sh -c`).
    - URL and path arguments are isolated with the `--` delimiter.
+4. **Sandbox Isolation (Sandbox & Bubblewrap)**:
+   - **CLI and MCP Modes**: `agy` runs with `--sandbox`, while `claude` runs with `CLAUDE_CODE_FORCE_SANDBOX=1`. Native sandbox configurations (`enableTerminalSandbox`, trusted workspaces, and write permissions) are automatically configured in `settings.json`.
+   - **API Mode**: The built-in command runner (`RunCommand`) automatically executes subprocesses inside an isolated `bubblewrap` (`bwrap`) container with a read-only root filesystem (`--ro-bind / /`), restricting write access solely to the task workspace (`workDir`) and temporary directory (`/tmp`).
+   - **Sandbox Management Targets**:
+     - `sudo make setup-sandbox` — installs dependencies (`bubblewrap`, `socat`), configures the AppArmor profile, and applies settings across agent configuration files.
+     - `make verify-sandbox` — verifies `bwrap`, `socat`, AppArmor permissions, and filesystem isolation.
 
 
 ---
