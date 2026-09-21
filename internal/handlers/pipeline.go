@@ -286,7 +286,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			statsSummary := metrics.FormatCompletionSummary(lang)
 
 			var compBldr strings.Builder
-			noChanges := hasPlan && prURL == "" && !hasGitChanges(workDir)
+			noChanges := prURL == "" && !hasGitChanges(workDir)
 			if prURL != "" {
 				compBldr.WriteString(i18n.Tf(lang, "pipeline.completed_with_pr", taskID, html.EscapeString(projectName), html.EscapeString(prURL)))
 			} else if noChanges {

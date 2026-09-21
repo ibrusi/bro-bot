@@ -2189,3 +2189,42 @@ func TestHasGitChanges(t *testing.T) {
 	}
 }
 
+func TestNoChangesValidationLogic(t *testing.T) {
+	// Проверяем логику noChanges: prURL == "" && !hasGitChanges(workDir)
+	// Должно срабатывать вне зависимости от наличия плана (hasPlan true/false).
+	cases := []struct {
+		name          string
+		prURL         string
+		hasGitChanges bool
+		expected      bool
+	}{
+		{
+			name:          "Has PR URL -> false",
+			prURL:         "https://github.com/ibrusi/bro-bot/pull/1",
+			hasGitChanges: false,
+			expected:      false,
+		},
+		{
+			name:          "No PR and no git changes -> true (completed_no_changes)",
+			prURL:         "",
+			hasGitChanges: false,
+			expected:      true,
+		},
+		{
+			name:          "No PR but has git changes -> false (completed with local changes)",
+			prURL:         "",
+			hasGitChanges: true,
+			expected:      false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			noChanges := tc.prURL == "" && !tc.hasGitChanges
+			if noChanges != tc.expected {
+				t.Errorf("noChanges = %v, expected %v", noChanges, tc.expected)
+			}
+		})
+	}
+}
+

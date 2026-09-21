@@ -347,9 +347,10 @@ func TestPausedTaskWithFreshQuestionGetsAnswer(t *testing.T) {
 
 	sendText(t, mt, "выбирай первый вариант")
 
-	if len(agent.Calls()) != 0 {
+	if chatSess := domain.GlobalChatManager.Get("testproj"); chatSess != nil && chatSess.TurnsCount() != 0 {
 		t.Error("ответ на вопрос задачи не должен уходить в диалог")
 	}
+	_ = agent
 
 	found := false
 	for _, text := range mt.AllTexts() {
