@@ -2,6 +2,7 @@ package agy
 
 import (
 	"bro-bot/internal/adapters/cliproc"
+	"bro-bot/internal/config"
 	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
@@ -25,11 +26,14 @@ func (a *AgyAdapter) ExecutionMode() string {
 	return "cli"
 }
 
-func buildAgyArgs(convID, modelName, prompt, systemPrompt, workDir string) []string {
+func buildAgyArgs(convID, modelName, prompt, systemPrompt, workDir string, sandbox bool) []string {
 	args := []string{
 		"--dangerously-skip-permissions",
 		"--print-timeout", "30m", // Hardcoded fallback or we can pass it
 		"--output-format", "stream-json",
+	}
+	if sandbox {
+		args = append(args, "--sandbox")
 	}
 	if convID != "" {
 		args = append(args, "--conversation", convID)
@@ -54,7 +58,7 @@ func buildAgyArgs(convID, modelName, prompt, systemPrompt, workDir string) []str
 // Историю диалога agy хранит сам и восстанавливает по флагу --conversation.
 // На первой сессии инструкции передаются через правила проекта или преамбулу промпта.
 func (a *AgyAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
-	cmdArgs := buildAgyArgs(args.ConversationID, args.ModelName, args.Prompt, args.SystemPrompt, args.WorkDir)
+	cmdArgs := buildAgyArgs(args.ConversationID, args.ModelName, args.Prompt, args.SystemPrompt, args.WorkDir, config.SandboxEnabled)
 	cmd := exec.CommandContext(ctx, "agy", cmdArgs...)
 	cmd.Dir = args.WorkDir
 	cmd.Env = append(os.Environ(),

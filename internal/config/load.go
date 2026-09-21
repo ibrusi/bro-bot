@@ -38,6 +38,7 @@ const (
 	envWhisperTimeout     = "WHISPER_TIMEOUT"
 	envDebug              = "DEBUG"
 	envDebugLower         = "debug"
+	envSandboxEnabled     = "SANDBOX_ENABLED"
 )
 
 // Значения по умолчанию для необязательных параметров.
@@ -50,6 +51,7 @@ const (
 	defaultWhisperLanguage    = "en"
 	defaultWhisperTemperature = 0.0
 	defaultWhisperLoudnorm    = true
+	defaultSandboxEnabled     = true
 )
 
 // Config — снимок настроек окружения, снятый один раз при старте процесса.
@@ -83,6 +85,9 @@ type Config struct {
 
 	// Debug режим
 	Debug bool
+
+	// SandboxEnabled включает запуск команд агентов в изолированной песочнице (bubblewrap).
+	SandboxEnabled bool
 }
 
 // executablePath подменяется в тестах: это единственная часть Load, которая смотрит
@@ -209,6 +214,12 @@ func Load() (Config, error) {
 	}
 	cfg.Debug = parseBool(rawDebug)
 
+	if rawSandbox := envTrim(envSandboxEnabled); rawSandbox != "" {
+		cfg.SandboxEnabled = parseBool(rawSandbox)
+	} else {
+		cfg.SandboxEnabled = defaultSandboxEnabled
+	}
+
 	if len(problems) > 0 {
 		return Config{}, fmt.Errorf("конфигурация: %s", strings.Join(problems, "; "))
 	}
@@ -238,6 +249,7 @@ func Apply(c Config) {
 	WhisperLoudnorm = c.WhisperLoudnorm
 	WhisperTimeout = c.WhisperTimeout
 	Debug = c.Debug
+	SandboxEnabled = c.SandboxEnabled
 }
 
 // BotToken возвращает токен бота, нигде его не сохраняя.

@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildAgyArgs_NewSession(t *testing.T) {
-	args := buildAgyArgs("", "gemini-3.8-flash-high", "Hello Agy", "", "")
+	args := buildAgyArgs("", "gemini-3.8-flash-high", "Hello Agy", "", "", false)
 
 	hasDangerous := false
 	hasOutputFormat := false
@@ -56,7 +56,7 @@ func TestBuildAgyArgs_NewSession(t *testing.T) {
 
 func TestBuildAgyArgs_NewSessionWithSystemPrompt(t *testing.T) {
 	sysPrompt := "Senior dev rules from AGENTS.md"
-	args := buildAgyArgs("", "gemini-3.8-flash-high", "Do task", sysPrompt, "/tmp/non-existent-dir")
+	args := buildAgyArgs("", "gemini-3.8-flash-high", "Do task", sysPrompt, "/tmp/non-existent-dir", false)
 
 	promptArg := ""
 	for i := 0; i < len(args); i++ {
@@ -75,7 +75,7 @@ func TestBuildAgyArgs_NewSessionWithSystemPrompt(t *testing.T) {
 
 func TestBuildAgyArgs_ResumeSession(t *testing.T) {
 	convID := "test-conversation-uuid-1234"
-	args := buildAgyArgs(convID, "gemini-3.1-pro-high", "Continue task", "Ignore this system prompt on resume", "")
+	args := buildAgyArgs(convID, "gemini-3.1-pro-high", "Continue task", "Ignore this system prompt on resume", "", false)
 
 	hasConv := false
 	promptArg := ""
@@ -93,6 +93,28 @@ func TestBuildAgyArgs_ResumeSession(t *testing.T) {
 	}
 	if strings.Contains(promptArg, "AGENTS.md") || strings.Contains(promptArg, "Ignore this system prompt") {
 		t.Errorf("expected resume prompt NOT to contain system prompt, got: %s", promptArg)
+	}
+}
+
+func TestBuildAgyArgs_Sandbox(t *testing.T) {
+	withSandbox := buildAgyArgs("", "gemini-3.8-flash-high", "test", "", "", true)
+	withoutSandbox := buildAgyArgs("", "gemini-3.8-flash-high", "test", "", "", false)
+
+	hasSandbox := false
+	for _, arg := range withSandbox {
+		if arg == "--sandbox" {
+			hasSandbox = true
+			break
+		}
+	}
+	if !hasSandbox {
+		t.Errorf("expected buildAgyArgs with sandbox=true to include --sandbox")
+	}
+
+	for _, arg := range withoutSandbox {
+		if arg == "--sandbox" {
+			t.Errorf("expected buildAgyArgs with sandbox=false NOT to include --sandbox")
+		}
 	}
 }
 
@@ -116,8 +138,8 @@ func TestAgyAdapter_GetModels_Real(t *testing.T) {
 // История диалога в CLI-режиме не влияет на аргументы: agy восстанавливает контекст
 // по --conversation, а History предназначена только для api-режима.
 func TestBuildAgyArgs_IgnoresHistory(t *testing.T) {
-	withoutHistory := buildAgyArgs("conv-1", "gemini-3.8-flash-high", "вопрос", "", "")
-	withHistory := buildAgyArgs("conv-1", "gemini-3.8-flash-high", "вопрос", "", "")
+	withoutHistory := buildAgyArgs("conv-1", "gemini-3.8-flash-high", "вопрос", "", "", false)
+	withHistory := buildAgyArgs("conv-1", "gemini-3.8-flash-high", "вопрос", "", "", false)
 
 	if strings.Join(withoutHistory, " ") != strings.Join(withHistory, " ") {
 		t.Errorf("аргументы разошлись: %v vs %v", withoutHistory, withHistory)

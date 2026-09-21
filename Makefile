@@ -58,6 +58,9 @@ ifeq ($(ACTIVE_LANG),ru)
   MSG_HELP_STEP5             := sudo make step5-start       - Шаг 5: Запуск и проверка статуса службы $(BOT_NAME).service
   MSG_HELP_FFMPEG            := sudo make install-ffmpeg    - Установка ffmpeg (для конвертации голосовых сообщений)
   MSG_HELP_WHISPER           := sudo make install-whisper   - Установка whisper-server, модели $(WHISPER_MODEL) и службы
+  MSG_HELP_SANDBOX_SECTION   := Песочница и безопасность (Sandbox):
+  MSG_HELP_SETUP_SANDBOX     := sudo make setup-sandbox     - Настройка параметров песочницы для agy и claude
+  MSG_HELP_VERIFY_SANDBOX    := make verify-sandbox         - Проверка готовности песочницы (bwrap, socat, AppArmor, конфиги)
   MSG_HELP_DEV_SECTION       := Разработка и сборка (для локальной работы):
   MSG_HELP_BUILD             := make build                  - Компиляция Go-бинарника (./cmd/bot)
   MSG_HELP_TEST              := make test                   - Запуск всех тестов проекта
@@ -117,6 +120,22 @@ ifeq ($(ACTIVE_LANG),ru)
   MSG_WHISPER_VAD            := Скачивание VAD-модели ggml-$(WHISPER_VAD_MODEL).bin...
   MSG_WHISPER_SERVICE        := Настройка systemd-службы whisper-server.service...
   MSG_WHISPER_DONE           := ✅ whisper-server успешно установлен и запущен на порту $(WHISPER_PORT)!
+
+  MSG_SANDBOX_SETUP_TITLE    := ==> Настройка песочницы (Sandbox) для Antigravity CLI и Claude Code CLI...
+  MSG_SANDBOX_DEPS           := Установка зависимостей песочницы (bubblewrap, socat)...
+  MSG_SANDBOX_APPARMOR_CHECK := Настройка профиля AppArmor для bubblewrap...
+  MSG_SANDBOX_APPARMOR_SET   := ✅ Профиль AppArmor для bwrap применен.
+  MSG_SANDBOX_CONFIG_AGY     := Настройка песочницы терминала для agy (~/.gemini/...)...
+  MSG_SANDBOX_CONFIG_CLAUDE  := Настройка песочницы для claude (~/.claude/settings.json)...
+  MSG_SANDBOX_SETUP_DONE     := ✅ Настройка песочницы успешно завершена!
+  MSG_SANDBOX_VERIFY_TITLE   := ==> Проверка готовности песочницы (Sandbox)...
+  MSG_SANDBOX_BWRAP_OK       := ✅ bubblewrap (bwrap) найден:
+  MSG_SANDBOX_BWRAP_FAIL     := ❌ bubblewrap (bwrap) не найден! Установите через: sudo apt-get install -y bubblewrap
+  MSG_SANDBOX_SOCAT_OK       := ✅ socat найден:
+  MSG_SANDBOX_SOCAT_FAIL     := ⚠️ socat не найден! Рекомендуется установить: sudo apt-get install -y socat
+  MSG_SANDBOX_ISOLATION_OK   := ✅ Тест изоляции bubblewrap успешен (файловая система защищена).
+  MSG_SANDBOX_ISOLATION_FAIL := ❌ Ошибка выполнения теста изоляции bubblewrap!
+  MSG_SANDBOX_CONFIGS_OK     := ✅ Все конфигурации песочницы настроены корректно!
 else
   MSG_HELP_TITLE             := Available Makefile targets:
   MSG_HELP_DEPLOY_SECTION    := Server deployment (run as root on a clean server):
@@ -128,6 +147,9 @@ else
   MSG_HELP_STEP5             := sudo make step5-start       - Step 5: Start and verify $(BOT_NAME).service status
   MSG_HELP_FFMPEG            := sudo make install-ffmpeg    - Install ffmpeg (for voice message conversion)
   MSG_HELP_WHISPER           := sudo make install-whisper   - Install whisper-server, $(WHISPER_MODEL) model, and service
+  MSG_HELP_SANDBOX_SECTION   := Sandbox & Security:
+  MSG_HELP_SETUP_SANDBOX     := sudo make setup-sandbox     - Configure sandbox settings for agy and claude
+  MSG_HELP_VERIFY_SANDBOX    := make verify-sandbox         - Verify sandbox readiness (bwrap, socat, AppArmor, configs)
   MSG_HELP_DEV_SECTION       := Development & build (local usage):
   MSG_HELP_BUILD             := make build                  - Compile Go binary (./cmd/bot)
   MSG_HELP_TEST              := make test                   - Run all project tests
@@ -187,9 +209,25 @@ else
   MSG_WHISPER_VAD            := Downloading VAD model ggml-$(WHISPER_VAD_MODEL).bin...
   MSG_WHISPER_SERVICE        := Configuring whisper-server.service systemd service...
   MSG_WHISPER_DONE           := ✅ whisper-server successfully installed and running on port $(WHISPER_PORT)!
+
+  MSG_SANDBOX_SETUP_TITLE    := ==> Configuring sandbox for Antigravity CLI and Claude Code CLI...
+  MSG_SANDBOX_DEPS           := Installing sandbox dependencies (bubblewrap, socat)...
+  MSG_SANDBOX_APPARMOR_CHECK := Configuring AppArmor profile for bubblewrap...
+  MSG_SANDBOX_APPARMOR_SET   := ✅ AppArmor profile for bwrap applied.
+  MSG_SANDBOX_CONFIG_AGY     := Configuring terminal sandbox for agy (~/.gemini/...)...
+  MSG_SANDBOX_CONFIG_CLAUDE  := Configuring sandbox for claude (~/.claude/settings.json)...
+  MSG_SANDBOX_SETUP_DONE     := ✅ Sandbox configuration completed successfully!
+  MSG_SANDBOX_VERIFY_TITLE   := ==> Verifying sandbox readiness...
+  MSG_SANDBOX_BWRAP_OK       := ✅ bubblewrap (bwrap) found:
+  MSG_SANDBOX_BWRAP_FAIL     := ❌ bubblewrap (bwrap) not found! Install via: sudo apt-get install -y bubblewrap
+  MSG_SANDBOX_SOCAT_OK       := ✅ socat found:
+  MSG_SANDBOX_SOCAT_FAIL     := ⚠️ socat not found! Recommended to install: sudo apt-get install -y socat
+  MSG_SANDBOX_ISOLATION_OK   := ✅ Bubblewrap isolation test succeeded (filesystem protected).
+  MSG_SANDBOX_ISOLATION_FAIL := ❌ Bubblewrap isolation test failed!
+  MSG_SANDBOX_CONFIGS_OK     := ✅ All sandbox configuration files are properly configured!
 endif
 
-.PHONY: all install step1-user step2-agents step2-agy step3-service step4-clone-build step5-start install-ffmpeg install-whisper help build test run clean
+.PHONY: all install step1-user step2-agents step2-agy step3-service step4-clone-build step5-start setup-sandbox verify-sandbox install-ffmpeg install-whisper help build test run clean
 
 all: help
 
@@ -205,6 +243,10 @@ help:
 	@echo "    $(MSG_HELP_STEP5)"
 	@echo "    $(MSG_HELP_FFMPEG)"
 	@echo "    $(MSG_HELP_WHISPER)"
+	@echo ""
+	@echo "  $(MSG_HELP_SANDBOX_SECTION)"
+	@echo "    $(MSG_HELP_SETUP_SANDBOX)"
+	@echo "    $(MSG_HELP_VERIFY_SANDBOX)"
 	@echo ""
 	@echo "  $(MSG_HELP_DEV_SECTION)"
 	@echo "    $(MSG_HELP_BUILD)"
@@ -245,7 +287,7 @@ install: step1-user step2-agents step3-service step4-clone-build step5-start
 # -------------------------------------------------------------
 step1-user:
 	@echo "$(MSG_STEP1_TITLE)"
-	@apt-get update && apt-get install -y git curl wget build-essential sudo python3 python3-pip ffmpeg
+	@apt-get update && apt-get install -y git curl wget build-essential sudo python3 python3-pip ffmpeg bubblewrap socat
 	@if id "$(DEPLOY_USER)" &>/dev/null; then \
 		echo "$(MSG_STEP1_USER_EXISTS)"; \
 	else \
@@ -302,8 +344,64 @@ for path in [os.path.expanduser("~/.gemini/config/mcp_config.json"), os.path.exp
         json.dump(cfg, f, indent=2)\
 '\''; \
 	'
+	@$(MAKE) setup-sandbox
 
 step2-agy: step2-agents
+
+# -------------------------------------------------------------
+# Sandbox setup and verification / Настройка и проверка песочницы
+# -------------------------------------------------------------
+setup-sandbox:
+	@echo "$(MSG_SANDBOX_SETUP_TITLE)"
+	@if ! command -v bwrap &>/dev/null || ! command -v socat &>/dev/null; then \
+		echo "$(MSG_SANDBOX_DEPS)"; \
+		if [ "$$(id -u)" -eq 0 ]; then \
+			apt-get update && apt-get install -y bubblewrap socat; \
+		else \
+			sudo apt-get update && sudo apt-get install -y bubblewrap socat; \
+		fi; \
+	fi
+	@if [ -d /etc/apparmor.d ] && [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && [ "$$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ]; then \
+		if [ ! -f /etc/apparmor.d/bwrap ]; then \
+			echo "$(MSG_SANDBOX_APPARMOR_CHECK)"; \
+			CMD_PREFIX=""; [ "$$(id -u)" -ne 0 ] && CMD_PREFIX="sudo"; \
+			$$CMD_PREFIX bash -c 'printf "abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile bwrap /usr/bin/bwrap flags=(unconfined) {\n  userns,\n}\n" > /etc/apparmor.d/bwrap'; \
+			$$CMD_PREFIX systemctl reload apparmor.service 2>/dev/null || $$CMD_PREFIX /sbin/apparmor_parser -r /etc/apparmor.d/bwrap 2>/dev/null || true; \
+			echo "$(MSG_SANDBOX_APPARMOR_SET)"; \
+		fi; \
+	fi
+	@echo "$(MSG_SANDBOX_CONFIG_AGY)"
+	@echo "$(MSG_SANDBOX_CONFIG_CLAUDE)"
+	@if [ "$$(id -u)" -eq 0 ]; then \
+		sudo -u $(DEPLOY_USER) -i python3 $(REPO_DIR)/scripts/setup_sandbox.py; \
+	else \
+		python3 $(REPO_DIR)/scripts/setup_sandbox.py; \
+	fi
+	@echo "$(MSG_SANDBOX_SETUP_DONE)"
+
+verify-sandbox:
+	@echo "$(MSG_SANDBOX_VERIFY_TITLE)"
+	@if command -v bwrap &>/dev/null; then \
+		echo "$(MSG_SANDBOX_BWRAP_OK) $$(which bwrap)"; \
+	else \
+		echo "$(MSG_SANDBOX_BWRAP_FAIL)"; exit 1; \
+	fi
+	@if command -v socat &>/dev/null; then \
+		echo "$(MSG_SANDBOX_SOCAT_OK) $$(which socat)"; \
+	else \
+		echo "$(MSG_SANDBOX_SOCAT_FAIL)"; \
+	fi
+	@if bwrap --ro-bind / / --bind /tmp /tmp touch /etc/.test_sandbox_ro 2>/dev/null; then \
+		rm -f /etc/.test_sandbox_ro 2>/dev/null; \
+		echo "$(MSG_SANDBOX_ISOLATION_FAIL)"; exit 1; \
+	else \
+		echo "$(MSG_SANDBOX_ISOLATION_OK)"; \
+	fi
+	@if [ "$$(id -u)" -eq 0 ]; then \
+		sudo -u $(DEPLOY_USER) -i python3 $(REPO_DIR)/scripts/setup_sandbox.py --verify; \
+	else \
+		python3 $(REPO_DIR)/scripts/setup_sandbox.py --verify; \
+	fi && echo "$(MSG_SANDBOX_CONFIGS_OK)"
 
 # -------------------------------------------------------------
 # Step 3 / Шаг 3: systemd service registration

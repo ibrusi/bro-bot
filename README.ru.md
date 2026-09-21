@@ -316,6 +316,7 @@ nano .env
 | `WHISPER_LOUDNORM` | Нет | `true` | Нормализация громкости через ffmpeg (`-af loudnorm`) для разборчивости тихого голоса и шёпота. Для отключения укажите `false`. |
 | `WHISPER_TIMEOUT` | Нет | `60s` | Таймаут HTTP-запроса на распознавание аудио. Форматы: `60s`, `2m` или секунды. |
 | `DEBUG` | Нет | `false` (пусто) | Режим отладки. При значении `true` или `1` в Telegram отображаются замеры скорости транскрибации (STT Latency, Audio Duration, RTF). |
+| `SANDBOX_ENABLED` | Нет | `true` | Включение песочницы для изоляции выполнения команд агентами. В CLI/MCP запускает агентов в песочнице (`--sandbox` / `CLAUDE_CODE_FORCE_SANDBOX=1`), а в API изолирует вызовы через bubblewrap (`bwrap`). |
 
 ### Пример `.env`
 
@@ -331,6 +332,7 @@ CHAT_TIMEOUT=5m
 BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
+SANDBOX_ENABLED=true
 WHISPER_SERVER_URL=http://127.0.0.1:8080/inference
 WHISPER_MODEL=base-q5_1
 WHISPER_LANGUAGE=ru
@@ -600,6 +602,12 @@ go test -cover ./...
 3. **Защита от инъекций аргументов**:
    - Вызовы внешних утилит (`git`, `go`, `systemctl`, `agy`) выполняются напрямую через `exec.CommandContext` без использования небезопасной оболочки `sh -c`.
    - Аргументы URL и пути экранируются разделителем `--`.
+4. **Изоляция в песочнице (Sandbox & Bubblewrap)**:
+   - **Режимы CLI и MCP**: `agy` запускается с флагом `--sandbox`, а `claude` — с переменной окружения `CLAUDE_CODE_FORCE_SANDBOX=1`. Настройки песочницы (`enableTerminalSandbox`, доверенные воркспейсы и права на запись) автоматически конфигурируются в `settings.json`.
+   - **Режим API**: встроенный исполнитель команд (`RunCommand`) автоматически запускает процессы внутри изолированного контейнера `bubblewrap` (`bwrap`) с корневой файловой системой только для чтения (`--ro-bind / /`), разрешая запись исключительно в рабочий каталог задачи (`workDir`) и временный каталог (`/tmp`).
+   - **Команды управления песочницей**:
+     - `sudo make setup-sandbox` — автоматическая установка зависимостей (`bubblewrap`, `socat`), настройка профиля AppArmor и запись параметров в конфигурационные файлы агентов.
+     - `make verify-sandbox` — проверка доступности `bwrap`, `socat`, прав AppArmor и изоляции файловой системы.
 
 
 ---

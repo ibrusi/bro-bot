@@ -189,6 +189,37 @@ func TestRunCommand(t *testing.T) {
 	}
 }
 
+func TestRunCommandWithSandbox(t *testing.T) {
+	tempDir := t.TempDir()
+	executor := NewExecutorWithSandbox(tempDir, true)
+
+	if !executor.UseSandbox {
+		t.Fatalf("expected executor.UseSandbox to be true")
+	}
+
+	// Команда внутри WorkDir должна выполняться
+	out, err := executor.RunCommand(context.Background(), "echo 'sandbox test' && touch inside.txt")
+	if err != nil {
+		t.Fatalf("RunCommand in sandbox failed: %v, output: %s", err, out)
+	}
+	if !strings.Contains(out, "sandbox test") {
+		t.Errorf("unexpected output: %s", out)
+	}
+
+	// Проверяем, что файл внутри WorkDir создался
+	if _, err := os.Stat(filepath.Join(tempDir, "inside.txt")); err != nil {
+		t.Errorf("expected inside.txt to be created in sandbox WorkDir: %v", err)
+	}
+
+	// Если bwrap доступен в системе, проверяем изоляцию: запись в системный каталог должна завершаться ошибкой
+	if hasBwrap() {
+		_, err := executor.RunCommand(context.Background(), "touch /etc/sandbox_fail.tmp")
+		if err == nil {
+			t.Errorf("expected error when writing to /etc inside bwrap sandbox")
+		}
+	}
+}
+
 func TestExecuteDispatchAndReadOnly(t *testing.T) {
 	tempDir := t.TempDir()
 	executor := NewExecutor(tempDir)

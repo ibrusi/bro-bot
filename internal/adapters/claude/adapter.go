@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"bro-bot/internal/adapters/cliproc"
+	"bro-bot/internal/config"
 	"bro-bot/internal/ports"
 
 	"github.com/creack/pty"
@@ -74,11 +75,15 @@ func (a *ClaudeAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 	cmdArgs := buildClaudeArgs(args.ConversationID, args.ModelName, args.Prompt, args.SystemPrompt)
 	cmd := exec.CommandContext(ctx, "claude", cmdArgs...)
 	cmd.Dir = args.WorkDir
-	cmd.Env = append(os.Environ(),
+	env := append(os.Environ(),
 		"TERM=dumb",
 		"NO_COLOR=1",
 		"CI=true",
 	)
+	if config.SandboxEnabled {
+		env = append(env, "CLAUDE_CODE_FORCE_SANDBOX=1")
+	}
+	cmd.Env = env
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {

@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bro-bot/internal/agents"
+	"bro-bot/internal/config"
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/tools"
@@ -452,7 +453,7 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 	_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(initBytes))
 
 	isReadOnly := stream.args.ReadOnly || strings.Contains(stream.args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(stream.args.SystemPrompt, "CHAT MODE")
-	executor := tools.NewExecutor(stream.args.WorkDir)
+	executor := tools.NewExecutorWithSandbox(stream.args.WorkDir, config.SandboxEnabled)
 
 	body := buildClaudeMessagesBody(stream.model, stream.args)
 	messages, _ := body["messages"].([]map[string]interface{})

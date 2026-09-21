@@ -41,4 +41,7 @@ var (
 
 	// Debug включает режим отладки (расширенные метрики в чат).
 	Debug bool
+
+	// SandboxEnabled включает запуск команд агентов в изолированной песочнице (bubblewrap).
+	SandboxEnabled bool
 )

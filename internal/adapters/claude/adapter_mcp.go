@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"bro-bot/internal/adapters/cliproc"
+	"bro-bot/internal/config"
 	"bro-bot/internal/mcp"
 	"bro-bot/internal/ports"
 
@@ -55,11 +56,15 @@ func (a *ClaudeMCPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 
 	cmd := exec.CommandContext(ctx, "claude", cmdArgs...)
 	cmd.Dir = args.WorkDir
-	cmd.Env = append(os.Environ(),
+	env := append(os.Environ(),
 		"TERM=dumb",
 		"NO_COLOR=1",
 		"CI=true",
 	)
+	if config.SandboxEnabled {
+		env = append(env, "CLAUDE_CODE_FORCE_SANDBOX=1")
+	}
+	cmd.Env = env
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
