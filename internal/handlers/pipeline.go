@@ -493,20 +493,64 @@ func isAgyPrintTimeoutLine(rawLine string) bool {
 		strings.HasPrefix(trimmed, "Print mode: print timeout after")
 }
 
-// agyBackgroundTerminatedRegex — системная строка agy о том, что print-режим завершился,
-// прервав фоновые задачи агента (например, долгий `make test`). Перед ней agy пишет
-// "root agent idle; waiting up to 5s for N background task(s)" и ждёт всего несколько секунд.
-var agyBackgroundTerminatedRegex = regexp.MustCompile(`^terminating \d+ background task\(s\) on exit`)
+var (
+	// agyBackgroundIdleRegex — системная строка agy о том, что агент закончил ход, а его фоновые
+	// задачи ещё идут: "root agent idle; waiting up to 5s for N background task(s)". Если за ней
+	// агент не просыпается, print-режим через несколько секунд выходит, обрывая эти задачи.
+	agyBackgroundIdleRegex = regexp.MustCompile(`^root agent idle; waiting (?:up to \S+ )?for \d+ background task\(s\)`)
+	// agyBackgroundTerminatedRegex — системная строка agy о том, что print-режим завершился,
+	// прервав фоновые задачи агента (например, долгий `make test`).
+	agyBackgroundTerminatedRegex = regexp.MustCompile(`^terminating \d+ background task\(s\) on exit`)
+)
+
+// isAgyTerminalLine отсекает JSON-события стрима: системные строки agy печатаются голым
+// текстом, а в JSON те же фразы могут встретиться в просматриваемом коде, дифах или ответах.
+func isAgyTerminalLine(trimmed string) bool {
+	return !(strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}"))
+}
+
+// isAgyBackgroundIdleLine проверяет, что агент закончил ход, оставив фоновые задачи.
+func isAgyBackgroundIdleLine(rawLine string) bool {
+	trimmed := strings.TrimSpace(rawLine)
+	return isAgyTerminalLine(trimmed) && agyBackgroundIdleRegex.MatchString(trimmed)
+}
 
 // isAgyBackgroundTerminatedLine проверяет, что agy прервал фоновые задачи агента при выходе.
-// JSON-события стрима исключаются по той же причине, что и в isAgyPrintTimeoutLine:
-// фраза может встретиться в просматриваемом коде, дифах или ответах модели.
 func isAgyBackgroundTerminatedLine(rawLine string) bool {
 	trimmed := strings.TrimSpace(rawLine)
-	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
-		return false
+	return isAgyTerminalLine(trimmed) && agyBackgroundTerminatedRegex.MatchString(trimmed)
+}
+
+// backgroundWatch следит по выводу agy, не оборвал ли выход процесса фоновую работу агента.
+//
+// Основной сигнал — строка "terminating N background task(s) on exit". Но полагаться только
+// на неё нельзя: последняя строка перед закрытием PTY может не дочитаться, а формат может
+// смениться с обновлением CLI. Поэтому строка "root agent idle; waiting … background task(s)",
+// после которой агент так и не проявил активности до конца вывода, тоже считается обрывом.
+type backgroundWatch struct {
+	idle       bool
+	terminated bool
+}
+
+// ObserveTerminalLine учитывает строку терминального (не-JSON) вывода agy.
+func (w *backgroundWatch) ObserveTerminalLine(line string) {
+	switch {
+	case isAgyBackgroundTerminatedLine(line):
+		w.terminated = true
+	case isAgyBackgroundIdleLine(line):
+		w.idle = true
 	}
-	return agyBackgroundTerminatedRegex.MatchString(trimmed)
+}
+
+// ObserveAgentActivity отмечает, что агент проснулся после ожидания фоновых задач
+// (вызвал инструмент или пишет ответ): ожидание закончилось само, обрыва не было.
+func (w *backgroundWatch) ObserveAgentActivity() {
+	w.idle = false
+}
+
+// Interrupted сообщает, что процесс агента вышел, оборвав его фоновую работу.
+func (w backgroundWatch) Interrupted() bool {
+	return w.terminated || w.idle
 }
 
 // stepCompletion — наблюдения за завершившимся шагом, по которым определяется его исход.
@@ -732,7 +776,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}()
 
 	var stepTimedOut bool
-	var backgroundTerminated bool
+	var background backgroundWatch
 	var hasResult bool
 	var resultStatus string
 	var resultError string
@@ -766,6 +810,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 
 				if evt.StepUpdate != nil {
 					u := evt.StepUpdate
+					if (u.StepType == "tool" && u.State == "ACTIVE") || (u.StepType == "agent_response" && u.TextDelta != "") {
+						background.ObserveAgentActivity()
+					}
 					if u.Usage != nil {
 						domain.GlobalTokenTracker.RecordStepUsage(u.StepIndex, *u.Usage)
 					}
@@ -829,9 +876,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 			if isAgyPrintTimeoutLine(cleanLine) {
 				stepTimedOut = true
 			}
-			if isAgyBackgroundTerminatedLine(cleanLine) {
-				backgroundTerminated = true
-			}
+			background.ObserveTerminalLine(cleanLine)
 
 			// Fallback для текстового вывода или не-JSON строк
 			task.AppendLog(cleanLine)
@@ -896,7 +941,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		PendingQuestionOptions: pendingQuestionOptions,
 		PRURL:                  lastPR,
 		FinalResponse:          fullResp,
-		BackgroundTerminated:   backgroundTerminated,
+		BackgroundTerminated:   background.Interrupted(),
 	})
 
 	if isQuestion {

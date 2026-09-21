@@ -908,6 +908,61 @@ func TestIsAgyBackgroundTerminatedLine(t *testing.T) {
 	}
 }
 
+func TestIsAgyBackgroundIdleLine(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"root agent idle; waiting up to 5s for 1 background task(s)", true},
+		{"root agent idle; waiting up to 5s for 2 background task(s)", true},
+		{"root agent idle; waiting for 1 background task(s) (bounded by --print-timeout)", true},
+		{"terminating 1 background task(s) on exit", false},
+		{`{"type":"assistant","text":"root agent idle; waiting up to 5s for 1 background task(s)"}`, false},
+		{"echo root agent idle; waiting up to 5s for 1 background task(s)", false},
+	}
+	for _, tc := range cases {
+		if got := isAgyBackgroundIdleLine(tc.line); got != tc.want {
+			t.Errorf("isAgyBackgroundIdleLine(%q) = %v, ожидалось %v", tc.line, got, tc.want)
+		}
+	}
+}
+
+// TestBackgroundWatch воспроизводит последовательности из логов реальных задач.
+func TestBackgroundWatch(t *testing.T) {
+	const (
+		idle       = "root agent idle; waiting up to 5s for 1 background task(s)"
+		terminated = "terminating 1 background task(s) on exit"
+		activity   = "activity" // агент вызвал инструмент или пишет ответ
+	)
+	cases := []struct {
+		name   string
+		events []string
+		want   bool
+	}{
+		{name: "обычный шаг без фоновых задач", events: []string{activity}, want: false},
+		{name: "idle и выход с обрывом", events: []string{activity, idle, terminated}, want: true},
+		{name: "idle без строки terminating до конца вывода", events: []string{activity, idle}, want: true},
+		{name: "фоновая задача успела, агент проснулся", events: []string{idle, activity}, want: false},
+		{name: "проснулся, а потом всё же оборван при выходе", events: []string{idle, activity, terminated}, want: true},
+		{name: "terminating без предшествующего idle", events: []string{activity, terminated}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var w backgroundWatch
+			for _, e := range tc.events {
+				if e == activity {
+					w.ObserveAgentActivity()
+				} else {
+					w.ObserveTerminalLine(e)
+				}
+			}
+			if got := w.Interrupted(); got != tc.want {
+				t.Errorf("Interrupted() = %v, ожидалось %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTaskWaitingInputResumeAndDeliver(t *testing.T) {
 	tm := domain.NewTaskManager()
 	task := tm.CreateTask("test-proj", "flash", "Test question answer flow", testChatID)

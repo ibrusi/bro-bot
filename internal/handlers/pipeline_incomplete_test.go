@@ -154,6 +154,47 @@ func TestPipeline_AutoContinuesInterruptedPlanningStep(t *testing.T) {
 	}
 }
 
+// agyBackgroundIdleOutput — строка agy о том, что агент закончил ход, а фоновые задачи ещё идут.
+const agyBackgroundIdleOutput = "root agent idle; waiting up to 5s for 1 background task(s)"
+
+func TestPipeline_IdleWithoutTerminationLineIsNotCompleted(t *testing.T) {
+	// Строка terminating не дошла (оборван PTY или сменился формат CLI): обрыв всё равно виден
+	// по idle, после которого агент так и не проснулся.
+	// Как у agy: сначала финальный ответ агента, затем строка idle и выход без terminating.
+	finalAnswer := `{"type":"assistant","session_id":"session-incomplete","message":{"role":"assistant",` +
+		`"content":[{"type":"text","text":"Запустил make test, жду результата."}]}}`
+	mt, framework, workDir := setupIncompletePipeline(t, 0,
+		mock.Step{ExtraEvents: []string{finalAnswer, agyBackgroundIdleOutput}},
+	)
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "mock-model", "mock-agent", "исправить баг", testChatID, false)
+	runAgentTaskPipeline(mt.Messenger, testChatID, task, workDir, config.ProjectsRoot)
+
+	if n := len(framework.Calls()); n != 1 {
+		t.Fatalf("ожидался 1 запуск агента, получено %d", n)
+	}
+	assertPausedAsIncomplete(t, mt, task)
+}
+
+func TestPipeline_IdleFollowedByAgentActivityCompletesNormally(t *testing.T) {
+	// Фоновая задача успела за отведённые секунды, агент проснулся и продолжил работу.
+	toolCall := `{"type":"assistant","session_id":"session-incomplete","message":{"role":"assistant",` +
+		`"content":[{"type":"tool_use","id":"t1","name":"run_command","input":{"command":"git status"}}]}}`
+	mt, framework, workDir := setupIncompletePipeline(t, 2,
+		mock.Step{Response: "Готово, изменения внесены.", ExtraEvents: []string{agyBackgroundIdleOutput, toolCall}},
+	)
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "mock-model", "mock-agent", "исправить баг", testChatID, false)
+	runAgentTaskPipeline(mt.Messenger, testChatID, task, workDir, config.ProjectsRoot)
+
+	if n := len(framework.Calls()); n != 1 {
+		t.Fatalf("проснувшийся агент не должен перезапускаться, запусков %d", n)
+	}
+	if status := task.Snapshot().Status; status != domain.TaskStatusCompleted {
+		t.Errorf("статус = %s, ожидалось %s", status, domain.TaskStatusCompleted)
+	}
+}
+
 func assertPausedAsIncomplete(t *testing.T, mt *mockTransport, task *domain.TaskSession) {
 	t.Helper()
 	lang := i18n.Active()
