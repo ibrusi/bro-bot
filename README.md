@@ -234,7 +234,7 @@ sudo systemctl restart bro-bot.service
 #### Useful Makefile Targets for Development:
 - `make help` — displays help for all available targets (`make help LANG=ru` for Russian);
 - `sudo make install-ffmpeg` — installs `ffmpeg` (required for voice message conversion);
-- `sudo make install-whisper` — builds `whisper-server`, downloads model, and registers systemd service;
+- `sudo make install-whisper` — builds `whisper-server`, downloads `base-q5_1` and Silero VAD `silero-v6.2.0` models, and registers systemd service;
 - `make build` — compiles the Go binary `./bot` (`go build -o bot ./cmd/bot`);
 - `make test` — runs all project tests (`go test ./...`);
 - `make run` — runs the bot directly from source (`go run ./cmd/bot`);
@@ -315,11 +315,11 @@ nano .env
 | `SQLITE_DB_PATH` | No | `data/bot.db` under `BOT_DIR` | Path to the SQLite database file for persistent tasks, plans, logs, and settings. |
 | `WHISPER_SERVER_URL` | No | `http://127.0.0.1:8080/inference` (in `.env.example`) | HTTP endpoint of the Whisper speech-to-text server (e.g. `whisper.cpp`, `faster-whisper`, OpenAI API). Supports `/inference` and `/v1/audio/transcriptions` with automatic 404 fallback. Leave empty to disable voice recognition. |
 | `WHISPER_API_KEY` | No | — | Optional Bearer authorization token if your Whisper server requires authentication. |
-| `WHISPER_MODEL` | No | `small` | Model name sent to Whisper server. |
+| `WHISPER_MODEL` | No | `base-q5_1` | Model name sent to Whisper server. |
 | `WHISPER_LANGUAGE` | No | `en` | Speech recognition language code (`en`, `ru`, `auto`, etc.). Defaults to `en`. To switch the language, for example to Russian, set `WHISPER_LANGUAGE=ru`. |
 | `WHISPER_PROMPT` | No | — (empty) | Initial prompt / vocabulary hint to guide Whisper context and reduce phonetic distortion of domain terms. Managed via `.env` (pre-filled in `.env.example`). Leave empty or set to `none` to disable. |
 | `WHISPER_TEMPERATURE` | No | `0.0` | Sampling temperature (`0.0` for deterministic greedy search, avoiding hallucinations). |
-| `WHISPER_LOUDNORM` | No | `true` | Audio loudness normalization via ffmpeg (`-af loudnorm`) to enhance quiet voices and whispering. Set to `false` to disable. |
+| `WHISPER_LOUDNORM` | No | `false` | Audio loudness normalization via ffmpeg (`-af loudnorm`). Disabled by default for minimal inference latency. Set to `true` to enable. |
 | `WHISPER_TIMEOUT` | No | `60s` | Timeout for the speech transcription HTTP request. Formats: `60s`, `2m`, or seconds. |
 | `DEBUG` | No | `false` (empty) | Debug mode. When set to `true` or `1`, Telegram quote messages display performance metrics (STT Latency, Audio Duration, RTF). |
 
@@ -338,11 +338,11 @@ BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
 WHISPER_SERVER_URL=http://127.0.0.1:8080/inference
-WHISPER_MODEL=small
+WHISPER_MODEL=base-q5_1
 WHISPER_LANGUAGE=en
 WHISPER_PROMPT="debug mode, code, commit, pull request, git, bot, deploy, status, tasks, logs, review, build, release, terminal"
 WHISPER_TEMPERATURE=0.0
-WHISPER_LOUDNORM=true
+WHISPER_LOUDNORM=false
 DEBUG=
 ```
 
