@@ -24,6 +24,10 @@ type AgentFramework struct {
 	Response string
 	// ExtraEvents — дополнительные строки stream-json, отдаваемые перед финальным результатом.
 	ExtraEvents []string
+	// Steps — сценарий по запускам: k-й вызов ExecuteTask отдаёт Steps[k], а когда
+	// сценарий кончился — его последний шаг. Пустой сценарий — Response и ExtraEvents
+	// для каждого запуска. Нужен для проверки пайплайна, который перезапускает агента.
+	Steps []Step
 	// ModelsOutput — ответ GetModels в формате "id Отображаемое имя".
 	ModelsOutput string
 	// StartErr — ошибка запуска процесса агента.
@@ -43,10 +47,19 @@ type AgentFramework struct {
 	quotaTextCalls int
 }
 
+// Step — вывод одного запуска мок-агента в сценарии AgentFramework.Steps.
+type Step struct {
+	// Response — текст ответа агента на этом запуске.
+	Response string
+	// ExtraEvents — строки вывода (stream-json или сырой текст CLI) перед финальным результатом.
+	ExtraEvents []string
+}
+
 // ExecuteTask имитирует запуск агента и возвращает процесс с готовым потоком событий.
 func (f *AgentFramework) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, args)
+	callIndex := len(f.calls) - 1
 	startErr := f.StartErr
 	hang := f.Hang
 	f.mu.Unlock()
@@ -57,7 +70,7 @@ func (f *AgentFramework) ExecuteTask(ctx context.Context, args ports.ExecuteArgs
 	if hang {
 		return f.newHangingProcess(ctx), nil
 	}
-	return &AgentProcess{reader: strings.NewReader(f.buildStream()), waitErr: f.WaitErr}, nil
+	return &AgentProcess{reader: strings.NewReader(f.buildStream(callIndex)), waitErr: f.WaitErr}, nil
 }
 
 // Killed сообщает, вызывали ли у последнего процесса Kill.
@@ -148,11 +161,16 @@ func (f *AgentFramework) Reset() {
 	f.calls = nil
 }
 
-func (f *AgentFramework) buildStream() string {
+func (f *AgentFramework) buildStream(callIndex int) string {
 	f.mu.Lock()
 	convID := f.ConversationID
 	response := f.Response
 	extra := append([]string(nil), f.ExtraEvents...)
+	if n := len(f.Steps); n > 0 {
+		step := f.Steps[min(callIndex, n-1)]
+		response = step.Response
+		extra = append([]string(nil), step.ExtraEvents...)
+	}
 	f.mu.Unlock()
 
 	if convID == "" {

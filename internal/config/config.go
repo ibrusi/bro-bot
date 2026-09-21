@@ -24,10 +24,13 @@ var (
 	// ChatTimeout — таймаут одного хода диалогового режима.
 	ChatTimeout time.Duration
 	StepTimeout time.Duration
-	BotDir      string
-	ServiceName string
-	DBPath      string
-	ScriptsDir  string
+	// AutoContinueMax — сколько раз подряд пайплайн сам продолжает шаг, оборванный
+	// выходом агента с прерыванием его фоновых задач. 0 отключает автопродолжение.
+	AutoContinueMax int
+	BotDir          string
+	ServiceName     string
+	DBPath          string
+	ScriptsDir      string
 
 	// Whisper (распознавание голосовых сообщений)
 	WhisperServerURL   string

@@ -24,6 +24,7 @@ const (
 	envQuestionTimeout = "QUESTION_TIMEOUT"
 	envStepTimeout     = "STEP_TIMEOUT"
 	envChatTimeout     = "CHAT_TIMEOUT"
+	envAutoContinueMax = "AUTO_CONTINUE_MAX"
 	envBotDir          = "BOT_DIR"
 	envServiceName     = "BOT_SERVICE_NAME"
 	envDBPath          = "SQLITE_DB_PATH"
@@ -45,6 +46,7 @@ const (
 	defaultMessenger          = "telegram"
 	defaultStepTimeout        = 30 * time.Minute
 	defaultChatTimeout        = 5 * time.Minute
+	defaultAutoContinueMax    = 2
 	defaultWhisperTimeout     = 60 * time.Second
 	defaultWhisperModel       = "base-q5_1"
 	defaultWhisperLanguage    = "en"
@@ -66,6 +68,7 @@ type Config struct {
 	QuestionTimeout time.Duration
 	StepTimeout     time.Duration
 	ChatTimeout     time.Duration
+	AutoContinueMax int // 0 — автопродолжение оборванных шагов отключено
 	BotDir          string
 	ServiceName     string
 	DBPath          string
@@ -149,6 +152,7 @@ func Load() (Config, error) {
 
 	cfg.StepTimeout = durationOrDefault(envStepTimeout, defaultStepTimeout)
 	cfg.ChatTimeout = durationOrDefault(envChatTimeout, defaultChatTimeout)
+	cfg.AutoContinueMax = nonNegativeIntOrDefault(envAutoContinueMax, defaultAutoContinueMax)
 
 	botDir, err := resolveBotDir()
 	if err != nil {
@@ -225,6 +229,7 @@ func Apply(c Config) {
 	QuestionTimeout = c.QuestionTimeout
 	StepTimeout = c.StepTimeout
 	ChatTimeout = c.ChatTimeout
+	AutoContinueMax = c.AutoContinueMax
 	BotDir = c.BotDir
 	ServiceName = c.ServiceName
 	DBPath = c.DBPath
@@ -298,6 +303,22 @@ func durationOrDefault(name string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// nonNegativeIntOrDefault — для необязательных счётчиков: 0 допустим и означает
+// «выключено», а пустое, отрицательное или нечисловое значение даёт значение по
+// умолчанию с предупреждением о мусоре.
+func nonNegativeIntOrDefault(name string, def int) int {
+	raw := envTrim(name)
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		logf("Предупреждение: некорректный формат %s (%q), используется значение по умолчанию %d", name, raw, def)
+		return def
+	}
+	return n
 }
 
 func envTrim(name string) string {
