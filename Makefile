@@ -6,7 +6,8 @@ REPO_DIR := /home/$(DEPLOY_USER)/$(BOT_NAME)
 BIN_DIR := /home/$(DEPLOY_USER)/.local/bin
 SERVICE_FILE := /etc/systemd/system/$(BOT_NAME).service
 WHISPER_DIR := /home/$(DEPLOY_USER)/whisper.cpp
-WHISPER_MODEL := small
+WHISPER_MODEL := base-q5_1
+WHISPER_VAD_MODEL := silero-v6.2.0
 WHISPER_PORT := 8080
 WHISPER_SERVICE_FILE := /etc/systemd/system/whisper-server.service
 
@@ -113,6 +114,7 @@ ifeq ($(ACTIVE_LANG),ru)
   MSG_WHISPER_CLONE          := Клонирование репозитория whisper.cpp...
   MSG_WHISPER_BUILD          := Компиляция whisper-server...
   MSG_WHISPER_MODEL          := Скачивание модели ggml-$(WHISPER_MODEL).bin...
+  MSG_WHISPER_VAD            := Скачивание VAD-модели ggml-$(WHISPER_VAD_MODEL).bin...
   MSG_WHISPER_SERVICE        := Настройка systemd-службы whisper-server.service...
   MSG_WHISPER_DONE           := ✅ whisper-server успешно установлен и запущен на порту $(WHISPER_PORT)!
 else
@@ -182,6 +184,7 @@ else
   MSG_WHISPER_CLONE          := Cloning whisper.cpp repository...
   MSG_WHISPER_BUILD          := Compiling whisper-server...
   MSG_WHISPER_MODEL          := Downloading model ggml-$(WHISPER_MODEL).bin...
+  MSG_WHISPER_VAD            := Downloading VAD model ggml-$(WHISPER_VAD_MODEL).bin...
   MSG_WHISPER_SERVICE        := Configuring whisper-server.service systemd service...
   MSG_WHISPER_DONE           := ✅ whisper-server successfully installed and running on port $(WHISPER_PORT)!
 endif
@@ -399,8 +402,12 @@ install-whisper:
 	@if [ ! -f "$(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL).bin" ]; then \
 		sudo -u $(DEPLOY_USER) bash $(WHISPER_DIR)/models/download-ggml-model.sh $(WHISPER_MODEL) $(WHISPER_DIR)/models; \
 	fi
+	@echo "$(MSG_WHISPER_VAD)"
+	@if [ ! -f "$(WHISPER_DIR)/models/ggml-$(WHISPER_VAD_MODEL).bin" ]; then \
+		sudo -u $(DEPLOY_USER) bash $(WHISPER_DIR)/models/download-vad-model.sh $(WHISPER_VAD_MODEL) $(WHISPER_DIR)/models; \
+	fi
 	@echo "$(MSG_WHISPER_SERVICE)"
-	@printf "[Unit]\nDescription=Whisper.cpp Server\nAfter=network.target\n\n[Service]\nType=simple\nUser=$(DEPLOY_USER)\nWorkingDirectory=$(WHISPER_DIR)\nExecStart=$(WHISPER_DIR)/build/bin/whisper-server -m $(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL).bin --port $(WHISPER_PORT) --host 127.0.0.1 --inference-path /inference -l auto\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n" > $(WHISPER_SERVICE_FILE)
+	@printf "[Unit]\nDescription=Whisper.cpp Server\nAfter=network.target\n\n[Service]\nType=simple\nUser=$(DEPLOY_USER)\nWorkingDirectory=$(WHISPER_DIR)\nExecStart=$(WHISPER_DIR)/build/bin/whisper-server -m $(WHISPER_DIR)/models/ggml-$(WHISPER_MODEL).bin --port $(WHISPER_PORT) --host 127.0.0.1 --inference-path /inference -t 2 -nf -nt --vad -vm $(WHISPER_DIR)/models/ggml-$(WHISPER_VAD_MODEL).bin\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n" > $(WHISPER_SERVICE_FILE)
 	@systemctl daemon-reload
 	@systemctl enable whisper-server.service
 	@systemctl restart whisper-server.service

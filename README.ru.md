@@ -228,7 +228,7 @@ sudo systemctl restart bro-bot.service
 #### Полезные команды Makefile для разработки:
 - `make help` — справка по всем доступным целям на английском языке (`make help LANG=ru` для вывода на русском);
 - `sudo make install-ffmpeg` — установка `ffmpeg` (необходим для конвертации голосовых сообщений);
-- `sudo make install-whisper` — компиляция сервера `whisper.cpp` и регистрация службы `whisper-server.service`;
+- `sudo make install-whisper` — компиляция сервера `whisper.cpp`, скачивание моделей `base-q5_1` и Silero VAD `silero-v6.2.0`, регистрация службы `whisper-server.service`;
 - `make build` — компиляция исполняемого файла `./bot` (`go build -o bot ./cmd/bot`);
 - `make test` — запуск всех тестов проекта (`go test ./...`);
 - `make run` — запуск бота напрямую из исходников (`go run ./cmd/bot`);
@@ -309,11 +309,11 @@ nano .env
 | `SQLITE_DB_PATH` | Нет | `data/bot.db` в `BOT_DIR` | Путь к файлу базы данных SQLite для персистентного хранения задач, архитектурных планов, логов, метрик и настроек бота. |
 | `WHISPER_SERVER_URL` | Нет | `http://127.0.0.1:8080/inference` (в `.env.example`) | HTTP-эндпоинт сервера распознавания речи Whisper (например, `whisper.cpp`, `faster-whisper`, OpenAI API). Поддерживает `/inference` и `/v1/audio/transcriptions` с автоматическим fallback при 404. Оставьте пустым для отключения распознавания речи. |
 | `WHISPER_API_KEY` | Нет | — | Опциональный токен авторизации (Bearer token), если сервер Whisper требует аутентификации. |
-| `WHISPER_MODEL` | Нет | `small` | Имя модели, передаваемое серверу Whisper. |
+| `WHISPER_MODEL` | Нет | `base-q5_1` | Имя модели, передаваемое серверу Whisper. |
 | `WHISPER_LANGUAGE` | Нет | `en` | Код языка распознавания речи (`en`, `ru`, `auto` и др.). По умолчанию используется `en`. Для переключения языка, например на русский, необходимо изменить значение на `WHISPER_LANGUAGE=ru`. |
 | `WHISPER_PROMPT` | Нет | — (пусто) | Контекстная подсказка и доменный словарь Whisper для снижения фонетических искажений терминов. Задаётся в `.env` (в `.env.example` предзаполнен словарь IT-терминов). Для отключения оставьте пустым или укажите `none`. |
 | `WHISPER_TEMPERATURE` | Нет | `0.0` | Температура сэмплинга (`0.0` для детерминированного жадного декодирования без галлюцинаций). |
-| `WHISPER_LOUDNORM` | Нет | `true` | Нормализация громкости через ffmpeg (`-af loudnorm`) для разборчивости тихого голоса и шёпота. Для отключения укажите `false`. |
+| `WHISPER_LOUDNORM` | Нет | `false` | Нормализация громкости через ffmpeg (`-af loudnorm`). По умолчанию отключена для минимальной задержки инференса. Для включения укажите `true`. |
 | `WHISPER_TIMEOUT` | Нет | `60s` | Таймаут HTTP-запроса на распознавание аудио. Форматы: `60s`, `2m` или секунды. |
 | `DEBUG` | Нет | `false` (пусто) | Режим отладки. При значении `true` или `1` в Telegram отображаются замеры скорости транскрибации (STT Latency, Audio Duration, RTF). |
 
@@ -332,11 +332,11 @@ BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
 WHISPER_SERVER_URL=http://127.0.0.1:8080/inference
-WHISPER_MODEL=small
+WHISPER_MODEL=base-q5_1
 WHISPER_LANGUAGE=ru
 WHISPER_PROMPT="дебаг, дебаг режим, debug, git, checkout, gitlab, github, docker ps, docker compose, gRPC, парсить, шёпот, распознавание, коммит, пулл реквест, PR, мердж, деплой, билд, прод, логи, статус, таски, фикс, VAD, STT"
 WHISPER_TEMPERATURE=0.0
-WHISPER_LOUDNORM=true
+WHISPER_LOUDNORM=false
 DEBUG=
 ```
 

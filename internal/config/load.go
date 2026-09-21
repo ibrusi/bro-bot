@@ -45,11 +45,11 @@ const (
 	defaultMessenger          = "telegram"
 	defaultStepTimeout        = 30 * time.Minute
 	defaultChatTimeout        = 5 * time.Minute
-	defaultWhisperTimeout      = 60 * time.Second
-	defaultWhisperModel        = "small"
+	defaultWhisperTimeout     = 60 * time.Second
+	defaultWhisperModel       = "base-q5_1"
 	defaultWhisperLanguage    = "en"
 	defaultWhisperTemperature = 0.0
-	defaultWhisperLoudnorm    = true
+	defaultWhisperLoudnorm    = false
 )
 
 // Config — снимок настроек окружения, снятый один раз при старте процесса.
