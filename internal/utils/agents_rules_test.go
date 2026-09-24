@@ -61,16 +61,17 @@ func TestLoadProjectAgentsRules(t *testing.T) {
 		t.Fatalf("expected truncated rule length %d, got %d", maxAgentsRulesBytes, len(gotLarge))
 	}
 
-	// 5. Legacy AGENT.md support
+	// 5. AGENT.md is ignored (only AGENTS.md is supported)
 	_ = os.Remove(filepath.Join(workDir, "AGENTS.md"))
+	_ = os.Remove(filepath.Join(projRoot, "AGENTS.md"))
 	legacyRule := "# Legacy AGENT.md Rules"
 	if err := os.WriteFile(filepath.Join(workDir, "AGENT.md"), []byte(legacyRule), 0644); err != nil {
 		t.Fatalf("write legacy rule: %v", err)
 	}
-	if got := LoadProjectAgentsRules(workDir, projRoot); got != legacyRule {
-		t.Fatalf("expected legacy rule, got: %q", got)
+	if got := LoadProjectAgentsRules(workDir, projRoot); got != "" {
+		t.Fatalf("expected AGENT.md to be ignored, got: %q", got)
 	}
-	if !HasLocalAgentsRules(workDir) {
-		t.Fatalf("expected HasLocalAgentsRules to recognize AGENT.md")
+	if HasLocalAgentsRules(workDir) {
+		t.Fatalf("expected HasLocalAgentsRules to be false for AGENT.md")
 	}
 }

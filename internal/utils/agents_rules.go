@@ -10,21 +10,17 @@ const maxAgentsRulesBytes = 32 * 1024 // 32 KB limit
 
 // LoadProjectAgentsRules возвращает содержимое AGENTS.md по цепочке приоритетов:
 // 1. workDir/AGENTS.md
-// 2. workDir/AGENT.md
-// 3. projectsRoot/AGENTS.md
-// 4. projectsRoot/AGENT.md
+// 2. projectsRoot/AGENTS.md
 func LoadProjectAgentsRules(workDir, projectsRoot string) string {
-	candidates := make([]string, 0, 4)
+	candidates := make([]string, 0, 2)
 	if workDir != "" {
 		candidates = append(candidates,
 			filepath.Join(workDir, "AGENTS.md"),
-			filepath.Join(workDir, "AGENT.md"),
 		)
 	}
 	if projectsRoot != "" {
 		candidates = append(candidates,
 			filepath.Join(projectsRoot, "AGENTS.md"),
-			filepath.Join(projectsRoot, "AGENT.md"),
 		)
 	}
 
@@ -47,7 +43,7 @@ func HasLocalAgentsRules(workDir string) bool {
 	if workDir == "" {
 		return false
 	}
-	for _, name := range []string{"AGENTS.md", "AGENT.md", "GEMINI.md"} {
+	for _, name := range []string{"AGENTS.md", "GEMINI.md"} {
 		if _, err := os.Stat(filepath.Join(workDir, name)); err == nil {
 			return true
 		}
