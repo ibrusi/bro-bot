@@ -236,10 +236,14 @@ func firstNonEmpty(values ...string) string {
 func formatBucketName(name, window, lang string) string {
 	lower := strings.ToLower(name)
 	switch {
+	case strings.Contains(lower, "sonnet"):
+		return i18n.T(lang, "usage.bucket_weekly_sonnet")
 	case strings.Contains(lower, "week") || window == "weekly":
 		return i18n.T(lang, "usage.bucket_weekly")
-	case strings.Contains(lower, "five hour") || strings.Contains(lower, "5 hour") || window == "5h":
+	case strings.Contains(lower, "session") || strings.Contains(lower, "five hour") || strings.Contains(lower, "5 hour") || window == "5h":
 		return i18n.T(lang, "usage.bucket_five_hour")
+	case strings.Contains(lower, "spend"):
+		return i18n.T(lang, "usage.bucket_spend_limit")
 	default:
 		return name
 	}

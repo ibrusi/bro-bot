@@ -153,3 +153,37 @@ func TestUsageStillAsksTextWhenEnvelopeHasNone(t *testing.T) {
 		t.Errorf("GetQuotaText должен быть вызван один раз, вызван %d", calls)
 	}
 }
+
+// TestUsageRendersClaudeSubscriptionWithProgressBars проверяет красивую отрисовку /usage для Claude Code
+// (включая режим MCP) со шкалами прогресса, эмодзи статуса и временем сброса.
+func TestUsageRendersClaudeSubscriptionWithProgressBars(t *testing.T) {
+	mt, agent := setupMatrixApp(t, "claude", "mcp", "claude-mcp-usage", "ответ")
+	agent.QuotaOutput = `{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[` +
+		`{"name":"Подписка Claude","buckets":[` +
+		`{"id":"claude-5h","name":"Current session","window":"5h","remaining_fraction":1.0,"reset_time":"2026-09-24T11:10:00Z"},` +
+		`{"id":"claude-weekly","name":"Current week (all models)","window":"weekly","remaining_fraction":0.7,"reset_time":"2026-09-27T00:00:00Z"}` +
+		`]}]}}}`
+
+	handler := mt.commands["usage"]
+	if err := handler(adminSession(mt, &mock.Session{})); err != nil {
+		t.Fatalf("/usage: %v", err)
+	}
+
+	texts := mt.AllTexts()
+	out := texts[len(texts)-1]
+
+	for _, want := range []string{
+		"100.0% 🟢",
+		"[██████████]",
+		"70.0% 🟢",
+		"[███████░░░]",
+		"24.09 11:10 UTC",
+		"27.09 00:00 UTC",
+		"Claude Code (MCP)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("в красивом выводе /usage нет %q:\n%s", want, out)
+		}
+	}
+}
+

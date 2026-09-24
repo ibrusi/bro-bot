@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 
 	"github.com/creack/pty"
 )
@@ -116,8 +118,16 @@ func (a *ClaudeAdapter) GetModels(ctx context.Context) ([]byte, error) {
 	return []byte(claudeCLIAliases), nil
 }
 
-func (a *ClaudeAdapter) GetQuota(ctx context.Context, _ string) ([]byte, error) {
-	return exec.CommandContext(ctx, "claude", "--dangerously-skip-permissions", "--output-format", "json", "-p", "/usage").CombinedOutput()
+func (a *ClaudeAdapter) GetQuota(ctx context.Context, lang string) ([]byte, error) {
+	out, err := exec.CommandContext(ctx, "claude", "--dangerously-skip-permissions", "--output-format", "json", "-p", "/usage").CombinedOutput()
+	if err != nil {
+		return out, err
+	}
+	cleanOut := utils.AnsiRegex.ReplaceAllString(string(out), "")
+	if parsed, ok := parseClaudeCLIQuota([]byte(cleanOut), lang, time.Now()); ok {
+		return parsed, nil
+	}
+	return out, nil
 }
 
 func (a *ClaudeAdapter) GetQuotaText(ctx context.Context, _ string) ([]byte, error) {
