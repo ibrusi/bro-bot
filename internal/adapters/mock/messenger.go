@@ -222,6 +222,14 @@ func (m *Messenger) LastEdited() *EditedMessage {
 	return &last
 }
 
+// EditedMessages возвращает копию всех правок сообщений. Безопасен для чтения,
+// пока обработчик правит сообщения из другой горутины.
+func (m *Messenger) EditedMessages() []EditedMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]EditedMessage(nil), m.Edited...)
+}
+
 // AllTexts возвращает тексты всех отправленных и изменённых сообщений.
 // Безопасен для чтения, пока обработчик пишет сообщения из другой горутины.
 func (m *Messenger) AllTexts() []string {

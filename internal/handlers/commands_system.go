@@ -5,20 +5,17 @@ import (
 	"bro-bot/internal/domain"
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
-	"bro-bot/internal/scripts"
 	"bro-bot/internal/system"
 	"bro-bot/internal/utils"
 	"context"
-	"errors"
 	"html"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
-// Системные команды: приветствие, проекты, перезапуск, сборка, ресурсы и скрипты.
+// Системные команды: приветствие, проекты, перезапуск, сборка и ресурсы.
 
 // handleStart — обработчик команды /start.
 func handleStart(s ports.Session) error {
@@ -151,77 +148,3 @@ func handleResources(s ports.Session) error {
 	report := system.CollectResourceReport(true)
 	return s.Send(system.FormatResourcesMessage(report, uiLang()), ports.Rich())
 }
-
-// handleScript — обработчик команды /script: без аргументов показывает список
-// скриптов, с именем — запускает скрипт и присылает его вывод.
-func handleScript(s ports.Session) error {
-	lang := uiLang()
-
-	if config.ScriptsDir == "" {
-		return s.Send(i18n.T(lang, "script.dir_missing"), nil)
-	}
-	args := s.Args()
-	if len(args) == 0 {
-		return sendScriptList(s, lang)
-	}
-	scriptName := args[0]
-
-	// Проверка префикса без разделителя пропускала каталог-сосед:
-	// "../scripts-evil/x" при корне "/opt/scripts" давал "/opt/scripts-evil/x".
-	scriptPath, err := utils.SafeJoin(config.ScriptsDir, scriptName)
-	if err != nil {
-		return s.Send(i18n.Tf(lang, "script.bad_name", ErrorText(err, lang)), nil)
-	}
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		return s.Send(i18n.Tf(lang, "script.not_found", scriptName, config.ScriptsDir), nil)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
-	defer cancel()
-
-	cmd, err := scripts.Command(ctx, scriptPath)
-	if errors.Is(err, scripts.ErrNotRunnable) {
-		return s.Send(i18n.Tf(lang, "script.not_runnable", scriptName, strings.Join(scripts.Extensions(), " ")), nil)
-	}
-	if err != nil {
-		return s.Send(i18n.Tf(lang, "script.start_error", scriptName, err), nil)
-	}
-
-	out, runErr := cmd.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		return s.Send(i18n.Tf(lang, "script.timeout", scriptName, scriptTimeout), nil)
-	}
-
-	msg := i18n.Tf(lang, "script.result", scriptName, utils.TruncateString(string(out), scriptOutputLimit))
-	if runErr != nil {
-		msg += i18n.Tf(lang, "script.error", runErr)
-	}
-	return s.Send(msg, nil)
-}
-
-// sendScriptList присылает список скриптов, которые можно передать /script.
-func sendScriptList(s ports.Session, lang string) error {
-	names, err := scripts.List(config.ScriptsDir)
-	if err != nil && !os.IsNotExist(err) {
-		return s.Send(i18n.Tf(lang, "script.list_error", config.ScriptsDir, err), nil)
-	}
-	if len(names) == 0 {
-		return s.Send(i18n.Tf(lang, "script.list_empty", config.ScriptsDir, strings.Join(scripts.Extensions(), " ")), nil)
-	}
-
-	var bldr strings.Builder
-	bldr.WriteString(i18n.Tf(lang, "script.list_header", config.ScriptsDir))
-	for _, name := range names {
-		bldr.WriteString("• " + name + "\n")
-	}
-	bldr.WriteString(i18n.T(lang, "script.list_footer"))
-	return s.Send(utils.TruncateString(bldr.String(), scriptOutputLimit), nil)
-}
-
-const (
-	// scriptTimeout ограничивает время работы скрипта из /script: без него зависший
-	// скрипт держал бы обработчик команды бесконечно.
-	scriptTimeout = 2 * time.Minute
-	// scriptOutputLimit — сколько символов вывода скрипта уходит в чат.
-	scriptOutputLimit = 3500
-)

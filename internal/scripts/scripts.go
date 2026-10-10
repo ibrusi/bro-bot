@@ -12,12 +12,15 @@ import (
 	"bro-bot/internal/utils"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // ErrNotRunnable — файл не исполняемый, и для его расширения нет интерпретатора.
@@ -34,6 +37,15 @@ var interpreters = map[string]string{
 	".php":  "php",
 }
 
+const (
+	// killGrace — сколько ждать завершения после SIGTERM, прежде чем добить группу
+	// процессов SIGKILL. Скрипту хватает этого, чтобы убрать за собой.
+	killGrace = 5 * time.Second
+	// pipeWaitDelay ограничивает ожидание закрытия вывода после выхода скрипта:
+	// фоновый внук, унаследовавший stdout, иначе держал бы Run бесконечно.
+	pipeWaitDelay = 2 * time.Second
+)
+
 // Extensions возвращает отсортированный список расширений, которые запускаются
 // без бита исполнения.
 func Extensions() []string {
@@ -45,11 +57,16 @@ func Extensions() []string {
 	return exts
 }
 
-// Command собирает команду запуска скрипта по абсолютному пути path. Путь уже
-// должен быть проверен вызывающим (utils.SafeJoin), здесь решается только способ
-// запуска. Рабочий каталог — каталог скрипта, чтобы относительные пути в нём
-// не зависели от того, откуда запущен бот.
-func Command(ctx context.Context, path string) (*exec.Cmd, error) {
+// Script — подготовленный к запуску скрипт. Run вызывается не больше одного раза.
+type Script struct {
+	cmd *exec.Cmd
+}
+
+// Prepare выбирает способ запуска скрипта по абсолютному пути path и передаёт ему
+// аргументы args. Путь уже должен быть проверен вызывающим (utils.SafeJoin).
+// Аргументы уходят в exec напрямую, без оболочки, поэтому их содержимое не
+// интерпретируется как команды.
+func Prepare(path string, args []string) (*Script, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -60,16 +77,56 @@ func Command(ctx context.Context, path string) (*exec.Cmd, error) {
 
 	var cmd *exec.Cmd
 	if isExecutable(info) {
-		cmd = exec.CommandContext(ctx, path)
+		cmd = exec.Command(path, args...)
 	} else {
 		interpreter, ok := interpreters[strings.ToLower(filepath.Ext(path))]
 		if !ok {
 			return nil, ErrNotRunnable
 		}
-		cmd = exec.CommandContext(ctx, interpreter, path)
+		cmd = exec.Command(interpreter, append([]string{path}, args...)...)
 	}
+	// Рабочий каталог — каталог скрипта, чтобы относительные пути в нём не
+	// зависели от того, откуда запущен бот.
 	cmd.Dir = filepath.Dir(path)
-	return cmd, nil
+	// Своя группа процессов: остановка должна достать и дочерние процессы скрипта.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.WaitDelay = pipeWaitDelay
+	return &Script{cmd: cmd}, nil
+}
+
+// Run запускает скрипт, пишет объединённый stdout и stderr в out и ждёт завершения.
+// Отмена ctx останавливает скрипт: всей группе процессов уходит SIGTERM, а если
+// она не завершилась за killGrace — SIGKILL. После отмены возвращается ctx.Err().
+func (s *Script) Run(ctx context.Context, out io.Writer) error {
+	s.cmd.Stdout = out
+	s.cmd.Stderr = out
+	if err := s.cmd.Start(); err != nil {
+		return err
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- s.cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+	}
+
+	pgid := -s.cmd.Process.Pid
+	_ = syscall.Kill(pgid, syscall.SIGTERM)
+
+	grace := time.NewTimer(killGrace)
+	defer grace.Stop()
+	select {
+	case <-done:
+		// Лидер вышел, но его потомки могли пережить SIGTERM — добиваем группу.
+		_ = syscall.Kill(pgid, syscall.SIGKILL)
+	case <-grace.C:
+		_ = syscall.Kill(pgid, syscall.SIGKILL)
+		<-done
+	}
+	return ctx.Err()
 }
 
 // List возвращает отсортированные пути скриптов относительно dir — ровно в том
@@ -115,7 +172,7 @@ func List(dir string) ([]string, error) {
 	return names, nil
 }
 
-// runnable сообщает, сможет ли Command запустить файл. os.Stat идёт по
+// runnable сообщает, сможет ли Prepare запустить файл. os.Stat идёт по
 // симлинкам, поэтому ссылка на скрипт тоже считается скриптом.
 func runnable(path string) bool {
 	info, err := os.Stat(path)

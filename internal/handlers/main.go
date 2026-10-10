@@ -193,6 +193,7 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	onCmd("resources", handleResources)
 	onCmd("res", handleResources)
 	onCmd("script", handleScript)
+	t.OnCallback("script_stop", onScriptStop)
 	t.OnText(handleText)
 	t.OnVoice(handleVoice)
 

@@ -134,8 +134,9 @@ func TestScriptRunsAllowedScript(t *testing.T) {
 		t.Fatalf("/script вернула ошибку: %v", err)
 	}
 
-	texts := mt.AllTexts()
-	if len(texts) == 0 || !strings.Contains(texts[len(texts)-1], "ПРИВЕТ") {
-		t.Errorf("ожидали вывод скрипта, получили: %v", texts)
-	}
+	// Скрипт работает в фоне: итог приходит правкой сообщения о запуске.
+	waitFor(t, "вывод скрипта", func() bool {
+		texts := mt.AllTexts()
+		return len(texts) > 0 && strings.Contains(texts[len(texts)-1], "ПРИВЕТ")
+	})
 }
