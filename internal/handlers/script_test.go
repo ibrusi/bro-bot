@@ -36,7 +36,7 @@ func TestScriptWithoutNameListsScripts(t *testing.T) {
 
 	dir := t.TempDir()
 	for name, mode := range map[string]os.FileMode{
-		"agy-patch-cli.sh": 0o755,
+		"agy-patch.sh": 0o755,
 		"report.py":        0o644,
 		"notes.txt":        0o644,
 	} {
@@ -51,7 +51,7 @@ func TestScriptWithoutNameListsScripts(t *testing.T) {
 	}
 
 	got := lastText(t, mt)
-	for _, want := range []string{"agy-patch-cli.sh", "report.py"} {
+	for _, want := range []string{"agy-patch.sh", "report.py"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("в списке нет %s: %s", want, got)
 		}

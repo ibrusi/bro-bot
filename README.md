@@ -497,7 +497,7 @@ so the conversation continues. Reset it with `/chat new`.
 | `/restart` | Safely restart the bot service via `systemctl`. | `/restart` |
 | `/rebuild [branch] [--pull] [--force]` | Pull Git updates, rebuild the Go binary, and restart the bot. | `/rebuild main --pull` |
 | `/language` | Choose the interface language (buttons are built from the installed catalogs). | `/language` |
-| `/script [name] [args]` | Run a script from `SCRIPTS_DIR` by its file name with extension, passing the arguments; the output updates live and the run can be stopped with a button. Without a name — list available scripts. | `/script agy-patch-cli.sh` |
+| `/script [name] [args]` | Run a script from `SCRIPTS_DIR` by its file name with extension, passing the arguments; the output updates live and the run can be stopped with a button. Without a name — list available scripts. | `/script agy-patch.sh ide` |
 
 #### Custom scripts (`/script`)
 
@@ -512,7 +512,7 @@ Bundled scripts:
 
 | Script | What it does |
 |---|---|
-| `agy-patch-cli.sh` | Runs `agy-manager patch cli` and returns its output. The binary path defaults to `/home/deploy/agy-manager` and can be overridden with the `AGY_MANAGER` environment variable. |
+| `agy-patch.sh [targets...]` | Runs `agy-manager patch` for the given targets (`cli`, `manager`, `ide`, several allowed; `cli` by default) and returns its output. The binary path defaults to `/home/deploy/agy-manager` and can be overridden with the `AGY_MANAGER` environment variable. |
 
 ---
 
