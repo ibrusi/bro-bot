@@ -10,14 +10,12 @@ import (
 	"context"
 	"html"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
-// Системные команды: приветствие, проекты, перезапуск, сборка, ресурсы и скрипты.
+// Системные команды: приветствие, проекты, перезапуск, сборка и ресурсы.
 
 // handleStart — обработчик команды /start.
 func handleStart(s ports.Session) error {
@@ -150,49 +148,3 @@ func handleResources(s ports.Session) error {
 	report := system.CollectResourceReport(true)
 	return s.Send(system.FormatResourcesMessage(report, uiLang()), ports.Rich())
 }
-
-// handleScript — обработчик команды /script.
-func handleScript(s ports.Session) error {
-	lang := uiLang()
-
-	args := s.Args()
-	if len(args) == 0 {
-		return s.Send(i18n.T(lang, "script.usage"), nil)
-	}
-	scriptName := args[0]
-	if config.ScriptsDir == "" {
-		return s.Send(i18n.T(lang, "script.dir_missing"), nil)
-	}
-
-	// Проверка префикса без разделителя пропускала каталог-сосед:
-	// "../scripts-evil/x" при корне "/opt/scripts" давал "/opt/scripts-evil/x".
-	scriptPath, err := utils.SafeJoin(config.ScriptsDir, scriptName)
-	if err != nil {
-		return s.Send(i18n.Tf(lang, "script.bad_name", ErrorText(err, lang)), nil)
-	}
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		return s.Send(i18n.Tf(lang, "script.not_found", scriptName, config.ScriptsDir), nil)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
-	defer cancel()
-
-	out, runErr := exec.CommandContext(ctx, scriptPath).CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		return s.Send(i18n.Tf(lang, "script.timeout", scriptName, scriptTimeout), nil)
-	}
-
-	msg := i18n.Tf(lang, "script.result", scriptName, utils.TruncateString(string(out), scriptOutputLimit))
-	if runErr != nil {
-		msg += i18n.Tf(lang, "script.error", runErr)
-	}
-	return s.Send(msg, nil)
-}
-
-const (
-	// scriptTimeout ограничивает время работы скрипта из /script: без него зависший
-	// скрипт держал бы обработчик команды бесконечно.
-	scriptTimeout = 2 * time.Minute
-	// scriptOutputLimit — сколько символов вывода скрипта уходит в чат.
-	scriptOutputLimit = 3500
-)
