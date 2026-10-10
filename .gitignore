@@ -33,3 +33,7 @@ data/
 
 # Local agent settings (per-developer, not shared)
 .claude/settings.local.json
+
+# Server-local scripts for /script: keep the folder, not its contents
+/scripts/*
+!/scripts/.gitkeep
