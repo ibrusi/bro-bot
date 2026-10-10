@@ -259,7 +259,7 @@ func getDefaultCommands(lang string) []ports.BotCommand {
 		"status", "tasks", "task", "plan", "planmode", "approve", "planfile", "history",
 		"add", "chat", "chatmode", "new", "resume", "retry", "pause", "cancel",
 		"tokens", "context", "top", "usage", "models", "model", "agent", "mode",
-		"projects", "use", "clone", "language", "restart", "rebuild", "start",
+		"projects", "use", "clone", "script", "language", "restart", "rebuild", "start",
 	}
 
 	cmds := make([]ports.BotCommand, 0, len(names))

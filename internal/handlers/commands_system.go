@@ -5,12 +5,13 @@ import (
 	"bro-bot/internal/domain"
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/scripts"
 	"bro-bot/internal/system"
 	"bro-bot/internal/utils"
 	"context"
+	"errors"
 	"html"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -151,18 +152,19 @@ func handleResources(s ports.Session) error {
 	return s.Send(system.FormatResourcesMessage(report, uiLang()), ports.Rich())
 }
 
-// handleScript — обработчик команды /script.
+// handleScript — обработчик команды /script: без аргументов показывает список
+// скриптов, с именем — запускает скрипт и присылает его вывод.
 func handleScript(s ports.Session) error {
 	lang := uiLang()
 
-	args := s.Args()
-	if len(args) == 0 {
-		return s.Send(i18n.T(lang, "script.usage"), nil)
-	}
-	scriptName := args[0]
 	if config.ScriptsDir == "" {
 		return s.Send(i18n.T(lang, "script.dir_missing"), nil)
 	}
+	args := s.Args()
+	if len(args) == 0 {
+		return sendScriptList(s, lang)
+	}
+	scriptName := args[0]
 
 	// Проверка префикса без разделителя пропускала каталог-сосед:
 	// "../scripts-evil/x" при корне "/opt/scripts" давал "/opt/scripts-evil/x".
@@ -177,7 +179,15 @@ func handleScript(s ports.Session) error {
 	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
 	defer cancel()
 
-	out, runErr := exec.CommandContext(ctx, scriptPath).CombinedOutput()
+	cmd, err := scripts.Command(ctx, scriptPath)
+	if errors.Is(err, scripts.ErrNotRunnable) {
+		return s.Send(i18n.Tf(lang, "script.not_runnable", scriptName, strings.Join(scripts.Extensions(), " ")), nil)
+	}
+	if err != nil {
+		return s.Send(i18n.Tf(lang, "script.start_error", scriptName, err), nil)
+	}
+
+	out, runErr := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return s.Send(i18n.Tf(lang, "script.timeout", scriptName, scriptTimeout), nil)
 	}
@@ -187,6 +197,25 @@ func handleScript(s ports.Session) error {
 		msg += i18n.Tf(lang, "script.error", runErr)
 	}
 	return s.Send(msg, nil)
+}
+
+// sendScriptList присылает список скриптов, которые можно передать /script.
+func sendScriptList(s ports.Session, lang string) error {
+	names, err := scripts.List(config.ScriptsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return s.Send(i18n.Tf(lang, "script.list_error", config.ScriptsDir, err), nil)
+	}
+	if len(names) == 0 {
+		return s.Send(i18n.Tf(lang, "script.list_empty", config.ScriptsDir, strings.Join(scripts.Extensions(), " ")), nil)
+	}
+
+	var bldr strings.Builder
+	bldr.WriteString(i18n.Tf(lang, "script.list_header", config.ScriptsDir))
+	for _, name := range names {
+		bldr.WriteString("• " + name + "\n")
+	}
+	bldr.WriteString(i18n.T(lang, "script.list_footer"))
+	return s.Send(utils.TruncateString(bldr.String(), scriptOutputLimit), nil)
 }
 
 const (

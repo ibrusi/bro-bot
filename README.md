@@ -299,7 +299,7 @@ nano .env
 | `TELEGRAM_BOT_TOKEN` | **Yes** | — | Telegram Bot API token from [@BotFather](https://t.me/BotFather). |
 | `TELEGRAM_ADMIN_ID` | **Yes** | — | Numeric Telegram ID of the administrator. The bot only accepts commands and replies from this user. |
 | `PROJECTS_ROOT` | **Yes** | — | Absolute path to the directory hosting managed Git project repositories. |
-| `SCRIPTS_DIR` | No | `scripts` under `BOT_DIR` | Path to the directory containing custom scripts for `/script`. |
+| `SCRIPTS_DIR` | No | `scripts` under `BOT_DIR` | Path to the directory containing custom scripts for `/script` (see [Custom scripts](#custom-scripts-script)). |
 | `DEFAULT_PROJECT` | No | First folder in `PROJECTS_ROOT` | Name of the project directory active by default upon startup. |
 | `DEFAULT_MODEL` | **Yes** | — | Default model for `agy` (e.g. `gemini-3.1-pro-high`, `flash`, `sonnet`, `opus`). |
 | `GEMINI_API_KEY` | No | — | Google AI Studio key used by the `agy` agent in `api` mode (`/mode api`). Without it the `api` mode is unavailable. |
@@ -497,7 +497,20 @@ so the conversation continues. Reset it with `/chat new`.
 | `/restart` | Safely restart the bot service via `systemctl`. | `/restart` |
 | `/rebuild [branch] [--pull] [--force]` | Pull Git updates, rebuild the Go binary, and restart the bot. | `/rebuild main --pull` |
 | `/language` | Choose the interface language (buttons are built from the installed catalogs). | `/language` |
-| `/script <name>` | Execute a custom script from `SCRIPTS_DIR` and print output. | `/script deploy.sh` |
+| `/script [name]` | Run a script from `SCRIPTS_DIR` by its file name with extension and print the output; without a name — list available scripts. | `/script agy-patch-cli.sh` |
+
+#### Custom scripts (`/script`)
+
+- `/script` with no arguments lists every script in `SCRIPTS_DIR` (nested folders included, hidden files skipped).
+- `/script <name>` runs the script by its file name **with the extension**, e.g. `/script deploy/restart.sh`. The output (stdout and stderr) is sent back to the chat; the run is limited to 2 minutes.
+- An executable file (`chmod +x`) runs directly, so any language works via its shebang. A non-executable file runs with the interpreter matching its extension: `.sh`/`.bash` → `bash`, `.py` → `python3`, `.js` → `node`, `.rb` → `ruby`, `.pl` → `perl`, `.php` → `php`.
+- The script's working directory is the folder it lives in.
+
+Bundled scripts:
+
+| Script | What it does |
+|---|---|
+| `agy-patch-cli.sh` | Runs `agy-manager patch cli` and returns its output. The binary path defaults to `/home/deploy/agy-manager` and can be overridden with the `AGY_MANAGER` environment variable. |
 
 ---
 
