@@ -25,16 +25,13 @@ func Spec() agents.Spec {
 		MCPTitle:     "Google Antigravity (MCP)",
 		APIKeyEnv:    apiKeyEnv,
 		DefaultModel: defaultModel,
-		// Модели семейства Claude agy не запускает: при переключении на него
-		// такая модель заменяется на модель по умолчанию.
-		RejectsModel: func(model string) bool {
-			m := strings.ToLower(model)
-			return strings.Contains(m, "claude") || strings.Contains(m, "sonnet") ||
-				strings.Contains(m, "opus") || strings.Contains(m, "haiku")
-		},
-		NewCLI: func() ports.AgentFramework { return NewAgyAdapter() },
-		NewAPI: func() ports.AgentFramework { return NewAgyAPIAdapter() },
-		NewMCP: func() ports.AgentFramework { return NewAgyMCPAdapter() },
+		// Модели Claude вне каталога agy (haiku, sonnet-5) при переключении на него
+		// заменяются на модель по умолчанию.
+		RejectsModel: rejectsModel,
+		ModelAliases: modelAliases,
+		NewCLI:       func() ports.AgentFramework { return NewAgyAdapter() },
+		NewAPI:       func() ports.AgentFramework { return NewAgyAPIAdapter() },
+		NewMCP:       func() ports.AgentFramework { return NewAgyMCPAdapter() },
 	}
 }
 

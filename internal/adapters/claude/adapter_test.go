@@ -118,7 +118,10 @@ func TestResolveClaudeModel(t *testing.T) {
 	}{
 		{"empty model defaults to sonnet", "", "sonnet"},
 		{"claude-sonnet-4-6 preserved", "claude-sonnet-4-6", "claude-sonnet-4-6"},
-		{"claude-opus-4-6-thinking preserved", "claude-opus-4-6-thinking", "claude-opus-4-6-thinking"},
+		{"agy thinking variant stripped", "claude-opus-4-6-thinking", "claude-opus-4-6"},
+		{"agy effort variant stripped", "claude-opus-5-5-high", "claude-opus-5-5"},
+		{"agy low variant stripped", "claude-sonnet-5-5-low", "claude-sonnet-5-5"},
+		{"claude-haiku-5-5 preserved", "claude-haiku-5-5", "claude-haiku-5-5"},
 		{"claude-haiku-4-5 preserved", "claude-haiku-4-5", "claude-haiku-4-5"},
 		{"sonnet preserved", "sonnet", "sonnet"},
 		{"gemini model overridden to sonnet", "gemini-3.1-pro-high", "sonnet"},

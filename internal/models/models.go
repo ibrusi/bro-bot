@@ -37,18 +37,21 @@ func (m ModelInfo) Description(lang string) string {
 	return i18n.Tf(lang, "models.desc_generic", name)
 }
 
-// agentMu защищает ссылку на активный агент: её меняют команды /agent и /mode,
-// а читает фоновое обновление списка моделей.
+// agentMu защищает активного агента и его псевдонимы: их меняют команды /agent и /mode,
+// а читают фоновое обновление списка моделей и разрешение псевдонимов.
 var (
-	agentMu sync.RWMutex
-	agent   ports.AgentFramework
+	agentMu      sync.RWMutex
+	agent        ports.AgentFramework
+	agentAliases Aliases
 )
 
-// SetAgent задаёт агента, у которого реестр запрашивает список моделей.
-func SetAgent(a ports.AgentFramework) {
+// SetAgent задаёт агента, у которого реестр запрашивает список моделей, и его
+// псевдонимы моделей: ResolveModel разрешает имена в контексте этого агента.
+func SetAgent(a ports.AgentFramework, aliases Aliases) {
 	agentMu.Lock()
 	defer agentMu.Unlock()
 	agent = a
+	agentAliases = aliases
 }
 
 // CurrentAgent возвращает текущего агента реестра моделей.
@@ -58,17 +61,22 @@ func CurrentAgent() ports.AgentFramework {
 	return agent
 }
 
+// ActiveAliases возвращает псевдонимы моделей текущего агента.
+func ActiveAliases() Aliases {
+	agentMu.RLock()
+	defer agentMu.RUnlock()
+	return agentAliases
+}
+
 type ModelRegistry struct {
 	sync.RWMutex
 	models      []ModelInfo
 	modelsByID  map[string]ModelInfo
-	aliases     map[string]string
 	lastFetched time.Time
 	cacheTTL    time.Duration
 }
 
 var (
-	BaseAliases         = baseAliases
 	GlobalModelRegistry *ModelRegistry
 
 	fallbackModels = []ModelInfo{
@@ -77,8 +85,12 @@ var (
 		{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)", DescriptionKey: "models.desc_flash_38_high"},
 		{ID: "gemini-3.8-flash-medium", DisplayName: "Gemini 3.8 Flash (Medium)", DescriptionKey: "models.desc_flash_38_medium"},
 		{ID: "gemini-3.8-flash-low", DisplayName: "Gemini 3.8 Flash (Low)", DescriptionKey: "models.desc_flash_38_low"},
-		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6 (Thinking)", DescriptionKey: "models.desc_claude_sonnet_46"},
-		{ID: "claude-opus-4-6-thinking", DisplayName: "Claude Opus 4.6 (Thinking)", DescriptionKey: "models.desc_claude_opus_46"},
+		{ID: "claude-sonnet-5-5-high", DisplayName: "Claude Sonnet 5.5 (High)", DescriptionKey: "models.desc_claude_sonnet_55"},
+		{ID: "claude-sonnet-5-5-medium", DisplayName: "Claude Sonnet 5.5 (Medium)", DescriptionKey: "models.desc_claude_sonnet_55"},
+		{ID: "claude-sonnet-5-5-low", DisplayName: "Claude Sonnet 5.5 (Low)", DescriptionKey: "models.desc_claude_sonnet_55"},
+		{ID: "claude-opus-5-5-high", DisplayName: "Claude Opus 5.5 (High)", DescriptionKey: "models.desc_claude_opus_55"},
+		{ID: "claude-opus-5-5-medium", DisplayName: "Claude Opus 5.5 (Medium)", DescriptionKey: "models.desc_claude_opus_55"},
+		{ID: "claude-opus-5-5-low", DisplayName: "Claude Opus 5.5 (Low)", DescriptionKey: "models.desc_claude_opus_55"},
 		{ID: "gpt-oss-120b-medium", DisplayName: "GPT-OSS 120B (Medium)", DescriptionKey: "models.desc_gpt_oss_120b"},
 		{ID: "gemini-3.7-flash-high", DisplayName: "Gemini 3.7 Flash (High)", DescriptionKey: "models.desc_flash_37_high"},
 		{ID: "gemini-3.7-flash-medium", DisplayName: "Gemini 3.7 Flash (Medium)", DescriptionKey: "models.desc_flash_37_medium"},
@@ -107,7 +119,13 @@ var (
 		"gemini-3.1-pro-low":       "models.desc_gemini_pro_low_alt",
 		"gemini-3.1-pro":           "models.desc_gemini_pro_high",
 		"claude-opus-5-5":          "models.desc_claude_opus_55",
+		"claude-opus-5-5-high":     "models.desc_claude_opus_55",
+		"claude-opus-5-5-medium":   "models.desc_claude_opus_55",
+		"claude-opus-5-5-low":      "models.desc_claude_opus_55",
 		"claude-sonnet-5-5":        "models.desc_claude_sonnet_55",
+		"claude-sonnet-5-5-high":   "models.desc_claude_sonnet_55",
+		"claude-sonnet-5-5-medium": "models.desc_claude_sonnet_55",
+		"claude-sonnet-5-5-low":    "models.desc_claude_sonnet_55",
 		"claude-haiku-5-5":         "models.desc_claude_haiku_55",
 		"claude-sonnet-5":          "models.desc_claude_sonnet_5",
 		"claude-sonnet-4-6":        "models.desc_claude_sonnet_46",
@@ -125,108 +143,32 @@ var (
 		"gemini-3.8-flash-high":    6,
 		"gemini-3.8-flash-low":     7,
 		"claude-opus-5-5":          8,
-		"claude-sonnet-5-5":        9,
-		"claude-haiku-5-5":         10,
-		"claude-sonnet-5":          11,
-		"claude-sonnet-4-6":        12,
-		"claude-opus-4-6-thinking": 13,
-		"claude-haiku-4-5":         14,
-		"gpt-oss-120b-medium":      15,
-		"gemini-3.7-flash-medium":  16,
-		"gemini-3.7-flash-high":    17,
-		"gemini-3.7-flash-low":     18,
-		"gemini-3.7-flash":         19,
-		"gemini-3.6-flash-medium":  20,
-		"gemini-3.6-flash-high":    21,
-		"gemini-3.6-flash-low":     22,
-		"gemini-3.6-flash":         23,
-	}
-
-	baseAliases = map[string]string{
-		// Default
-		"default": "gemini-3.1-pro-high",
-
-		// Flash 3.8
-		"flash":            "gemini-3.8-flash-medium",
-		"3.8":              "gemini-3.8-flash-medium",
-		"3.8-flash":        "gemini-3.8-flash-medium",
-		"gemini-3.8-flash": "gemini-3.8-flash-medium",
-		"flash-high":       "gemini-3.8-flash-high",
-		"3.8-high":         "gemini-3.8-flash-high",
-		"flash-low":        "gemini-3.8-flash-low",
-		"3.8-low":          "gemini-3.8-flash-low",
-
-		// Flash 3.7
-		"3.7":              "gemini-3.7-flash-medium",
-		"3.7-flash":        "gemini-3.7-flash-medium",
-		"gemini-3.7-flash": "gemini-3.7-flash-medium",
-		"3.7-high":         "gemini-3.7-flash-high",
-		"3.7-low":          "gemini-3.7-flash-low",
-
-		// Flash 3.6
-		"3.6":              "gemini-3.6-flash-medium",
-		"3.6-flash":        "gemini-3.6-flash-medium",
-		"gemini-3.6-flash": "gemini-3.6-flash-medium",
-		"3.6-high":         "gemini-3.6-flash-high",
-		"3.6-low":          "gemini-3.6-flash-low",
-
-		// Pro 3.1
-		"pro":            "gemini-3.1-pro-high",
-		"3.1":            "gemini-3.1-pro-high",
-		"3.1-pro":        "gemini-3.1-pro-high",
-		"gemini-3.1-pro": "gemini-3.1-pro-high",
-		"pro-low":        "gemini-3.1-pro-low",
-		"3.1-low":        "gemini-3.1-pro-low",
-
-		// Claude Sonnet
-		"sonnet":            "claude-sonnet-5-5",
-		"claude-sonnet":     "claude-sonnet-5-5",
-		"sonnet-5.5":        "claude-sonnet-5-5",
-		"claude-sonnet-5.5": "claude-sonnet-5-5",
-		"claude-sonnet-5-5": "claude-sonnet-5-5",
-		"sonnet-5":          "claude-sonnet-5",
-		"claude-sonnet-5":   "claude-sonnet-5",
-		"claude-5":          "claude-sonnet-5",
-		"sonnet-thinking":   "claude-sonnet-4-6",
-		"claude-sonnet-4.6": "claude-sonnet-4-6",
-		"claude-sonnet-4-6": "claude-sonnet-4-6",
-
-		// Claude Opus
-		"opus":                     "claude-opus-5-5",
-		"claude-opus":              "claude-opus-5-5",
-		"opus-5.5":                 "claude-opus-5-5",
-		"claude-opus-5.5":          "claude-opus-5-5",
-		"claude-opus-5-5":          "claude-opus-5-5",
-		"opus-thinking":            "claude-opus-4-6-thinking",
-		"claude-opus-4.6":          "claude-opus-4-6-thinking",
-		"claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
-
-		// Claude Haiku
-		"haiku":            "claude-haiku-5-5",
-		"claude-haiku":     "claude-haiku-5-5",
-		"haiku-5.5":        "claude-haiku-5-5",
-		"claude-haiku-5.5": "claude-haiku-5-5",
-		"claude-haiku-5-5": "claude-haiku-5-5",
-		"claude-haiku-4.5": "claude-haiku-4-5",
-		"claude-haiku-4-5": "claude-haiku-4-5",
-
-		// GPT-OSS
-		"oss":                 "gpt-oss-120b-medium",
-		"gpt-oss":             "gpt-oss-120b-medium",
-		"120b":                "gpt-oss-120b-medium",
-		"gpt-oss-120b":        "gpt-oss-120b-medium",
-		"gpt-oss-120b-medium": "gpt-oss-120b-medium",
+		"claude-opus-5-5-high":     9,
+		"claude-opus-5-5-medium":   10,
+		"claude-opus-5-5-low":      11,
+		"claude-sonnet-5-5":        12,
+		"claude-sonnet-5-5-high":   13,
+		"claude-sonnet-5-5-medium": 14,
+		"claude-sonnet-5-5-low":    15,
+		"claude-haiku-5-5":         16,
+		"claude-sonnet-5":          17,
+		"claude-sonnet-4-6":        18,
+		"claude-opus-4-6-thinking": 19,
+		"claude-haiku-4-5":         20,
+		"gpt-oss-120b-medium":      21,
+		"gemini-3.7-flash-medium":  22,
+		"gemini-3.7-flash-high":    23,
+		"gemini-3.7-flash-low":     24,
+		"gemini-3.7-flash":         25,
+		"gemini-3.6-flash-medium":  26,
+		"gemini-3.6-flash-high":    27,
+		"gemini-3.6-flash-low":     28,
+		"gemini-3.6-flash":         29,
 	}
 )
 
 func NewModelRegistry(cacheTTL time.Duration) *ModelRegistry {
-	aliases := make(map[string]string)
-	for k, v := range baseAliases {
-		aliases[k] = v
-	}
-
 	reg := &ModelRegistry{
-		aliases:    aliases,
 		modelsByID: make(map[string]ModelInfo),
 		cacheTTL:   cacheTTL,
 	}
@@ -364,14 +306,22 @@ func (m *ModelRegistry) GetModels() []ModelInfo {
 	return models
 }
 
+// ResolveModel разрешает имя модели для активного агента: псевдонимы берутся из его
+// набора (SetAgent), поэтому, например, haiku известен claude, но не agy.
 func (m *ModelRegistry) ResolveModel(input string) (string, bool) {
+	return m.ResolveModelWith(ActiveAliases(), input)
+}
+
+// ResolveModelWith разрешает имя модели по заданному набору псевдонимов, а затем
+// по каталогу моделей активного агента.
+func (m *ModelRegistry) ResolveModelWith(aliases Aliases, input string) (string, bool) {
 	target := strings.ToLower(strings.TrimSpace(input))
 	if target == "" {
 		return "", false
 	}
 
-	// 1. Проверяем алиасы
-	if canonical, ok := m.aliases[target]; ok {
+	// 1. Проверяем псевдонимы агента
+	if canonical, ok := aliases.Resolve(target); ok {
 		return canonical, true
 	}
 
@@ -428,27 +378,13 @@ func (m *ModelRegistry) FormatModelsMessage(currentModel, lang string) string {
 		}
 	}
 
-	hasGemini := false
-	for _, mod := range models {
-		if strings.Contains(strings.ToLower(mod.ID), "gemini") {
-			hasGemini = true
-			break
+	if hints := ActiveAliases().Hints(); len(hints) > 0 {
+		bldr.WriteString(i18n.T(lang, "models.aliases_header"))
+		for _, hint := range hints {
+			bldr.WriteString(i18n.Tf(lang, "models.alias_hint",
+				html.EscapeString(hint.Alias), html.EscapeString(hint.Title)))
 		}
-	}
-
-	bldr.WriteString(i18n.T(lang, "models.aliases_header"))
-	if hasGemini {
-		bldr.WriteString("• <code>/model flash</code> — Gemini 3.8 Flash\n")
-		bldr.WriteString("• <code>/model pro</code> — Gemini 3.1 Pro\n")
-		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 5.5\n")
-		bldr.WriteString("• <code>/model opus</code> — Claude Opus 5.5\n")
-		bldr.WriteString("• <code>/model haiku</code> — Claude Haiku 5.5\n")
-		bldr.WriteString("• <code>/model oss</code> — GPT-OSS 120B\n\n")
-	} else {
-		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 5.5\n")
-		bldr.WriteString("• <code>/model opus</code> — Claude Opus 5.5\n")
-		bldr.WriteString("• <code>/model haiku</code> — Claude Haiku 5.5\n")
-		bldr.WriteString("• <code>/model sonnet-5</code> — Claude Sonnet 5\n\n")
+		bldr.WriteString("\n")
 	}
 	bldr.WriteString(i18n.T(lang, "models.footer"))
 

@@ -2,7 +2,6 @@ package domain
 
 import (
 	"bro-bot/internal/i18n"
-	"bro-bot/internal/models"
 	"bro-bot/internal/storage"
 	"bro-bot/internal/utils"
 	"context"
@@ -879,11 +878,10 @@ func (t *TokenTracker) FormatShortLastTask(lang string) string {
 // ModelContextWindow возвращает размер окна контекста модели в токенах.
 func ModelContextWindow(model string) int64 {
 	m := strings.ToLower(model)
-	if aliased, ok := models.BaseAliases[m]; ok {
-		m = aliased
-	}
 	switch {
-	case strings.Contains(m, "claude"):
+	// Псевдонимы sonnet/opus/haiku слова claude не содержат.
+	case strings.Contains(m, "claude"), strings.Contains(m, "sonnet"),
+		strings.Contains(m, "opus"), strings.Contains(m, "haiku"):
 		return 200_000
 	case strings.Contains(m, "gpt-oss") || strings.Contains(m, "120b"):
 		return 131_072

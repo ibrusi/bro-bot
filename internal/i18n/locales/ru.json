@@ -449,6 +449,8 @@
     "models.footer": "🔄 <i>Список моделей синхронизируется динамически с CLI агентом (обновить: <code>/models refresh</code>)</i>",
     "models.refresh_failed": "⚠️ Ошибка синхронизации с %s: %v\nПоказан кэшированный список.",
     "models.current": "Текущая модель: <code>%s</code>\nИспользование: <code>/model &lt;имя&gt;</code> (например, <code>/model sonnet</code>)",
+    "models.alias_of_other_agent": "❌ <code>%s</code> — псевдоним модели <code>%s</code> агента <b>%s</b>, а сейчас активен <b>%s</b>. Переключитесь: /agent %s",
+    "models.alias_hint": "• <code>/model %s</code> — %s\n",
     "models.unknown": "❌ Неизвестная модель: <code>%s</code>. Список: /models",
     "models.switched": "✅ Модель переключена на: <code>%s</code>",
     "effort.current": "🧠 Усилие рассуждений: <code>%s</code>\n\nУровень действует для всех агентов и режимов со следующего запуска агента. <code>auto</code> — агент и модель выбирают его сами.\nИспользование: <code>/effort &lt;уровень&gt;</code> (%s) или кнопки ниже.",

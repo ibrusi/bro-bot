@@ -449,6 +449,8 @@
     "models.footer": "🔄 <i>The model list is synchronized dynamically with the CLI agent (refresh: <code>/models refresh</code>)</i>",
     "models.refresh_failed": "⚠️ Failed to sync with %s: %v\nShowing the cached list.",
     "models.current": "Current model: <code>%s</code>\nUsage: <code>/model &lt;name&gt;</code> (for example, <code>/model sonnet</code>)",
+    "models.alias_of_other_agent": "❌ <code>%s</code> is an alias of <code>%s</code> for agent <b>%s</b>, but <b>%s</b> is active. Switch with: /agent %s",
+    "models.alias_hint": "• <code>/model %s</code> — %s\n",
     "models.unknown": "❌ Unknown model: <code>%s</code>. List: /models",
     "models.switched": "✅ Model switched to: <code>%s</code>",
     "effort.current": "🧠 Reasoning effort: <code>%s</code>\n\nThe level applies to every agent and mode from the next agent run. <code>auto</code> — the agent and model choose it themselves.\nUsage: <code>/effort &lt;level&gt;</code> (%s) or the buttons below.",

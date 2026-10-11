@@ -33,6 +33,11 @@ func (a *ClaudeAdapter) ExecutionMode() string {
 	return "cli"
 }
 
+// agyVariantSuffixes — суффиксы ID моделей Claude из каталога agy: уровень рассуждений
+// (claude-opus-5-5-high) или режим thinking (claude-opus-4-6-thinking). Claude Code
+// таких ID не знает: уровень у него задаёт --effort, поэтому суффикс отбрасывается.
+var agyVariantSuffixes = []string{"-low", "-medium", "-high", "-thinking"}
+
 func resolveClaudeModel(modelName string) string {
 	m := strings.ToLower(strings.TrimSpace(modelName))
 	if m == "" {
@@ -42,6 +47,14 @@ func resolveClaudeModel(modelName string) string {
 	// переключаемся на безопасный дефолт sonnet во избежание ошибки 404 unrecognized_model
 	if strings.Contains(m, "gemini") || strings.Contains(m, "gpt") || strings.Contains(m, "120b") {
 		return "sonnet"
+	}
+	// Модель выбрана при агенте agy: приводим его вариант к имени Claude Code.
+	if strings.HasPrefix(m, "claude-") {
+		for _, suffix := range agyVariantSuffixes {
+			if base, ok := strings.CutSuffix(m, suffix); ok {
+				return base
+			}
+		}
 	}
 	return modelName
 }

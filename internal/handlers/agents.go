@@ -136,7 +136,7 @@ func switchActiveAgent(name, mode string) (AgentSwitch, error) {
 	}
 
 	SetActiveAgent(adapter, spec.Name)
-	models.SetAgent(adapter)
+	models.SetAgent(adapter, spec.ModelAliases)
 	config.ProjectState.SetCurrentAgent(spec.Name)
 
 	result := AgentSwitch{Agent: spec.Name, Mode: mode}
@@ -206,8 +206,29 @@ func initActiveAgent(savedAgent string) {
 		}
 	}
 	SetActiveAgent(adapter, name)
-	models.SetAgent(adapter)
+	models.SetAgent(adapter, modelAliasesOf(name))
 	config.ProjectState.SetCurrentAgent(name)
+}
+
+// modelAliasesOf возвращает псевдонимы моделей агента; для неизвестного — пустой набор.
+func modelAliasesOf(name string) models.Aliases {
+	spec, _ := registry().Lookup(name)
+	return spec.ModelAliases
+}
+
+// aliasOwner ищет агента, у которого есть псевдоним alias, кроме агента except.
+// Нужен, чтобы на /model haiku при активном agy подсказать, чей это псевдоним.
+func aliasOwner(alias, except string) (agent, model string, ok bool) {
+	reg := registry()
+	for _, name := range reg.Names() {
+		if strings.EqualFold(name, except) {
+			continue
+		}
+		if model, ok := modelAliasesOf(name).Resolve(alias); ok {
+			return name, model, true
+		}
+	}
+	return "", "", false
 }
 
 // formatAgentNames перечисляет зарегистрированных агентов для подсказок.

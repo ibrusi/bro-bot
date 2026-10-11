@@ -43,13 +43,28 @@ func TestSwitchActiveAgentReturnsDataWithoutMarkup(t *testing.T) {
 		t.Errorf("модель Gemini должна смениться на sonnet, получили %+v", res)
 	}
 
-	// Обратно на agy: модель sonnet ему чужая — вернётся DEFAULT_MODEL.
+	// Обратно на agy: Sonnet 5.5 есть в его каталоге — модель сохраняется.
+	res, err = SwitchActiveAgent("agy")
+	if err != nil {
+		t.Fatalf("SwitchActiveAgent(agy): %v", err)
+	}
+	if res.ModelSwitched() {
+		t.Errorf("sonnet есть у agy и не должна меняться, получили %+v", res)
+	}
+
+	// Haiku у agy нет: при переключении вернётся DEFAULT_MODEL.
+	if _, err := SwitchActiveAgent("claude"); err != nil {
+		t.Fatalf("SwitchActiveAgent(claude): %v", err)
+	}
+	config.ProjectState.Lock()
+	config.ProjectState.CurrentModel = "claude-haiku-5-5"
+	config.ProjectState.Unlock()
 	res, err = SwitchActiveAgent("agy")
 	if err != nil {
 		t.Fatalf("SwitchActiveAgent(agy): %v", err)
 	}
 	if !res.ModelSwitched() || res.Model != "gemini-3.1-pro-high" {
-		t.Errorf("модель claude должна смениться на DEFAULT_MODEL, получили %+v", res)
+		t.Errorf("модель haiku должна смениться на DEFAULT_MODEL, получили %+v", res)
 	}
 
 	// Повторное переключение на того же агента модель не трогает.

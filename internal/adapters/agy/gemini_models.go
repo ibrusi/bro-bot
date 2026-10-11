@@ -268,7 +268,7 @@ func configuredGeminiModel(requested string) string {
 	requested = strings.TrimSpace(requested)
 	if requested != "" && !strings.EqualFold(requested, "default") {
 		if models.GlobalModelRegistry != nil {
-			if resolved, ok := models.GlobalModelRegistry.ResolveModel(requested); ok {
+			if resolved, ok := models.GlobalModelRegistry.ResolveModelWith(modelAliases, requested); ok {
 				return resolved
 			}
 		}
