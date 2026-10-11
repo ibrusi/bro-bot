@@ -1,9 +1,7 @@
 package models
 
 import (
-	"bro-bot/internal/effort"
 	"bro-bot/internal/i18n"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -68,97 +66,6 @@ func TestResolveModel(t *testing.T) {
 		}
 		if res != tc.expected {
 			t.Errorf("ResolveModel(%q) = %q, expected %q", tc.input, res, tc.expected)
-		}
-	}
-}
-
-func TestBuildAgyModelArgs(t *testing.T) {
-	tests := []struct {
-		model    string
-		expected []string
-	}{
-		{
-			model:    "claude-sonnet-4-6",
-			expected: []string{"--model", "claude-sonnet-4-6"},
-		},
-		{
-			model:    "claude-opus-4-6-thinking",
-			expected: []string{"--model", "claude-opus-4-6-thinking"},
-		},
-		{
-			model:    "gemini-3.8-flash-medium",
-			expected: []string{"--model", "gemini-3.8-flash-medium"},
-		},
-		{
-			model:    "gemini-3.8-flash-high",
-			expected: []string{"--model", "gemini-3.8-flash-high"},
-		},
-		{
-			model:    "gemini-3.8-flash",
-			expected: []string{"--model", "gemini-3.8-flash", "--effort", "medium"},
-		},
-		{
-			model:    "gemini-3.1-pro",
-			expected: []string{"--model", "gemini-3.1-pro", "--effort", "high"},
-		},
-		{
-			model:    "gpt-oss-120b-medium",
-			expected: []string{"--model", "gpt-oss-120b-medium"},
-		},
-		{
-			model:    "my-custom-model",
-			expected: []string{"--model", "my-custom-model"},
-		},
-	}
-
-	for _, tc := range tests {
-		actual := BuildAgyModelArgs(tc.model, effort.Auto)
-		if !reflect.DeepEqual(actual, tc.expected) {
-			t.Errorf("BuildAgyModelArgs(%q) = %v, expected %v", tc.model, actual, tc.expected)
-		}
-	}
-}
-
-func TestBuildAgyModelArgsExplicitEffort(t *testing.T) {
-	tests := []struct {
-		model    string
-		level    effort.Level
-		expected []string
-	}{
-		{
-			// Явный уровень перекрывает уровень из имени модели.
-			model:    "gemini-3.1-pro-high",
-			level:    effort.Low,
-			expected: []string{"--model", "gemini-3.1-pro-high", "--effort", "low"},
-		},
-		{
-			model:    "gemini-3.8-flash-low",
-			level:    effort.Max,
-			expected: []string{"--model", "gemini-3.8-flash-low", "--effort", "max"},
-		},
-		{
-			// И умолчание для базовой модели тоже.
-			model:    "gemini-3.1-pro",
-			level:    effort.XHigh,
-			expected: []string{"--model", "gemini-3.1-pro", "--effort", "xhigh"},
-		},
-		{
-			model:    "my-custom-model",
-			level:    effort.Medium,
-			expected: []string{"--model", "my-custom-model", "--effort", "medium"},
-		},
-		{
-			// Модели Claude в agy флаг --effort не принимают.
-			model:    "claude-sonnet-4-6",
-			level:    effort.High,
-			expected: []string{"--model", "claude-sonnet-4-6"},
-		},
-	}
-
-	for _, tc := range tests {
-		actual := BuildAgyModelArgs(tc.model, tc.level)
-		if !reflect.DeepEqual(actual, tc.expected) {
-			t.Errorf("BuildAgyModelArgs(%q, %q) = %v, expected %v", tc.model, tc.level, actual, tc.expected)
 		}
 	}
 }

@@ -37,7 +37,7 @@ func buildAgyArgs(args ports.ExecuteArgs) []string {
 		cmdArgs = append(cmdArgs, "--conversation", args.ConversationID)
 	}
 	if args.ModelName != "" {
-		cmdArgs = append(cmdArgs, models.BuildAgyModelArgs(args.ModelName, args.Effort)...)
+		cmdArgs = append(cmdArgs, models.BuildAgyModelArgs(args.ModelName, args.Effort, models.KnownModelIDs())...)
 	}
 
 	finalPrompt := args.Prompt

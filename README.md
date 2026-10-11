@@ -503,7 +503,7 @@ so the conversation continues. Reset it with `/chat new`.
 | Agent | `mcp` / `cli` | `api` |
 |---|---|---|
 | `claude` | `--effort <level>` flag of Claude Code | `output_config.effort` of the Messages API — only when `/v1/models` confirms the model supports this level (for example, `xhigh` requires Opus 4.7+, Haiku 4.5 has no effort at all); otherwise the model default is used and the bot logs it |
-| `agy` | `--effort <level>` flag; an explicit level overrides the level built into the model name (`gemini-3.1-pro-high`). Claude models in `agy` get no `--effort` | Not supported: the Gemini SDK in use cannot configure reasoning, so `/effort` warns and the model default is used |
+| `agy` | The level is passed as the exact model variant from `agy models`: `/effort low` with `gemini-3.1-pro-high` runs `gemini-3.1-pro-low`, and the bare family name (`claude-opus-5-5`) gets a level suffix (with `auto` — `medium`, or `high` if the family has no `medium`). If the family lacks the requested level, the highest level not above it is used, otherwise the lowest available (`/effort max` → `-high`). Models outside the catalog get `--effort <level>` as is, legacy Claude models (`claude-sonnet-4-6`) get none | Not supported: the Gemini SDK in use cannot configure reasoning, so `/effort` warns and the model default is used |
 
 ---
 
