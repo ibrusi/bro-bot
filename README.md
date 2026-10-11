@@ -499,7 +499,7 @@ so the conversation continues. Reset it with `/chat new`.
 | `/restart` | Safely restart the bot service via `systemctl`. | `/restart` |
 | `/rebuild [branch] [--pull] [--force]` | Pull Git updates, rebuild the Go binary, and restart the bot. | `/rebuild main --pull` |
 | `/language` | Choose the interface language (buttons are built from the installed catalogs). | `/language` |
-| `/script [name] [args]` | Run a script from `SCRIPTS_DIR` by its file name with extension, passing the arguments; the output updates live and the run can be stopped with a button. Without a name — list available scripts. | `/script agy-patch.sh ide` |
+| `/script [name] [args]` | Run a script from `SCRIPTS_DIR` by its file name with extension, passing the arguments; the output updates live and the run can be stopped with a button. Without a name — list available scripts. | `/script deploy/restart.sh --force` |
 
 #### Custom scripts (`/script`)
 
@@ -509,12 +509,7 @@ so the conversation continues. Reset it with `/chat new`.
 - There is no time limit. The **⏹ Stop** button under the message stops the run: the script and all its child processes get `SIGTERM`, and those still alive after 5 seconds get `SIGKILL`.
 - An executable file (`chmod +x`) runs directly, so any language works via its shebang. A non-executable file runs with the interpreter matching its extension: `.sh`/`.bash` → `bash`, `.py` → `python3`, `.js` → `node`, `.rb` → `ruby`, `.pl` → `perl`, `.php` → `php`.
 - The script's working directory is the folder it lives in.
-
-Bundled scripts:
-
-| Script | What it does |
-|---|---|
-| `agy-patch.sh [targets...]` | Runs `agy-manager patch` for the given targets (`cli`, `manager`, `ide`, several allowed; `cli` by default) and returns its output. The binary path defaults to `/home/deploy/agy-manager` and can be overridden with the `AGY_MANAGER` environment variable. |
+- Scripts are server-local: the `scripts` folder is kept in the repository, but its contents are ignored by Git (`.gitignore`), so put your scripts there on each server yourself.
 
 ---
 
