@@ -49,10 +49,19 @@ func TestResolveModel(t *testing.T) {
 		{"3.8", "gemini-3.8-flash-medium", true},
 		{"pro", "gemini-3.1-pro-high", true},
 		{"default", "gemini-3.1-pro-high", true},
-		{"sonnet", "claude-sonnet-4-6", true},
+		{"sonnet", "claude-sonnet-5-5", true},
+		{"claude-sonnet", "claude-sonnet-5-5", true},
+		{"claude-sonnet-5.5", "claude-sonnet-5-5", true},
 		{"claude-sonnet-4.6", "claude-sonnet-4-6", true},
-		{"opus", "claude-opus-4-6-thinking", true},
+		{"opus", "claude-opus-5-5", true},
+		{"claude-opus", "claude-opus-5-5", true},
+		{"claude-opus-5.5", "claude-opus-5-5", true},
 		{"claude-opus-4.6", "claude-opus-4-6-thinking", true},
+		{"haiku", "claude-haiku-5-5", true},
+		{"claude-haiku", "claude-haiku-5-5", true},
+		{"claude-haiku-5.5", "claude-haiku-5-5", true},
+		{"claude-haiku-5-5", "claude-haiku-5-5", true},
+		{"claude-haiku-4.5", "claude-haiku-4-5", true},
 		{"oss", "gpt-oss-120b-medium", true},
 		{"gpt-oss-120b", "gpt-oss-120b-medium", true},
 		{"gemini-3.8-flash-low", "gemini-3.8-flash-low", true},
@@ -98,8 +107,11 @@ func TestFormatModelsMessage(t *testing.T) {
 	if strings.Contains(msgClaude, "/model flash") {
 		t.Errorf("expected claude message not to contain flash alias")
 	}
-	if !strings.Contains(msgClaude, "/model haiku") {
-		t.Errorf("expected claude message to contain haiku alias")
+	if !strings.Contains(msgClaude, "<code>/model haiku</code> — Claude Haiku 5.5") {
+		t.Errorf("expected claude message to contain haiku alias pointing to Haiku 5.5")
+	}
+	if !strings.Contains(msgClaude, "<code>/model opus</code> — Claude Opus 5.5") {
+		t.Errorf("expected claude message to contain opus alias pointing to Opus 5.5")
 	}
 	if !strings.Contains(msgClaude, "👉 <b>claude-sonnet-4-6</b> <i>(active)</i>") {
 		t.Errorf("expected active model marker for claude-sonnet-4-6")

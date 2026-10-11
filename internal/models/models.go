@@ -106,6 +106,9 @@ var (
 		"gemini-3.1-pro-high":      "models.desc_gemini_pro_high",
 		"gemini-3.1-pro-low":       "models.desc_gemini_pro_low_alt",
 		"gemini-3.1-pro":           "models.desc_gemini_pro_high",
+		"claude-opus-5-5":          "models.desc_claude_opus_55",
+		"claude-sonnet-5-5":        "models.desc_claude_sonnet_55",
+		"claude-haiku-5-5":         "models.desc_claude_haiku_55",
 		"claude-sonnet-5":          "models.desc_claude_sonnet_5",
 		"claude-sonnet-4-6":        "models.desc_claude_sonnet_46",
 		"claude-opus-4-6-thinking": "models.desc_claude_opus_46",
@@ -121,19 +124,22 @@ var (
 		"gemini-3.8-flash":         5,
 		"gemini-3.8-flash-high":    6,
 		"gemini-3.8-flash-low":     7,
-		"claude-sonnet-5":          8,
-		"claude-sonnet-4-6":        9,
-		"claude-opus-4-6-thinking": 10,
-		"claude-haiku-4-5":         11,
-		"gpt-oss-120b-medium":      12,
-		"gemini-3.7-flash-medium":  13,
-		"gemini-3.7-flash-high":    14,
-		"gemini-3.7-flash-low":     15,
-		"gemini-3.7-flash":         16,
-		"gemini-3.6-flash-medium":  17,
-		"gemini-3.6-flash-high":    18,
-		"gemini-3.6-flash-low":     19,
-		"gemini-3.6-flash":         20,
+		"claude-opus-5-5":          8,
+		"claude-sonnet-5-5":        9,
+		"claude-haiku-5-5":         10,
+		"claude-sonnet-5":          11,
+		"claude-sonnet-4-6":        12,
+		"claude-opus-4-6-thinking": 13,
+		"claude-haiku-4-5":         14,
+		"gpt-oss-120b-medium":      15,
+		"gemini-3.7-flash-medium":  16,
+		"gemini-3.7-flash-high":    17,
+		"gemini-3.7-flash-low":     18,
+		"gemini-3.7-flash":         19,
+		"gemini-3.6-flash-medium":  20,
+		"gemini-3.6-flash-high":    21,
+		"gemini-3.6-flash-low":     22,
+		"gemini-3.6-flash":         23,
 	}
 
 	baseAliases = map[string]string{
@@ -173,25 +179,34 @@ var (
 		"3.1-low":        "gemini-3.1-pro-low",
 
 		// Claude Sonnet
-		"sonnet":            "claude-sonnet-4-6",
-		"claude-sonnet":     "claude-sonnet-4-6",
-		"sonnet-thinking":   "claude-sonnet-4-6",
-		"claude-sonnet-4.6": "claude-sonnet-4-6",
-		"claude-sonnet-4-6": "claude-sonnet-4-6",
+		"sonnet":            "claude-sonnet-5-5",
+		"claude-sonnet":     "claude-sonnet-5-5",
+		"sonnet-5.5":        "claude-sonnet-5-5",
+		"claude-sonnet-5.5": "claude-sonnet-5-5",
+		"claude-sonnet-5-5": "claude-sonnet-5-5",
 		"sonnet-5":          "claude-sonnet-5",
 		"claude-sonnet-5":   "claude-sonnet-5",
 		"claude-5":          "claude-sonnet-5",
+		"sonnet-thinking":   "claude-sonnet-4-6",
+		"claude-sonnet-4.6": "claude-sonnet-4-6",
+		"claude-sonnet-4-6": "claude-sonnet-4-6",
 
 		// Claude Opus
-		"opus":                     "claude-opus-4-6-thinking",
-		"claude-opus":              "claude-opus-4-6-thinking",
+		"opus":                     "claude-opus-5-5",
+		"claude-opus":              "claude-opus-5-5",
+		"opus-5.5":                 "claude-opus-5-5",
+		"claude-opus-5.5":          "claude-opus-5-5",
+		"claude-opus-5-5":          "claude-opus-5-5",
 		"opus-thinking":            "claude-opus-4-6-thinking",
 		"claude-opus-4.6":          "claude-opus-4-6-thinking",
 		"claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
 
 		// Claude Haiku
-		"haiku":            "claude-haiku-4-5",
-		"claude-haiku":     "claude-haiku-4-5",
+		"haiku":            "claude-haiku-5-5",
+		"claude-haiku":     "claude-haiku-5-5",
+		"haiku-5.5":        "claude-haiku-5-5",
+		"claude-haiku-5.5": "claude-haiku-5-5",
+		"claude-haiku-5-5": "claude-haiku-5-5",
 		"claude-haiku-4.5": "claude-haiku-4-5",
 		"claude-haiku-4-5": "claude-haiku-4-5",
 
@@ -425,13 +440,14 @@ func (m *ModelRegistry) FormatModelsMessage(currentModel, lang string) string {
 	if hasGemini {
 		bldr.WriteString("• <code>/model flash</code> — Gemini 3.8 Flash\n")
 		bldr.WriteString("• <code>/model pro</code> — Gemini 3.1 Pro\n")
-		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 4.6 Thinking\n")
-		bldr.WriteString("• <code>/model opus</code> — Claude Opus 4.6 Thinking\n")
+		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 5.5\n")
+		bldr.WriteString("• <code>/model opus</code> — Claude Opus 5.5\n")
+		bldr.WriteString("• <code>/model haiku</code> — Claude Haiku 5.5\n")
 		bldr.WriteString("• <code>/model oss</code> — GPT-OSS 120B\n\n")
 	} else {
-		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 4.6 Thinking\n")
-		bldr.WriteString("• <code>/model opus</code> — Claude Opus 4.6 Thinking\n")
-		bldr.WriteString("• <code>/model haiku</code> — Claude Haiku 4.5\n")
+		bldr.WriteString("• <code>/model sonnet</code> — Claude Sonnet 5.5\n")
+		bldr.WriteString("• <code>/model opus</code> — Claude Opus 5.5\n")
+		bldr.WriteString("• <code>/model haiku</code> — Claude Haiku 5.5\n")
 		bldr.WriteString("• <code>/model sonnet-5</code> — Claude Sonnet 5\n\n")
 	}
 	bldr.WriteString(i18n.T(lang, "models.footer"))

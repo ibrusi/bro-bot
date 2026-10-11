@@ -63,7 +63,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Configurable timeout (`QUESTION_TIMEOUT`): if no response is received in time, the task automatically pauses to unblock the project queue for other tasks.
 - **Dynamic Model Registry**:
   - Automatic discovery of available models from the CLI (`agy models`) with disk caching and fallback mechanisms.
-  - Convenient aliases: `default`, `flash`, `flash-high`, `flash-low`, `pro`, `pro-low`, `sonnet`, `opus`, `oss`.
+  - Convenient aliases: `default`, `flash`, `flash-high`, `flash-low`, `pro`, `pro-low`, `sonnet` (Claude Sonnet 5.5), `opus` (Claude Opus 5.5), `haiku` (Claude Haiku 5.5), `oss`.
   - Instant model switching (`/models`, `/model <name|alias>`).
   - Reasoning effort control (`/effort [auto|low|medium|high|xhigh|max]`), shared by `agy` and `claude` and saved across restarts.
   - Multi-agent toggle (`/agent <agy|claude>`).
@@ -305,7 +305,7 @@ nano .env
 | `PROJECTS_ROOT` | **Yes** | — | Absolute path to the directory hosting managed Git project repositories. |
 | `SCRIPTS_DIR` | No | `scripts` under `BOT_DIR` | Path to the directory containing custom scripts for `/script` (see [Custom scripts](#custom-scripts-script)). |
 | `DEFAULT_PROJECT` | No | First folder in `PROJECTS_ROOT` | Name of the project directory active by default upon startup. |
-| `DEFAULT_MODEL` | **Yes** | — | Default model for `agy` (e.g. `gemini-3.1-pro-high`, `flash`, `sonnet`, `opus`). |
+| `DEFAULT_MODEL` | **Yes** | — | Default model for `agy` (e.g. `gemini-3.1-pro-high`, `flash`, `sonnet`, `opus`, `haiku`). |
 | `GEMINI_API_KEY` | No | — | Google AI Studio key used by the `agy` agent in `api` mode (`/mode api`). Without it the `api` mode is unavailable. |
 | `GEMINI_API_MODEL` | No | Auto-selected | Explicit Gemini API model name for `api` mode (e.g. `gemini-2.5-flash`). When unset, the model is picked from the models the API actually exposes: the junior family among the senior ones (flash) at its highest available version. |
 | `ANTHROPIC_API_KEY` | No | — | Anthropic key used by the `claude` agent in `api` mode (`/mode api`). Without it (and without `CLAUDE_API_KEY`) the `api` mode is unavailable for `claude`. |
