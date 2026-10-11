@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 
 	"bro-bot/internal/adapters/cliproc"
@@ -37,22 +36,7 @@ func (a *ClaudeMCPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 		return nil, fmt.Errorf("claude-mcp: write config: %w", err)
 	}
 
-	cmdArgs := []string{
-		"--mcp-config", cfgFile,
-		"--dangerously-skip-permissions",
-		"--output-format", "stream-json",
-		"--verbose",
-	}
-	if args.ConversationID != "" {
-		cmdArgs = append(cmdArgs, "--resume", args.ConversationID)
-	} else if strings.TrimSpace(args.SystemPrompt) != "" {
-		cmdArgs = append(cmdArgs, "--append-system-prompt", strings.TrimSpace(args.SystemPrompt))
-	}
-	claudeModel := resolveClaudeModel(args.ModelName)
-	if claudeModel != "" {
-		cmdArgs = append(cmdArgs, "--model", claudeModel)
-	}
-	cmdArgs = append(cmdArgs, "-p", args.Prompt)
+	cmdArgs := append([]string{"--mcp-config", cfgFile}, buildClaudeArgs(args)...)
 
 	cmd := exec.CommandContext(ctx, "claude", cmdArgs...)
 	cmd.Dir = args.WorkDir

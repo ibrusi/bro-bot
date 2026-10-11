@@ -25,36 +25,38 @@ func (a *AgyAdapter) ExecutionMode() string {
 	return "cli"
 }
 
-func buildAgyArgs(convID, modelName, prompt, systemPrompt, workDir string) []string {
-	args := []string{
+// buildAgyArgs собирает аргументы CLI agy. Ими пользуются оба режима — cli и mcp:
+// MCP-режим отличается только конфигурацией сервера, а не флагами запуска.
+func buildAgyArgs(args ports.ExecuteArgs) []string {
+	cmdArgs := []string{
 		"--dangerously-skip-permissions",
 		"--print-timeout", "30m", // Hardcoded fallback or we can pass it
 		"--output-format", "stream-json",
 	}
-	if convID != "" {
-		args = append(args, "--conversation", convID)
+	if args.ConversationID != "" {
+		cmdArgs = append(cmdArgs, "--conversation", args.ConversationID)
 	}
-	if modelName != "" {
-		args = append(args, models.BuildAgyModelArgs(modelName)...)
+	if args.ModelName != "" {
+		cmdArgs = append(cmdArgs, models.BuildAgyModelArgs(args.ModelName, args.Effort)...)
 	}
 
-	finalPrompt := prompt
-	// Если это новая сессия (convID == "") и передан systemPrompt:
-	// agy CLI автоматически считывает AGENTS.md из workDir. Но если файла в workDir нет,
+	finalPrompt := args.Prompt
+	// Если это новая сессия (ConversationID пуст) и передан SystemPrompt:
+	// agy CLI автоматически считывает AGENTS.md из WorkDir. Но если файла в WorkDir нет,
 	// подмешиваем системный промпт в начало первого пользовательского запроса.
-	if convID == "" && strings.TrimSpace(systemPrompt) != "" && !utils.HasLocalAgentsRules(workDir) {
-		finalPrompt = fmt.Sprintf("ИНСТРУКЦИИ ПРОЕКТА (AGENTS.md):\n%s\n\n---\n\n%s", strings.TrimSpace(systemPrompt), prompt)
+	if args.ConversationID == "" && strings.TrimSpace(args.SystemPrompt) != "" && !utils.HasLocalAgentsRules(args.WorkDir) {
+		finalPrompt = fmt.Sprintf("ИНСТРУКЦИИ ПРОЕКТА (AGENTS.md):\n%s\n\n---\n\n%s", strings.TrimSpace(args.SystemPrompt), args.Prompt)
 	}
 
-	args = append(args, "-p", finalPrompt)
-	return args
+	cmdArgs = append(cmdArgs, "-p", finalPrompt)
+	return cmdArgs
 }
 
 // ExecuteTask запускает CLI-агента agy.
 // Историю диалога agy хранит сам и восстанавливает по флагу --conversation.
 // На первой сессии инструкции передаются через правила проекта или преамбулу промпта.
 func (a *AgyAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
-	cmdArgs := buildAgyArgs(args.ConversationID, args.ModelName, args.Prompt, args.SystemPrompt, args.WorkDir)
+	cmdArgs := buildAgyArgs(args)
 	cmd := exec.CommandContext(ctx, "agy", cmdArgs...)
 	cmd.Dir = args.WorkDir
 	cmd.Env = append(os.Environ(),

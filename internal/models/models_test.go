@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bro-bot/internal/effort"
 	"bro-bot/internal/i18n"
 	"reflect"
 	"strings"
@@ -111,9 +112,53 @@ func TestBuildAgyModelArgs(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		actual := BuildAgyModelArgs(tc.model)
+		actual := BuildAgyModelArgs(tc.model, effort.Auto)
 		if !reflect.DeepEqual(actual, tc.expected) {
 			t.Errorf("BuildAgyModelArgs(%q) = %v, expected %v", tc.model, actual, tc.expected)
+		}
+	}
+}
+
+func TestBuildAgyModelArgsExplicitEffort(t *testing.T) {
+	tests := []struct {
+		model    string
+		level    effort.Level
+		expected []string
+	}{
+		{
+			// Явный уровень перекрывает уровень из имени модели.
+			model:    "gemini-3.1-pro-high",
+			level:    effort.Low,
+			expected: []string{"--model", "gemini-3.1-pro-high", "--effort", "low"},
+		},
+		{
+			model:    "gemini-3.8-flash-low",
+			level:    effort.Max,
+			expected: []string{"--model", "gemini-3.8-flash-low", "--effort", "max"},
+		},
+		{
+			// И умолчание для базовой модели тоже.
+			model:    "gemini-3.1-pro",
+			level:    effort.XHigh,
+			expected: []string{"--model", "gemini-3.1-pro", "--effort", "xhigh"},
+		},
+		{
+			model:    "my-custom-model",
+			level:    effort.Medium,
+			expected: []string{"--model", "my-custom-model", "--effort", "medium"},
+		},
+		{
+			// Модели Claude в agy флаг --effort не принимают.
+			model:    "claude-sonnet-4-6",
+			level:    effort.High,
+			expected: []string{"--model", "claude-sonnet-4-6"},
+		},
+	}
+
+	for _, tc := range tests {
+		actual := BuildAgyModelArgs(tc.model, tc.level)
+		if !reflect.DeepEqual(actual, tc.expected) {
+			t.Errorf("BuildAgyModelArgs(%q, %q) = %v, expected %v", tc.model, tc.level, actual, tc.expected)
 		}
 	}
 }

@@ -102,6 +102,9 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 		config.ProjectState.Unlock()
 		log.Printf("restored the active model from SQLite: %s", savedModel)
 	}
+	// Ошибка чтения равносильна отсутствию настройки: уровень сбрасывается в auto.
+	savedEffort, _ := sqliteStorage.GetSetting(ctx, effortSettingKey)
+	restoreEffort(savedEffort)
 	if savedPlanMode, err := sqliteStorage.GetSetting(ctx, "plan_mode"); err == nil && savedPlanMode != "" {
 		if pm, err := strconv.ParseBool(savedPlanMode); err == nil {
 			config.ProjectState.Lock()
@@ -147,6 +150,8 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	onCmd("context", handleContext)
 	onCmd("models", handleModels)
 	onCmd("model", handleModel)
+	onCmd("effort", handleEffort)
+	t.OnCallback(effortCallbackAction, onEffortSel)
 	onCmd("agent", handleAgent)
 	onCmd("mode", handleMode)
 	onCmd("usage", handleUsage)
@@ -272,7 +277,7 @@ func getDefaultCommands(lang string) []ports.BotCommand {
 	names := []string{
 		"status", "tasks", "task", "plan", "planmode", "approve", "planfile", "history",
 		"add", "chat", "chatmode", "new", "resume", "retry", "pause", "cancel",
-		"tokens", "context", "top", "usage", "models", "model", "agent", "mode",
+		"tokens", "context", "top", "usage", "models", "model", "effort", "agent", "mode",
 		"projects", "use", "clone", "script", "language", "restart", "rebuild", "start",
 	}
 

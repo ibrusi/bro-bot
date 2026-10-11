@@ -58,6 +58,9 @@ type claudeModel struct {
 	// Лимиты модели из /v1/models: окно контекста и предельный размер ответа.
 	MaxInputTokens int
 	MaxTokens      int
+
+	// Effort — какие уровни усилия модель принимает (capabilities.effort).
+	Effort claudeEffortSupport
 }
 
 // parseClaudeModelName разбирает идентификатор модели в структуру с семейством и версией.
@@ -272,6 +275,9 @@ type claudeModelsResponse struct {
 		CreatedAt      string `json:"created_at"`
 		MaxInputTokens int    `json:"max_input_tokens"`
 		MaxTokens      int    `json:"max_tokens"`
+		Capabilities   struct {
+			Effort claudeEffortSupport `json:"effort"`
+		} `json:"capabilities"`
 	} `json:"data"`
 	HasMore bool   `json:"has_more"`
 	LastID  string `json:"last_id"`
@@ -372,6 +378,7 @@ func listClaudeModels(ctx context.Context, httpClient *http.Client, baseURL, api
 			}
 			model.MaxInputTokens = item.MaxInputTokens
 			model.MaxTokens = item.MaxTokens
+			model.Effort = item.Capabilities.Effort
 			items = append(items, model)
 		}
 

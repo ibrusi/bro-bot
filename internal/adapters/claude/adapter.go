@@ -46,34 +46,40 @@ func resolveClaudeModel(modelName string) string {
 	return modelName
 }
 
-func buildClaudeArgs(convID, modelName, prompt, systemPrompt string) []string {
-	args := []string{
+// buildClaudeArgs собирает аргументы CLI claude. Ими пользуются оба режима — cli и mcp:
+// MCP-режим лишь добавляет перед ними --mcp-config.
+func buildClaudeArgs(args ports.ExecuteArgs) []string {
+	cmdArgs := []string{
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
 		"--verbose",
 	}
-	if convID != "" {
+	if args.ConversationID != "" {
 		// В Claude для возобновления существующей сессии используется --resume (-r)
-		args = append(args, "--resume", convID)
-	} else if strings.TrimSpace(systemPrompt) != "" {
+		cmdArgs = append(cmdArgs, "--resume", args.ConversationID)
+	} else if systemPrompt := strings.TrimSpace(args.SystemPrompt); systemPrompt != "" {
 		// На первом ходе новой сессии передаём системный промпт через --append-system-prompt.
 		// Claude сохраняет его в снэпшоте сессии (--system-prompt-snapshot on), поэтому при
 		// последующих вызовах с --resume повторная передача не требуется.
-		args = append(args, "--append-system-prompt", strings.TrimSpace(systemPrompt))
+		cmdArgs = append(cmdArgs, "--append-system-prompt", systemPrompt)
 	}
-	claudeModel := resolveClaudeModel(modelName)
-	if claudeModel != "" {
-		args = append(args, "--model", claudeModel)
+	if claudeModel := resolveClaudeModel(args.ModelName); claudeModel != "" {
+		cmdArgs = append(cmdArgs, "--model", claudeModel)
 	}
-	args = append(args, "-p", prompt)
-	return args
+	// Уровень задаётся на каждый запуск: флаг действует на текущую сессию CLI,
+	// поэтому смена /effort применяется и к продолжению разговора через --resume.
+	if !args.Effort.IsAuto() {
+		cmdArgs = append(cmdArgs, "--effort", args.Effort.String())
+	}
+	cmdArgs = append(cmdArgs, "-p", args.Prompt)
+	return cmdArgs
 }
 
 // ExecuteTask запускает CLI-агента claude.
 // История диалога восстанавливается Claude по флагу --resume. На новой сессии системный
 // промпт передается через --append-system-prompt.
 func (a *ClaudeAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
-	cmdArgs := buildClaudeArgs(args.ConversationID, args.ModelName, args.Prompt, args.SystemPrompt)
+	cmdArgs := buildClaudeArgs(args)
 	cmd := exec.CommandContext(ctx, "claude", cmdArgs...)
 	cmd.Dir = args.WorkDir
 	cmd.Env = append(os.Environ(),

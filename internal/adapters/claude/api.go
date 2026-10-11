@@ -89,6 +89,7 @@ func buildClaudeMessagesBody(modelName string, args ports.ExecuteArgs) map[strin
 	if systemPrompt := strings.TrimSpace(args.SystemPrompt); systemPrompt != "" {
 		reqBody["system"] = systemPrompt
 	}
+	applyClaudeEffort(reqBody, modelName, args.Effort)
 	isReadOnly := args.ReadOnly || strings.Contains(args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(args.SystemPrompt, "CHAT MODE")
 	reqBody["tools"] = tools.ClaudeToolDefinitions(isReadOnly)
 	return reqBody
@@ -126,6 +127,9 @@ func (a *ClaudeAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 	// Имя модели подбирается по живому списку /v1/models: захардкоженные идентификаторы
 	// устаревают вместе с моделями и дают 404 not_found_error.
 	modelName := resolveClaudeModelForAPI(ctx, a.HTTPClient, a.BaseURL, apiKey, args.ModelName)
+	if !args.Effort.IsAuto() && !claudeEffortSupported(modelName, args.Effort) {
+		log.Printf("claude-api: model %q does not support effort %q, using the model default", modelName, args.Effort)
+	}
 
 	sessionID := args.ConversationID
 	if sessionID == "" {
@@ -173,6 +177,8 @@ func openClaudeStreamWithBody(ctx context.Context, stream claudeStreamRequest, b
 
 	log.Printf("claude-api: model %q is unavailable (%v), retrying with %q", model, err, fallback)
 	body["model"] = fallback
+	// Запасная модель может не принимать уровень, который подходил исходной.
+	applyClaudeEffort(body, fallback, stream.args.Effort)
 	return doClaudeRequestWithBody(ctx, stream, body)
 }
 

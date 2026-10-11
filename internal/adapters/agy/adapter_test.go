@@ -5,10 +5,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bro-bot/internal/effort"
+	"bro-bot/internal/ports"
 )
 
 func TestBuildAgyArgs_NewSession(t *testing.T) {
-	args := buildAgyArgs("", "gemini-3.8-flash-high", "Hello Agy", "", "")
+	args := buildAgyArgs(ports.ExecuteArgs{ModelName: "gemini-3.8-flash-high", Prompt: "Hello Agy"})
 
 	hasDangerous := false
 	hasOutputFormat := false
@@ -56,7 +59,12 @@ func TestBuildAgyArgs_NewSession(t *testing.T) {
 
 func TestBuildAgyArgs_NewSessionWithSystemPrompt(t *testing.T) {
 	sysPrompt := "Senior dev rules from AGENTS.md"
-	args := buildAgyArgs("", "gemini-3.8-flash-high", "Do task", sysPrompt, "/tmp/non-existent-dir")
+	args := buildAgyArgs(ports.ExecuteArgs{
+		ModelName:    "gemini-3.8-flash-high",
+		Prompt:       "Do task",
+		SystemPrompt: sysPrompt,
+		WorkDir:      "/tmp/non-existent-dir",
+	})
 
 	promptArg := ""
 	for i := 0; i < len(args); i++ {
@@ -75,7 +83,12 @@ func TestBuildAgyArgs_NewSessionWithSystemPrompt(t *testing.T) {
 
 func TestBuildAgyArgs_ResumeSession(t *testing.T) {
 	convID := "test-conversation-uuid-1234"
-	args := buildAgyArgs(convID, "gemini-3.1-pro-high", "Continue task", "Ignore this system prompt on resume", "")
+	args := buildAgyArgs(ports.ExecuteArgs{
+		ConversationID: convID,
+		ModelName:      "gemini-3.1-pro-high",
+		Prompt:         "Continue task",
+		SystemPrompt:   "Ignore this system prompt on resume",
+	})
 
 	hasConv := false
 	promptArg := ""
@@ -116,13 +129,32 @@ func TestAgyAdapter_GetModels_Real(t *testing.T) {
 // История диалога в CLI-режиме не влияет на аргументы: agy восстанавливает контекст
 // по --conversation, а History предназначена только для api-режима.
 func TestBuildAgyArgs_IgnoresHistory(t *testing.T) {
-	withoutHistory := buildAgyArgs("conv-1", "gemini-3.8-flash-high", "вопрос", "", "")
-	withHistory := buildAgyArgs("conv-1", "gemini-3.8-flash-high", "вопрос", "", "")
+	base := ports.ExecuteArgs{ConversationID: "conv-1", ModelName: "gemini-3.8-flash-high", Prompt: "вопрос"}
+	withoutHistory := buildAgyArgs(base)
+	base.History = []ports.ChatMessage{{Role: "user", Content: "раньше"}, {Role: "assistant", Content: "ответ"}}
+	withHistory := buildAgyArgs(base)
 
 	if strings.Join(withoutHistory, " ") != strings.Join(withHistory, " ") {
 		t.Errorf("аргументы разошлись: %v vs %v", withoutHistory, withHistory)
 	}
 	if !strings.Contains(strings.Join(withHistory, " "), "--conversation conv-1") {
 		t.Errorf("ожидали флаг --conversation: %v", withHistory)
+	}
+}
+
+// Уровень /effort доходит до agy флагом --effort, а auto флаг не добавляет
+// (для модели с уровнем в имени).
+func TestBuildAgyArgs_Effort(t *testing.T) {
+	args := ports.ExecuteArgs{ModelName: "gemini-3.1-pro-high", Prompt: "вопрос"}
+
+	joined := strings.Join(buildAgyArgs(args), " ")
+	if strings.Contains(joined, "--effort") {
+		t.Errorf("auto не должен передавать --effort: %s", joined)
+	}
+
+	args.Effort = effort.XHigh
+	joined = strings.Join(buildAgyArgs(args), " ")
+	if !strings.Contains(joined, "--model gemini-3.1-pro-high --effort xhigh") {
+		t.Errorf("ожидали --effort xhigh: %s", joined)
 	}
 }
