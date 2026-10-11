@@ -73,6 +73,9 @@ type Config struct {
 	ServiceName     string
 	DBPath          string
 	ScriptsDir      string
+	// MCPSocketPath — сокет моста, через который `bot mcp-serve` передаёт боту
+	// вызовы инструментов агента. Не настраивается: вычисляется от BotDir.
+	MCPSocketPath   string
 
 	// Whisper (распознавание речи)
 	WhisperServerURL   string
@@ -171,6 +174,7 @@ func Load() (Config, error) {
 	if cfg.ScriptsDir == "" {
 		cfg.ScriptsDir = filepath.Join(botDir, "scripts")
 	}
+	cfg.MCPSocketPath = BridgeSocketPath(botDir)
 
 	cfg.WhisperServerURL = envTrim(envWhisperServerURL)
 	cfg.WhisperAPIKey = envTrim(envWhisperAPIKey)
@@ -234,6 +238,7 @@ func Apply(c Config) {
 	ServiceName = c.ServiceName
 	DBPath = c.DBPath
 	ScriptsDir = c.ScriptsDir
+	MCPSocketPath = c.MCPSocketPath
 	WhisperServerURL = c.WhisperServerURL
 	WhisperAPIKey = c.WhisperAPIKey
 	WhisperModel = c.WhisperModel
@@ -332,3 +337,9 @@ func parseBool(raw string) bool {
 	return raw == "true" || raw == "1" || raw == "yes" || raw == "on"
 }
 
+// BridgeSocketPath возвращает путь сокета MCP-моста для каталога бота botDir.
+// Одно правило на обе стороны: бот слушает этот сокет, а `bot mcp-serve`,
+// запущенный без --socket, ищет его рядом со своим исполняемым файлом.
+func BridgeSocketPath(botDir string) string {
+	return filepath.Join(botDir, "data", "mcp", "bridge.sock")
+}

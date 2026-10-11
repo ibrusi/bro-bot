@@ -3,11 +3,13 @@ package agy
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
 
 	"bro-bot/internal/adapters/cliproc"
+	"bro-bot/internal/config"
 	"bro-bot/internal/mcp"
 	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
@@ -32,8 +34,12 @@ func (a *AgyMCPAdapter) ExecutionMode() string {
 }
 
 func (a *AgyMCPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
-	// Гарантируем наличие конфигурации bro_bot в ~/.gemini/config/mcp_config.json
-	_ = mcp.EnsureAgyMCPConfig()
+	// Гарантируем наличие конфигурации bro_bot в ~/.gemini/config/mcp_config.json.
+	// Без неё agy запустится, но инструменты бота будут ему недоступны — это не
+	// повод отказываться от задачи, но повод сказать об этом в логе.
+	if err := mcp.EnsureAgyMCPConfig(config.MCPSocketPath); err != nil {
+		log.Printf("warning: agy-mcp: cannot update the MCP config: %v", err)
+	}
 
 	finalPrompt := args.Prompt
 	if args.ConversationID == "" && strings.TrimSpace(args.SystemPrompt) != "" && !utils.HasLocalAgentsRules(args.WorkDir) {

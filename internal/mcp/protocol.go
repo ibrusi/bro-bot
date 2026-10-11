@@ -94,9 +94,3 @@ type CallToolResult struct {
 	Content []ContentItem `json:"content"`
 	IsError bool          `json:"isError"`
 }
-
-// ChannelParams — параметры для push-нотификаций каналов (Claude experimental claude/channel).
-type ChannelParams struct {
-	Content string            `json:"content"`
-	Meta    map[string]string `json:"meta,omitempty"`
-}

@@ -57,7 +57,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Live execution streaming, recent logs, compact system resources (Bot, `agy`, `claude`, `whisper-server`), and step tracking (`/status [id]`, `/tasks`).
   - Dialogue transcript inspection (`/history [id]`): view the full conversation and agent actions directly from the session logs.
   - Safe cancellation of stuck or outdated tasks (`/cancel [id]`).
-- **Interactive Dialogues & Clarifying Questions (`ask_question`)**:
+- **Interactive Dialogues & Clarifying Questions (`ask_question` / `ask_user`)**:
   - When the agent requires clarification, the bot presents a multi-choice poll with buttons directly in Telegram.
   - Flexible reply options: plain text messages, Telegram Reply to task notifications, or the `/add [id] <text>` command.
   - Configurable timeout (`QUESTION_TIMEOUT`): if no response is received in time, the task automatically pauses to unblock the project queue for other tasks.
@@ -72,7 +72,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
   - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, active `agy`/`claude` processes, and the `whisper-server` speech recognition engine.
 - **Execution Modes: MCP, CLI & API (`/mode [mcp|cli|api]`)**:
-  - `mcp` (default): integrates agents with a built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`), providing authorized channels and tools (`telegram_send_message`, `ask_user`, `report_progress`).
+  - `mcp` (default): agents run with the bot's built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`). Its tools (`telegram_send_message`, `ask_user`, `report_progress`) reach the running bot over a local Unix-socket bridge and act on the task that started the agent.
   - `cli`: spawns local `agy` and `claude` CLI tools via PTY.
   - `api`: connects directly to provider APIs (Google Gemini API & Anthropic Messages API) with built-in workspace file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`).
   - Safe sandboxing: chat mode (`/chat`) provides strictly read-only file access, while file writes and command executions are enabled for pipeline tasks. All paths are validated within the project directory.
@@ -132,8 +132,8 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 │                │  │                │  │ • Gemini API   │
 │ • bot mcp-serve│  │ • stream-json  │  │ • Anthropic    │
 │ • JSON-RPC 2.0 │  │ • PTY terminal │  │   Messages API │
-│ • Channels &   │  │ • Raw stream   │  │ • File Tools   │
-│   Ask/Progress │  │   events       │  │   (read/write) │
+│ • Socket bridge│  │ • Raw stream   │  │ • File Tools   │
+│   to the bot   │  │   events       │  │   (read/write) │
 └───────┬────────┘  └───────┬────────┘  └───────┬────────┘
         │                   │                   │
         └───────────────────┼───────────────────┘
@@ -158,13 +158,15 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 `bro-bot` abstracts agent execution behind `ports.Agent` and `agents.Registry`, supporting three distinct operation modes:
 
 1. **MCP Mode (`mcp`, default)**:
-   - Integrates local CLI agents (`claude`, `agy`) with a built-in Model Context Protocol (MCP) server running via the `bot mcp-serve` subcommand over stdio JSON-RPC 2.0.
-   - `claude` connects using `--mcp-config` with experimental `claude/channel` notification capabilities and automatic cleanup of ephemeral config files.
-   - `agy` connects via global configuration in `~/.gemini/config/mcp_config.json`.
-   - Exposes authorized tools directly to the agent:
-     - `telegram_send_message`: sends notifications or messages to Telegram;
-     - `ask_user`: requests clarification with selectable options;
-     - `report_progress`: streams execution milestones and status updates.
+   - Local CLI agents (`claude`, `agy`) are started the same way as in `cli` mode (the task and the final result travel through `stream-json`) and are additionally connected to the bot's built-in Model Context Protocol (MCP) server — the `bot mcp-serve` subcommand speaking JSON-RPC 2.0 over stdio.
+   - `claude` connects using `--mcp-config` with an ephemeral config file that is removed after the process exits.
+   - `agy` connects via `~/.gemini/config/mcp_config.json`. The bot updates only its own `bro_bot` entry and keeps every other server and setting in the file intact; a malformed file is left untouched.
+   - The agent spawns `bot mcp-serve` as its own child process, so the server forwards every tool call to the running bot over a Unix socket (`<BOT_DIR>/data/mcp/bridge.sock`, directory mode `0700`): one JSON request, one JSON response. The bot identifies the caller by the kernel-reported PID of the socket peer (`SO_PEERCRED`) and walks up its parent processes to the agent it started, so a call always lands in the right task and cannot impersonate another one.
+   - Tools available to the agent:
+     - `telegram_send_message`: sends a message to the task's chat (Markdown is supported);
+     - `ask_user`: asks the user a question with optional answer buttons. The tool does not block: the agent is told to end its turn, the task switches to *waiting for input*, and the answer arrives as the next message of the same agent session (`--resume` / `--conversation`);
+     - `report_progress`: shows the current step, optionally with a percentage, in the live task status.
+   - If the bot is not running or the agent was not started by the bot, the tools return an error to the agent instead of pretending the action succeeded.
 
 2. **CLI Mode (`cli`)**:
    - Spawns agent CLI processes (`agy`, `claude`) inside isolated pseudo-terminals (PTY) with invocation flags:
@@ -307,7 +309,7 @@ nano .env
 | `ANTHROPIC_API_KEY` | No | — | Anthropic key used by the `claude` agent in `api` mode (`/mode api`). Without it (and without `CLAUDE_API_KEY`) the `api` mode is unavailable for `claude`. |
 | `CLAUDE_API_KEY` | No | — | Legacy name for the same variable: used when `ANTHROPIC_API_KEY` is unset. |
 | `CLAUDE_API_MODEL` | No | Auto-selected | Explicit Claude API model name for `api` mode (e.g. `claude-sonnet-5`). When unset, the model is picked from `/v1/models`: the junior family among the senior ones (sonnet) at its highest available version. Retired model ids are automatically replaced with a live model of the same family. |
-| `QUESTION_TIMEOUT` | **Yes** | — | Timeout waiting for user response to agent questions (`ask_question`). Formats: `15m`, `300s`, `1h`, or seconds. When elapsed, the task pauses. |
+| `QUESTION_TIMEOUT` | **Yes** | — | Timeout waiting for user response to agent questions (`ask_question` in agy, MCP `ask_user`). Formats: `15m`, `300s`, `1h`, or seconds. When elapsed, the task pauses. |
 | `STEP_TIMEOUT` | No | `30m` | Execution timeout for a single agent step (`--print-timeout`). Formats: `30m`, `1h`, `1800s`, or seconds. When exceeded, the task is paused while preserving the session. |
 | `AUTO_CONTINUE_MAX` | No | `2` | How many times in a row a step is continued automatically when the agent ends its turn without waiting for its own background commands (agy prints `root agent idle; waiting … background task(s)` and the agent never wakes up, and/or `terminating N background task(s) on exit`). The step continues in the same agent session. When the limit is reached, the task is paused with a «Resume» button instead of being reported as completed. `0` disables auto-continue. |
 | `CHAT_TIMEOUT` | No | `5m` | Timeout for a single answer in conversational mode (`/chat`). Formats: `5m`, `300s`, or seconds. |
@@ -482,7 +484,7 @@ so the conversation continues. Reset it with `/chat new`.
 | `/models` | List all available models from the agent CLI with descriptions and aliases. | `/models` |
 | `/model [name]` | Switch active model for future tasks. | `/model flash` or `/model claude-sonnet-4-6` |
 | `/agent [name]` | Switch the active agent engine (`agy` or `claude`). | `/agent claude` |
-| `/mode [mcp|cli|api]` | Switch agent execution mode (MCP channel integration, local CLI, or direct API with workspace file tools). | `/mode mcp` |
+| `/mode [mcp|cli|api]` | Switch agent execution mode (CLI with the bot's MCP tools, local CLI, or direct API with workspace file tools). | `/mode mcp` |
 | `/usage` (or `/limits`) | Check remaining free quotas and paid credit balances for Antigravity. | `/usage` |
 | `/tokens` (or `/stats`) | Token usage stats for the task: Input, Output, Thinking, Cache Read, and Hit Rate. | `/tokens` |
 | `/context [id]` | Visual breakdown of model context window utilization. | `/context` |

@@ -2,8 +2,17 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+)
+
+// Имена инструментов бота. Их знают обе стороны моста: `mcp-serve` объявляет
+// инструменты агенту, бот выполняет вызовы.
+const (
+	ToolSendMessage    = "telegram_send_message"
+	ToolAskUser        = "ask_user"
+	ToolReportProgress = "report_progress"
 )
 
 // ToolHandler — функция-обработчик вызова MCP-инструмента.
@@ -16,79 +25,84 @@ type ToolRegistry struct {
 	handlers map[string]ToolHandler
 }
 
-// NewToolRegistry создает новый реестр инструментов с набором разрешенных каналов по умолчанию.
+// NewToolRegistry создаёт пустой реестр инструментов.
 func NewToolRegistry() *ToolRegistry {
-	r := &ToolRegistry{
+	return &ToolRegistry{
 		handlers: make(map[string]ToolHandler),
 	}
-	r.registerDefaults()
+}
+
+// NewBridgeTools создаёт реестр инструментов бота, каждый вызов которых уходит
+// работающему боту через мост на сокете socketPath. Если бот недоступен, агент
+// получает ошибку, а не ложное «доставлено».
+func NewBridgeTools(socketPath string) *ToolRegistry {
+	r := NewToolRegistry()
+	forward := func(name string) ToolHandler {
+		return func(ctx context.Context, args map[string]interface{}) (string, error) {
+			res, err := CallBridge(ctx, socketPath, BridgeCall{Tool: name, Arguments: args})
+			if err != nil {
+				return "", err
+			}
+			if res.IsError {
+				return "", errors.New(res.Text)
+			}
+			return res.Text, nil
+		}
+	}
+	for _, tool := range BridgeToolDefinitions() {
+		r.Register(tool, forward(tool.Name))
+	}
 	return r
 }
 
-func (r *ToolRegistry) registerDefaults() {
-	r.Register(
-		Tool{
-			Name:        "telegram_send_message",
-			Description: "Send a message or response directly to the user in Telegram chat",
+// BridgeToolDefinitions описывает инструменты бота для агента.
+func BridgeToolDefinitions() []Tool {
+	return []Tool{
+		{
+			Name: ToolSendMessage,
+			Description: "Send a message to the user in the Telegram chat of the current task. " +
+				"Use it for important notices that should not wait until the end of your turn.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"message": map[string]interface{}{
 						"type":        "string",
-						"description": "Text of the message to deliver to the user",
+						"description": "Text of the message; Markdown is supported",
 					},
 				},
 				"required": []string{"message"},
 			},
 		},
-		func(ctx context.Context, args map[string]interface{}) (string, error) {
-			msg, _ := args["message"].(string)
-			if msg == "" {
-				return "", fmt.Errorf("message argument is required")
-			}
-			return fmt.Sprintf("Message delivered to Telegram user: %s", msg), nil
-		},
-	)
-
-	r.Register(
-		Tool{
-			Name:        "ask_user",
-			Description: "Ask the user a clarifying question with optional choice buttons in Telegram",
+		{
+			Name: ToolAskUser,
+			Description: "Ask the user a clarifying question in Telegram; options become answer buttons. " +
+				"The question is delivered immediately and the user's answer arrives as your next user message, " +
+				"so after calling this tool end your turn without doing anything else.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"question": map[string]interface{}{
 						"type":        "string",
-						"description": "Question text to ask the user",
+						"description": "Question text; Markdown is supported",
 					},
 					"options": map[string]interface{}{
 						"type":        "array",
 						"items":       map[string]interface{}{"type": "string"},
-						"description": "List of selectable choice buttons",
+						"description": "Optional answer choices shown as buttons",
 					},
 				},
 				"required": []string{"question"},
 			},
 		},
-		func(ctx context.Context, args map[string]interface{}) (string, error) {
-			q, _ := args["question"].(string)
-			if q == "" {
-				return "", fmt.Errorf("question argument is required")
-			}
-			return fmt.Sprintf("Question asked to Telegram user: %s", q), nil
-		},
-	)
-
-	r.Register(
-		Tool{
-			Name:        "report_progress",
-			Description: "Report intermediate progress status of the current task to the user",
+		{
+			Name:        ToolReportProgress,
+			Description: "Report the current step of the task. It is shown in the live status message in Telegram.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"status": map[string]interface{}{
 						"type":        "string",
-						"description": "Short description of the current progress or step",
+						"description": "Short description of the current step",
 					},
 					"percent": map[string]interface{}{
 						"type":        "integer",
@@ -98,11 +112,7 @@ func (r *ToolRegistry) registerDefaults() {
 				"required": []string{"status"},
 			},
 		},
-		func(ctx context.Context, args map[string]interface{}) (string, error) {
-			status, _ := args["status"].(string)
-			return fmt.Sprintf("Progress reported: %s", status), nil
-		},
-	)
+	}
 }
 
 // Register добавляет или переопределяет инструмент.

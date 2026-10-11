@@ -5,6 +5,7 @@ import (
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
 	"bro-bot/internal/i18n"
+	"bro-bot/internal/mcp"
 	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/storage"
@@ -201,6 +202,18 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	// просыпается через полторы секунды, и в тестах к этому моменту следующий Start
 	// уже переписывает снимок — детектор гонок это заметит.
 	go system.CheckAndNotifyRestart(t, cfg.AdminID, cfg.BotDir)
+
+	// Мост MCP: через него `bot mcp-serve`, запущенный агентом, передаёт боту вызовы
+	// инструментов. Без моста бот работает, а инструменты честно отвечают агенту ошибкой.
+	if cfg.MCPSocketPath != "" {
+		bridge, err := mcp.ListenBridge(cfg.MCPSocketPath, mcpChannels.handle)
+		if err != nil {
+			log.Printf("warning: the MCP bridge is disabled, agent tools will report errors: %v", err)
+		} else {
+			defer func() { _ = bridge.Close() }()
+			log.Printf("MCP bridge is listening on %s", cfg.MCPSocketPath)
+		}
+	}
 
 	log.Println("multi-project agent bot started...")
 	return t.Start(context.Background())

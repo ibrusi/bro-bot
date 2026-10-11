@@ -224,6 +224,9 @@ func TestLoadFillsDefaults(t *testing.T) {
 	if want := filepath.Join(botDir, "scripts"); cfg.ScriptsDir != want {
 		t.Errorf("ScriptsDir = %q, ожидалось %q", cfg.ScriptsDir, want)
 	}
+	if want := filepath.Join(botDir, "data", "mcp", "bridge.sock"); cfg.MCPSocketPath != want {
+		t.Errorf("MCPSocketPath = %q, ожидалось %q", cfg.MCPSocketPath, want)
+	}
 	if cfg.DefaultProject != "" {
 		t.Errorf("DefaultProject = %q, ожидалась пустая строка", cfg.DefaultProject)
 	}
@@ -507,6 +510,7 @@ func TestApplyPublishesEveryField(t *testing.T) {
 		ServiceName:     "bro-bot.service",
 		DBPath:           "/bot/data/bot.db",
 		ScriptsDir:       "/bot/scripts",
+		MCPSocketPath:    "/bot/data/mcp/bridge.sock",
 		WhisperServerURL: "http://127.0.0.1:8080",
 		WhisperAPIKey:    "secret",
 		WhisperModel:       "small",
@@ -536,6 +540,7 @@ func TestApplyPublishesEveryField(t *testing.T) {
 		"ServiceName":        ServiceName,
 		"DBPath":             DBPath,
 		"ScriptsDir":         ScriptsDir,
+		"MCPSocketPath":      MCPSocketPath,
 		"WhisperServerURL":   WhisperServerURL,
 		"WhisperAPIKey":      WhisperAPIKey,
 		"WhisperModel":       WhisperModel,

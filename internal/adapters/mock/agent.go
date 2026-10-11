@@ -40,6 +40,12 @@ type AgentFramework struct {
 	// не завершается, пока его не остановят через Kill или отмену контекста. Нужен
 	// для проверки /cancel: обычный мок заканчивается раньше, чем его успеют отменить.
 	Hang bool
+	// ProcessPID — PID, который сообщают процессы мока. 0 — процесса в ОС нет.
+	ProcessPID int
+	// OnStream вызывается один раз, когда вывод процесса начинают читать: в этот
+	// момент агент «работает». Нужен, чтобы имитировать действия агента посреди
+	// шага, например вызов инструмента бота через MCP-мост.
+	OnStream func(pid int)
 
 	calls          []ports.ExecuteArgs
 	killed         bool
@@ -62,6 +68,8 @@ func (f *AgentFramework) ExecuteTask(ctx context.Context, args ports.ExecuteArgs
 	callIndex := len(f.calls) - 1
 	startErr := f.StartErr
 	hang := f.Hang
+	pid := f.ProcessPID
+	onStream := f.OnStream
 	f.mu.Unlock()
 
 	if startErr != nil {
@@ -70,7 +78,23 @@ func (f *AgentFramework) ExecuteTask(ctx context.Context, args ports.ExecuteArgs
 	if hang {
 		return f.newHangingProcess(ctx), nil
 	}
-	return &AgentProcess{reader: strings.NewReader(f.buildStream(callIndex)), waitErr: f.WaitErr}, nil
+	var reader io.Reader = strings.NewReader(f.buildStream(callIndex))
+	if onStream != nil {
+		reader = &onFirstRead{r: reader, fn: func() { onStream(pid) }}
+	}
+	return &AgentProcess{reader: reader, waitErr: f.WaitErr, pid: pid}, nil
+}
+
+// onFirstRead вызывает fn перед первым чтением из r.
+type onFirstRead struct {
+	r    io.Reader
+	fn   func()
+	once sync.Once
+}
+
+func (o *onFirstRead) Read(p []byte) (int, error) {
+	o.once.Do(o.fn)
+	return o.r.Read(p)
 }
 
 // Killed сообщает, вызывали ли у последнего процесса Kill.
@@ -253,6 +277,7 @@ type AgentProcess struct {
 	waitErr error
 	kill    func()
 	done    chan struct{}
+	pid     int
 }
 
 func (p *AgentProcess) Stdout() io.Reader { return p.reader }
@@ -278,8 +303,8 @@ func (p *AgentProcess) Kill() error {
 // отмену контекста, иначе Killed() перестал бы отличать /cancel от обычного завершения.
 func (p *AgentProcess) Close() error { return nil }
 
-// PID — у мок-процесса нет процесса в ОС.
-func (p *AgentProcess) PID() int { return 0 }
+// PID возвращает AgentFramework.ProcessPID: по умолчанию 0 — процесса в ОС нет.
+func (p *AgentProcess) PID() int { return p.pid }
 
 type nopWriteCloser struct{}
 

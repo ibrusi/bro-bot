@@ -97,9 +97,6 @@ func (s *Server) handleRequest(ctx context.Context, req Request) Response {
 			ProtocolVersion: CurrentProtocolVersion,
 			Capabilities: ServerCapabilities{
 				Tools: &ToolsCapability{ListChanged: false},
-				Experimental: map[string]interface{}{
-					"claude/channel": map[string]interface{}{},
-				},
 			},
 			ServerInfo: ServerInfo{
 				Name:    ServerName,
@@ -182,9 +179,10 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 }
 
 // RunStdioServer запускает MCP-сервер на стандартных потоках ввода/вывода процесса.
-func RunStdioServer() error {
+// Инструменты пересылают вызовы боту через мост на сокете socketPath.
+func RunStdioServer(socketPath string) error {
 	// Перенаправляем стандартный логгер в Stderr, чтобы не засорять Stdout JSON-RPC протокол
 	log.SetOutput(os.Stderr)
-	srv := NewServer(nil)
+	srv := NewServer(NewBridgeTools(socketPath))
 	return srv.Run(context.Background(), os.Stdin, os.Stdout)
 }
