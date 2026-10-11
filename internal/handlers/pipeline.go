@@ -4,6 +4,7 @@ import (
 	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/effort"
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
@@ -609,6 +610,14 @@ func evaluateStepCompletion(c stepCompletion) (outcome StepOutcome, isQuestion b
 	return StepOutcomeSuccess, false, "", nil
 }
 
+// formatRunLabel собирает для статуса задачи «модель · агент · effort» с
+// экранированием под HTML. Уровень auto показывается явно: так видно, что бот его
+// не задавал и выбор остался за агентом.
+func formatRunLabel(modelName, agentName string, level effort.Level) string {
+	return fmt.Sprintf("%s · %s · effort: %s",
+		html.EscapeString(modelName), html.EscapeString(agentName), html.EscapeString(level.String()))
+}
+
 func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir, prompt, modelName, lang string) StepResult {
 	view := task.Snapshot()
 	projectName := view.Project
@@ -619,11 +628,19 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}
 	isPlanning := view.Status == domain.TaskStatusPlanning
 
+	taskAgent := view.Agent
+	if taskAgent == "" {
+		taskAgent = "agy"
+	}
+	// Уровень читаем один раз: тот же, что уйдёт агенту, показываем в статусе.
+	stepEffort := config.ProjectState.GetEffort()
+	runLabel := formatRunLabel(modelName, taskAgent, stepEffort)
+
 	statusKey := "pipeline.step_running_status"
 	if isPlanning {
 		statusKey = "pipeline.step_planning_status"
 	}
-	statusMsgText := i18n.Tf(lang, statusKey, taskID, html.EscapeString(projectName), html.EscapeString(modelName))
+	statusMsgText := i18n.Tf(lang, statusKey, taskID, html.EscapeString(projectName), runLabel)
 
 	statusRef, _ := m.Send(context.Background(), chat, statusMsgText, ports.Rich())
 	if statusRef.ID != "" {
@@ -639,10 +656,6 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 
 	view5 := task.Snapshot()
 	convID := view5.ConversationID
-	taskAgent := view5.Agent
-	if taskAgent == "" {
-		taskAgent = "agy"
-	}
 
 	// Имя активного агента читаем один раз: проверка конфликта и выбор адаптера ниже
 	// должны видеть одно и то же состояние, даже если пользователь переключает агента.
@@ -665,7 +678,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		ModelName:      modelName,
 		Prompt:         prompt,
 		WorkDir:        workDir,
-		Effort:         config.ProjectState.GetEffort(),
+		Effort:         stepEffort,
 	}
 
 	// Передаём правила проекта AGENTS.md как системный промпт ТОЛЬКО для новой сессии (convID == "").
@@ -761,7 +774,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 						statusPrefix,
 						taskID,
 						html.EscapeString(projectName),
-						html.EscapeString(modelName),
+						runLabel,
 						domain.FormatDuration(dur, lang),
 						queueInfo,
 					))
