@@ -36,7 +36,49 @@ custom-llm-v1             Custom LLM V1 Model
 	}
 }
 
-func TestResolveModel(t *testing.T) {
+// testAliases — набор псевдонимов, по которому реестр разрешает имена в тестах.
+var testAliases = NewAliases(map[string]string{
+	"flash":  "gemini-3.8-flash-medium",
+	"FLASH2": "gemini-3.8-flash-high",
+	"sonnet": "claude-sonnet-5-5",
+},
+	AliasHint{Alias: "flash", Title: "Gemini 3.8 Flash"},
+	AliasHint{Alias: "sonnet", Title: "Claude Sonnet 5.5"},
+)
+
+// withActiveAliases делает набор псевдонимов активным на время теста.
+func withActiveAliases(t *testing.T, aliases Aliases) {
+	t.Helper()
+	prevAgent, prevAliases := CurrentAgent(), ActiveAliases()
+	SetAgent(nil, aliases)
+	t.Cleanup(func() { SetAgent(prevAgent, prevAliases) })
+}
+
+func TestAliasesResolveIgnoresCaseAndSpaces(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+		found    bool
+	}{
+		{"flash", "gemini-3.8-flash-medium", true},
+		{" Flash ", "gemini-3.8-flash-medium", true},
+		{"flash2", "gemini-3.8-flash-high", true},
+		{"opus", "", false},
+	}
+	for _, tc := range tests {
+		got, ok := testAliases.Resolve(tc.input)
+		if got != tc.expected || ok != tc.found {
+			t.Errorf("Resolve(%q) = %q, %v; expected %q, %v", tc.input, got, ok, tc.expected, tc.found)
+		}
+	}
+
+	var empty Aliases
+	if _, ok := empty.Resolve("flash"); ok {
+		t.Errorf("пустой набор не должен разрешать псевдонимы")
+	}
+}
+
+func TestResolveModelWith(t *testing.T) {
 	reg := NewModelRegistry(10 * time.Minute)
 
 	tests := []struct {
@@ -46,31 +88,44 @@ func TestResolveModel(t *testing.T) {
 	}{
 		{"flash", "gemini-3.8-flash-medium", true},
 		{"FLASH", "gemini-3.8-flash-medium", true},
-		{"3.8", "gemini-3.8-flash-medium", true},
-		{"pro", "gemini-3.1-pro-high", true},
-		{"default", "gemini-3.1-pro-high", true},
-		{"sonnet", "claude-sonnet-4-6", true},
-		{"claude-sonnet-4.6", "claude-sonnet-4-6", true},
-		{"opus", "claude-opus-4-6-thinking", true},
-		{"claude-opus-4.6", "claude-opus-4-6-thinking", true},
-		{"oss", "gpt-oss-120b-medium", true},
-		{"gpt-oss-120b", "gpt-oss-120b-medium", true},
-		{"gemini-3.8-flash-low", "gemini-3.8-flash-low", true},
+		{"sonnet", "claude-sonnet-5-5", true},
+		{"gemini-3.8-flash-low", "gemini-3.8-flash-low", true}, // точный ID из каталога
+		{"GPT-OSS-120B-MEDIUM", "gpt-oss-120b-medium", true},
+		{"opus", "", false},
 		{"nonexistent-model-xyz", "", false},
 	}
 
 	for _, tc := range tests {
-		res, ok := reg.ResolveModel(tc.input)
+		res, ok := reg.ResolveModelWith(testAliases, tc.input)
 		if ok != tc.found {
-			t.Errorf("ResolveModel(%q) found = %v, expected %v", tc.input, ok, tc.found)
+			t.Errorf("ResolveModelWith(%q) found = %v, expected %v", tc.input, ok, tc.found)
 		}
 		if res != tc.expected {
-			t.Errorf("ResolveModel(%q) = %q, expected %q", tc.input, res, tc.expected)
+			t.Errorf("ResolveModelWith(%q) = %q, expected %q", tc.input, res, tc.expected)
 		}
 	}
 }
 
+// ResolveModel разрешает псевдонимы только в наборе активного агента.
+func TestResolveModelUsesActiveAgentAliases(t *testing.T) {
+	reg := NewModelRegistry(10 * time.Minute)
+
+	withActiveAliases(t, testAliases)
+	if got, ok := reg.ResolveModel("sonnet"); !ok || got != "claude-sonnet-5-5" {
+		t.Errorf("ResolveModel(sonnet) = %q, %v; expected claude-sonnet-5-5", got, ok)
+	}
+
+	withActiveAliases(t, NewAliases(map[string]string{"sonnet": "claude-sonnet-4-6"}))
+	if got, ok := reg.ResolveModel("sonnet"); !ok || got != "claude-sonnet-4-6" {
+		t.Errorf("после смены агента ResolveModel(sonnet) = %q, %v; expected claude-sonnet-4-6", got, ok)
+	}
+	if _, ok := reg.ResolveModel("flash"); ok {
+		t.Errorf("псевдоним другого агента не должен разрешаться")
+	}
+}
+
 func TestFormatModelsMessage(t *testing.T) {
+	withActiveAliases(t, testAliases)
 	reg := NewModelRegistry(10 * time.Minute)
 	msg := reg.FormatModelsMessage("gemini-3.8-flash-medium", i18n.Default)
 
@@ -87,21 +142,25 @@ func TestFormatModelsMessage(t *testing.T) {
 		t.Errorf("expected refresh instruction in message")
 	}
 
-	// Test Claude-only models formatting
+	// Подсказки берутся из набора активного агента.
+	if !strings.Contains(msg, "<code>/model sonnet</code> — Claude Sonnet 5.5") {
+		t.Errorf("expected sonnet hint from the active aliases, got:\n%s", msg)
+	}
+
+	// Без псевдонимов раздела подсказок нет.
+	withActiveAliases(t, Aliases{})
+	if msgNoAliases := reg.FormatModelsMessage("gemini-3.8-flash-medium", i18n.Default); strings.Contains(msgNoAliases, "/model flash") {
+		t.Errorf("expected no alias hints without aliases")
+	}
+
+	// Активная модель отмечается и среди моделей Claude.
 	claudeModels := []ModelInfo{
-		{ID: "claude-sonnet-5", DisplayName: "Claude Sonnet 5", DescriptionKey: "models.desc_claude_sonnet_5"},
-		{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6", DescriptionKey: "models.desc_claude_sonnet_46"},
-		{ID: "claude-haiku-4-5", DisplayName: "Claude Haiku 4.5", DescriptionKey: "models.desc_claude_haiku_45"},
+		{ID: "claude-sonnet-5-5", DisplayName: "Claude Sonnet 5.5", DescriptionKey: "models.desc_claude_sonnet_55"},
+		{ID: "claude-haiku-5-5", DisplayName: "Claude Haiku 5.5", DescriptionKey: "models.desc_claude_haiku_55"},
 	}
 	reg.setModels(claudeModels)
-	msgClaude := reg.FormatModelsMessage("claude-sonnet-4-6", i18n.Default)
-	if strings.Contains(msgClaude, "/model flash") {
-		t.Errorf("expected claude message not to contain flash alias")
-	}
-	if !strings.Contains(msgClaude, "/model haiku") {
-		t.Errorf("expected claude message to contain haiku alias")
-	}
-	if !strings.Contains(msgClaude, "👉 <b>claude-sonnet-4-6</b> <i>(active)</i>") {
-		t.Errorf("expected active model marker for claude-sonnet-4-6")
+	msgClaude := reg.FormatModelsMessage("claude-sonnet-5-5", i18n.Default)
+	if !strings.Contains(msgClaude, "👉 <b>claude-sonnet-5-5</b> <i>(active)</i>") {
+		t.Errorf("expected active model marker for claude-sonnet-5-5")
 	}
 }

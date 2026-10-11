@@ -255,9 +255,13 @@ func initDefaultProject(root, defaultProject string) {
 // initDefaultModel разрешает псевдоним модели один раз и публикует результат в
 // config.DefaultModel. Раньше DEFAULT_MODEL читали три места с разными запасными
 // значениями, и псевдоним flash давал в них разные модели.
+//
+// DEFAULT_MODEL — модель агента по умолчанию (первого в реестре), поэтому псевдоним
+// разрешается в его наборе: активный агент на этом этапе ещё не восстановлен.
 func initDefaultModel(defaultModel string) {
 	if models.GlobalModelRegistry != nil {
-		if resolved, ok := models.GlobalModelRegistry.ResolveModel(defaultModel); ok {
+		aliases := modelAliasesOf(registry().Default())
+		if resolved, ok := models.GlobalModelRegistry.ResolveModelWith(aliases, defaultModel); ok {
 			defaultModel = resolved
 		}
 	}

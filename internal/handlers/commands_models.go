@@ -88,6 +88,12 @@ func handleModel(s ports.Session) error {
 	target := strings.TrimSpace(args[0])
 	resolved, ok := models.GlobalModelRegistry.ResolveModel(target)
 	if !ok {
+		active := ActiveAgentName()
+		if owner, model, found := aliasOwner(target, active); found {
+			return s.Send(i18n.Tf(lang, "models.alias_of_other_agent",
+				html.EscapeString(target), html.EscapeString(model), html.EscapeString(owner),
+				html.EscapeString(active), html.EscapeString(owner)), ports.Rich())
+		}
 		return s.Send(i18n.Tf(lang, "models.unknown", html.EscapeString(target)), ports.Rich())
 	}
 

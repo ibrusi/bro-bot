@@ -285,6 +285,9 @@ func TestModelContextWindow(t *testing.T) {
 		{"claude-sonnet-4-6", 200_000},
 		{"claude-opus-4-6-thinking", 200_000},
 		{"opus", 200_000},
+		{"sonnet", 200_000},
+		{"haiku", 200_000},
+		{"claude-haiku-5-5", 200_000},
 		{"gpt-oss-120b-medium", 131_072},
 		{"120b", 131_072},
 		{"unknown-model", 1_048_576},
@@ -699,4 +702,3 @@ func TestFormatToolAction_APIModeTools(t *testing.T) {
 		})
 	}
 }
-

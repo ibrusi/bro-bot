@@ -27,8 +27,9 @@ func Spec() agents.Spec {
 			m := strings.ToLower(model)
 			return strings.Contains(m, "gemini") || strings.Contains(m, "gpt")
 		},
-		NewCLI: func() ports.AgentFramework { return NewClaudeAdapter() },
-		NewAPI: func() ports.AgentFramework { return NewClaudeAPIAdapter() },
-		NewMCP: func() ports.AgentFramework { return NewClaudeMCPAdapter() },
+		ModelAliases: modelAliases,
+		NewCLI:       func() ports.AgentFramework { return NewClaudeAdapter() },
+		NewAPI:       func() ports.AgentFramework { return NewClaudeAPIAdapter() },
+		NewMCP:       func() ports.AgentFramework { return NewClaudeMCPAdapter() },
 	}
 }

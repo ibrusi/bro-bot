@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"bro-bot/internal/i18n"
+	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
 )
 
@@ -52,6 +53,8 @@ type Spec struct {
 	DefaultModel func() string
 	// RejectsModel сообщает, что модель принадлежит другому семейству и агент её не запустит.
 	RejectsModel func(model string) bool
+	// ModelAliases — псевдонимы моделей агента (/model sonnet), общие для всех режимов.
+	ModelAliases models.Aliases
 	// NewCLI, NewAPI и NewMCP собирают адаптер для соответствующего режима.
 	NewCLI func() ports.AgentFramework
 	NewAPI func() ports.AgentFramework
