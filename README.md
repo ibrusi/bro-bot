@@ -57,7 +57,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Live execution streaming, recent logs, compact system resources (Bot, `agy`, `claude`, `whisper-server`), and step tracking (`/status [id]`, `/tasks`).
   - Dialogue transcript inspection (`/history [id]`): view the full conversation and agent actions directly from the session logs.
   - Safe cancellation of stuck or outdated tasks (`/cancel [id]`).
-- **Interactive Dialogues & Clarifying Questions (`ask_question`)**:
+- **Interactive Dialogues & Clarifying Questions (`ask_question` / `ask_user`)**:
   - When the agent requires clarification, the bot presents a multi-choice poll with buttons directly in Telegram.
   - Flexible reply options: plain text messages, Telegram Reply to task notifications, or the `/add [id] <text>` command.
   - Configurable timeout (`QUESTION_TIMEOUT`): if no response is received in time, the task automatically pauses to unblock the project queue for other tasks.
@@ -309,7 +309,7 @@ nano .env
 | `ANTHROPIC_API_KEY` | No | — | Anthropic key used by the `claude` agent in `api` mode (`/mode api`). Without it (and without `CLAUDE_API_KEY`) the `api` mode is unavailable for `claude`. |
 | `CLAUDE_API_KEY` | No | — | Legacy name for the same variable: used when `ANTHROPIC_API_KEY` is unset. |
 | `CLAUDE_API_MODEL` | No | Auto-selected | Explicit Claude API model name for `api` mode (e.g. `claude-sonnet-5`). When unset, the model is picked from `/v1/models`: the junior family among the senior ones (sonnet) at its highest available version. Retired model ids are automatically replaced with a live model of the same family. |
-| `QUESTION_TIMEOUT` | **Yes** | — | Timeout waiting for user response to agent questions (`ask_question`). Formats: `15m`, `300s`, `1h`, or seconds. When elapsed, the task pauses. |
+| `QUESTION_TIMEOUT` | **Yes** | — | Timeout waiting for user response to agent questions (`ask_question` in agy, MCP `ask_user`). Formats: `15m`, `300s`, `1h`, or seconds. When elapsed, the task pauses. |
 | `STEP_TIMEOUT` | No | `30m` | Execution timeout for a single agent step (`--print-timeout`). Formats: `30m`, `1h`, `1800s`, or seconds. When exceeded, the task is paused while preserving the session. |
 | `AUTO_CONTINUE_MAX` | No | `2` | How many times in a row a step is continued automatically when the agent ends its turn without waiting for its own background commands (agy prints `root agent idle; waiting … background task(s)` and the agent never wakes up, and/or `terminating N background task(s) on exit`). The step continues in the same agent session. When the limit is reached, the task is paused with a «Resume» button instead of being reported as completed. `0` disables auto-continue. |
 | `CHAT_TIMEOUT` | No | `5m` | Timeout for a single answer in conversational mode (`/chat`). Formats: `5m`, `300s`, or seconds. |
