@@ -142,8 +142,8 @@ func TestBuildAgyArgs_IgnoresHistory(t *testing.T) {
 	}
 }
 
-// Уровень /effort доходит до agy флагом --effort, а auto флаг не добавляет
-// (для модели с уровнем в имени).
+// Уровень /effort доходит до agy вариантом модели из каталога, а не отдельным
+// --effort: agy отвергает --effort, если он расходится с уровнем в имени модели.
 func TestBuildAgyArgs_Effort(t *testing.T) {
 	args := ports.ExecuteArgs{ModelName: "gemini-3.1-pro-high", Prompt: "вопрос"}
 
@@ -152,9 +152,9 @@ func TestBuildAgyArgs_Effort(t *testing.T) {
 		t.Errorf("auto не должен передавать --effort: %s", joined)
 	}
 
-	args.Effort = effort.XHigh
+	args.Effort = effort.Low
 	joined = strings.Join(buildAgyArgs(args), " ")
-	if !strings.Contains(joined, "--model gemini-3.1-pro-high --effort xhigh") {
-		t.Errorf("ожидали --effort xhigh: %s", joined)
+	if !strings.Contains(joined, "--model gemini-3.1-pro-low") || strings.Contains(joined, "--effort") {
+		t.Errorf("ожидали вариант gemini-3.1-pro-low без --effort: %s", joined)
 	}
 }
