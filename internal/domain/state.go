@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"bro-bot/internal/effort"
 	"bro-bot/internal/i18n"
 	"strings"
 	"sync"
@@ -34,6 +35,8 @@ type ProjectState struct {
 	// InteractionMode задаёт, что делать с обычным сообщением без активной задачи:
 	// "chat" — отвечать в диалоге, "task" — сразу создавать задачу.
 	InteractionMode string
+	// Effort — уровень усилия рассуждений агента, общий для всех агентов.
+	Effort effort.Level
 	// Language — зеркало выбранного языка для отладки и снимков состояния.
 	// Источник истины — i18n.Active(): см. GetLanguage/SetLanguage.
 	Language string
@@ -78,6 +81,20 @@ func (ps *ProjectState) SetExecutionMode(mode string) {
 	default:
 		ps.ExecutionMode = "mcp"
 	}
+}
+
+// GetEffort возвращает текущий уровень усилия рассуждений (по умолчанию auto).
+func (ps *ProjectState) GetEffort() effort.Level {
+	ps.RLock()
+	defer ps.RUnlock()
+	return ps.Effort
+}
+
+// SetEffort обновляет уровень усилия рассуждений.
+func (ps *ProjectState) SetEffort(level effort.Level) {
+	ps.Lock()
+	defer ps.Unlock()
+	ps.Effort = level
 }
 
 // Режимы взаимодействия с обычным текстовым сообщением.

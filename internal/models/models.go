@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bro-bot/internal/effort"
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
@@ -439,12 +440,21 @@ func (m *ModelRegistry) FormatModelsMessage(currentModel, lang string) string {
 	return bldr.String()
 }
 
-func BuildAgyModelArgs(modelName string) []string {
+// BuildAgyModelArgs собирает флаги модели и усилия рассуждений для CLI agy.
+//
+// Явно выбранный уровень (/effort) главнее уровня, зашитого в имя модели
+// (gemini-3.1-pro-high): agy получает --effort с ним. При effort.Auto работает
+// прежняя логика — уровень из имени модели или умолчание для базовых Gemini.
+func BuildAgyModelArgs(modelName string, level effort.Level) []string {
 	args := []string{"--model", modelName}
 
 	// Модели Claude не поддерживают флаг --effort
 	if strings.Contains(modelName, "claude") {
 		return args
+	}
+
+	if !level.IsAuto() {
+		return append(args, "--effort", level.String())
 	}
 
 	// Если у модели уже указан уровень рассуждений в ID (-high, -medium, -low, -thinking)
@@ -457,9 +467,9 @@ func BuildAgyModelArgs(modelName string) []string {
 
 	// Для базовых Gemini моделей без суффикса effort
 	if strings.Contains(modelName, "pro") {
-		args = append(args, "--effort", "high")
+		args = append(args, "--effort", effort.High.String())
 	} else if strings.Contains(modelName, "gemini") {
-		args = append(args, "--effort", "medium")
+		args = append(args, "--effort", effort.Medium.String())
 	}
 
 	return args

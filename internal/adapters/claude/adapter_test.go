@@ -7,11 +7,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"bro-bot/internal/effort"
+	"bro-bot/internal/ports"
 )
 
 func TestBuildClaudeArgs_NewSession(t *testing.T) {
 	systemPrompt := "Follow senior developer instructions from AGENTS.md"
-	args := buildClaudeArgs("", "sonnet", "Hello Claude", systemPrompt)
+	args := buildClaudeArgs(ports.ExecuteArgs{ModelName: "sonnet", Prompt: "Hello Claude", SystemPrompt: systemPrompt})
 
 	// Проверяем обязательные флаги
 	hasVerbose := false
@@ -73,7 +76,12 @@ func TestBuildClaudeArgs_NewSession(t *testing.T) {
 func TestBuildClaudeArgs_ResumeSession(t *testing.T) {
 	convID := "38f5a876-319b-4cf3-9716-5bdac15877c7"
 	// Even if systemPrompt is passed, for resumed session it must NOT be added to args
-	args := buildClaudeArgs(convID, "claude-sonnet-4-6", "continue task", "Ignore this system prompt on resume")
+	args := buildClaudeArgs(ports.ExecuteArgs{
+		ConversationID: convID,
+		ModelName:      "claude-sonnet-4-6",
+		Prompt:         "continue task",
+		SystemPrompt:   "Ignore this system prompt on resume",
+	})
 
 	hasResume := false
 	hasSessionID := false
@@ -197,7 +205,12 @@ func TestClaudeAdapter_GetCredits(t *testing.T) {
 
 // История диалога в CLI-режиме не влияет на аргументы: claude восстанавливает контекст по --resume.
 func TestBuildClaudeArgs_IgnoresHistory(t *testing.T) {
-	args := buildClaudeArgs("sess-1", "sonnet", "вопрос", "")
+	args := buildClaudeArgs(ports.ExecuteArgs{
+		ConversationID: "sess-1",
+		ModelName:      "sonnet",
+		Prompt:         "вопрос",
+		History:        []ports.ChatMessage{{Role: "user", Content: "history"}},
+	})
 	joined := strings.Join(args, " ")
 
 	if !strings.Contains(joined, "--resume sess-1") {
@@ -205,5 +218,25 @@ func TestBuildClaudeArgs_IgnoresHistory(t *testing.T) {
 	}
 	if strings.Contains(joined, "history") || strings.Contains(joined, "system") {
 		t.Errorf("история и преамбула не должны попадать в аргументы CLI: %v", args)
+	}
+}
+
+// Уровень /effort передаётся флагом --effort и на новой сессии, и при --resume;
+// auto флаг не добавляет.
+func TestBuildClaudeArgs_Effort(t *testing.T) {
+	args := ports.ExecuteArgs{ModelName: "opus", Prompt: "вопрос"}
+	if joined := strings.Join(buildClaudeArgs(args), " "); strings.Contains(joined, "--effort") {
+		t.Errorf("auto не должен передавать --effort: %s", joined)
+	}
+
+	args.Effort = effort.Max
+	if joined := strings.Join(buildClaudeArgs(args), " "); !strings.Contains(joined, "--effort max") {
+		t.Errorf("ожидали --effort max: %s", joined)
+	}
+
+	args.ConversationID = "sess-1"
+	args.Effort = effort.Low
+	if joined := strings.Join(buildClaudeArgs(args), " "); !strings.Contains(joined, "--resume sess-1") || !strings.Contains(joined, "--effort low") {
+		t.Errorf("ожидали --resume и --effort low: %s", joined)
 	}
 }

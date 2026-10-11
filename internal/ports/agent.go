@@ -3,6 +3,8 @@ package ports
 import (
 	"context"
 	"io"
+
+	"bro-bot/internal/effort"
 )
 
 // AgentFramework определяет контракт для работы с любым CLI агентов
@@ -27,6 +29,13 @@ type ModeAwareFramework interface {
 	ExecutionMode() string
 }
 
+// EffortAwareFramework позволяет адаптеру сообщить, применяет ли он уровень усилия
+// рассуждений (ExecuteArgs.Effort). Адаптеры, не реализующие интерфейс, считаются
+// поддерживающими уровень.
+type EffortAwareFramework interface {
+	SupportsEffort() bool
+}
+
 // ChatMessage — одна реплика диалога, передаваемая агенту для восстановления контекста.
 type ChatMessage struct {
 	Role    string // "user" or "assistant"
@@ -47,6 +56,9 @@ type ExecuteArgs struct {
 	SystemPrompt string
 	// ReadOnly указывает, что агенту разрешены только операции чтения файлов (диалоговый режим).
 	ReadOnly bool
+	// Effort — уровень усилия рассуждений (команда /effort). Нулевое значение
+	// effort.Auto означает, что уровень агенту не передаётся.
+	Effort effort.Level
 }
 
 // AgentProcess инкапсулирует запущенный процесс агента.

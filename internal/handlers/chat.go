@@ -4,6 +4,7 @@ import (
 	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
+	"bro-bot/internal/effort"
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
@@ -185,10 +186,12 @@ func handleChatMessage(s ports.Session, text string) error {
 // Агент, режим и адаптер фиксируются здесь, на горутине обработчика: фоновый ход
 // не читает глобальное состояние, которое пользователь может поменять командой /agent или /mode.
 type chatTurnSetup struct {
-	Project   string
-	Agent     string
-	Mode      string
-	Model     string
+	Project string
+	Agent   string
+	Mode    string
+	Model   string
+	// Effort — уровень усилия рассуждений на момент начала хода.
+	Effort    effort.Level
 	Framework ports.AgentFramework
 }
 
@@ -203,6 +206,7 @@ func startChatTurn(m ports.Messenger, chat ports.ChatID, project, agent, text, n
 		Agent:   normalizeAgentName(agent),
 		Mode:    config.ProjectState.GetExecutionMode(),
 		Model:   model,
+		Effort:  config.ProjectState.GetEffort(),
 	}
 
 	lang := i18n.Active()
@@ -288,6 +292,7 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 		WorkDir:        workDir,
 		History:        chatHistoryForAgent(session, mode),
 		ReadOnly:       true,
+		Effort:         setup.Effort,
 	}
 	if strings.EqualFold(mode, "api") {
 		args.SystemPrompt = chatSystemPreamble(lang)

@@ -665,6 +665,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		ModelName:      modelName,
 		Prompt:         prompt,
 		WorkDir:        workDir,
+		Effort:         config.ProjectState.GetEffort(),
 	}
 
 	// Передаём правила проекта AGENTS.md как системный промпт ТОЛЬКО для новой сессии (convID == "").

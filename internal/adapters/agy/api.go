@@ -44,10 +44,19 @@ func (a *AgyAPIAdapter) ExecutionMode() string {
 	return "api"
 }
 
+// SupportsEffort сообщает, что уровень /effort в этом режиме не применяется:
+// SDK generative-ai-go не умеет настраивать рассуждения модели (ThinkingConfig).
+func (a *AgyAPIAdapter) SupportsEffort() bool {
+	return false
+}
+
 func (a *AgyAPIAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
 	apiKey := agents.FirstEnv(apiKeyEnv...)
 	if apiKey == "" {
 		return nil, errMissingAPIKey()
+	}
+	if !args.Effort.IsAuto() {
+		log.Printf("agy-api: effort %q is not supported by the Gemini API adapter, using the model default", args.Effort)
 	}
 
 	sessionID := args.ConversationID

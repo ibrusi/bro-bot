@@ -65,6 +65,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Automatic discovery of available models from the CLI (`agy models`) with disk caching and fallback mechanisms.
   - Convenient aliases: `default`, `flash`, `flash-high`, `flash-low`, `pro`, `pro-low`, `sonnet`, `opus`, `oss`.
   - Instant model switching (`/models`, `/model <name|alias>`).
+  - Reasoning effort control (`/effort [auto|low|medium|high|xhigh|max]`), shared by `agy` and `claude` and saved across restarts.
   - Multi-agent toggle (`/agent <agy|claude>`).
 - **Quota, Token & Resource Monitoring**:
   - `/usage` (or `/limits`) — live quota limits and credit balances (`agy /quota`, `agy /credits`).
@@ -117,6 +118,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 │  internal/agents/    ──► Agent Registry & Mode Router    │
 │  internal/storage/   ──► SQLite Persistence & Migrations │
 │  internal/models/    ──► Model Registry & Aliases        │
+│  internal/effort/    ──► Reasoning Effort Levels         │
 │  internal/mcp/       ──► Built-in Stdio MCP Server       │
 │  internal/tools/     ──► Workspace File & Shell Tools    │
 │  internal/i18n/      ──► Message catalogs (locales/*.json)│
@@ -483,12 +485,25 @@ so the conversation continues. Reset it with `/chat new`.
 |---|---|---|
 | `/models` | List all available models from the agent CLI with descriptions and aliases. | `/models` |
 | `/model [name]` | Switch active model for future tasks. | `/model flash` or `/model claude-sonnet-4-6` |
+| `/effort [level]` | Show or set the agent reasoning effort: `auto`, `low`, `medium`, `high`, `xhigh`, `max`. Without a level — current value and selection buttons. | `/effort high` |
 | `/agent [name]` | Switch the active agent engine (`agy` or `claude`). | `/agent claude` |
 | `/mode [mcp|cli|api]` | Switch agent execution mode (CLI with the bot's MCP tools, local CLI, or direct API with workspace file tools). | `/mode mcp` |
 | `/usage` (or `/limits`) | Check remaining free quotas and paid credit balances for Antigravity. | `/usage` |
 | `/tokens` (or `/stats`) | Token usage stats for the task: Input, Output, Thinking, Cache Read, and Hit Rate. | `/tokens` |
 | `/context [id]` | Visual breakdown of model context window utilization. | `/context` |
 | `/top` (or `/ps`, `/resources`) | Real-time server telemetry: CPU, RAM, disk space, Load Average, cgroup, agent processes (`agy`, `claude`), and `whisper-server`. | `/top` |
+
+#### Reasoning effort (`/effort`)
+
+- One level is shared by every agent and mode, like the active model; it is stored in SQLite (`effort` setting) and restored after a restart.
+- `auto` (default) passes no level: the agent and the model use their own defaults, exactly as before. `low` → `max` trade answer speed and token spend for reasoning depth.
+- The level applies from the next agent run: a running task step or chat answer keeps the level it started with.
+- How the level reaches the agent:
+
+| Agent | `mcp` / `cli` | `api` |
+|---|---|---|
+| `claude` | `--effort <level>` flag of Claude Code | `output_config.effort` of the Messages API — only when `/v1/models` confirms the model supports this level (for example, `xhigh` requires Opus 4.7+, Haiku 4.5 has no effort at all); otherwise the model default is used and the bot logs it |
+| `agy` | `--effort <level>` flag; an explicit level overrides the level built into the model name (`gemini-3.1-pro-high`). Claude models in `agy` get no `--effort` | Not supported: the Gemini SDK in use cannot configure reasoning, so `/effort` warns and the model default is used |
 
 ---
 
