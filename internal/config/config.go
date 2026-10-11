@@ -31,6 +31,7 @@ var (
 	ServiceName     string
 	DBPath          string
 	ScriptsDir      string
+	MCPSocketPath   string
 
 	// Whisper (распознавание голосовых сообщений)
 	WhisperServerURL   string

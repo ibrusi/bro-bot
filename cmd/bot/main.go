@@ -1,8 +1,10 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"bro-bot/internal/adapters/agy"
@@ -69,11 +71,28 @@ func buildTranscriber(cfg config.Config) ports.Transcriber {
 	})
 }
 
+// mcpBridgeSocket разбирает аргументы `mcp-serve [--socket PATH]`. Конфигурации,
+// которые пишет бот, передают путь явно; без него (например, сервер прописан
+// вручную через `claude mcp add`) сокет ищется рядом с исполняемым файлом бота.
+func mcpBridgeSocket(args []string) string {
+	flags := flag.NewFlagSet("mcp-serve", flag.ExitOnError)
+	socket := flags.String("socket", "", "path to the bro-bot MCP bridge socket")
+	_ = flags.Parse(args)
+	if *socket != "" {
+		return *socket
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		log.Fatalf("mcp server error: cannot locate the bot executable: %v", err)
+	}
+	return config.BridgeSocketPath(filepath.Dir(exe))
+}
+
 // main — корень композиции и единственное место, где бот завершает процесс: всё
 // остальное возвращает ошибку наверх.
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "mcp-serve" {
-		if err := mcp.RunStdioServer(); err != nil {
+		if err := mcp.RunStdioServer(mcpBridgeSocket(os.Args[2:])); err != nil {
 			log.Fatalf("mcp server error: %v", err)
 		}
 		return

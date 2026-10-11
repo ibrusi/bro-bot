@@ -1,7 +1,10 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,13 +38,27 @@ func GetBotExecutable() string {
 	return "bot"
 }
 
-// WriteTempMCPConfigFile создает временный файл конфигурации mcp-config.json.
-func WriteTempMCPConfigFile() (string, error) {
+// bridgeServerName — имя MCP-сервера бота в конфигурациях агентов. От него зависят
+// имена инструментов у агента: например, mcp__bro_bot__ask_user у claude.
+const bridgeServerName = "bro_bot"
+
+// bridgeServerArgs — аргументы запуска `bot mcp-serve` с сокетом моста socketPath.
+// Без пути mcp-serve найдёт сокет рядом со своим исполняемым файлом.
+func bridgeServerArgs(socketPath string) []string {
+	if socketPath == "" {
+		return []string{"mcp-serve"}
+	}
+	return []string{"mcp-serve", "--socket", socketPath}
+}
+
+// WriteTempMCPConfigFile создает временный файл конфигурации mcp-config.json,
+// в котором MCP-сервер бота подключается к мосту на сокете socketPath.
+func WriteTempMCPConfigFile(socketPath string) (string, error) {
 	cfg := Config{
 		MCPServers: map[string]ServerConfig{
-			"bro_bot": {
+			bridgeServerName: {
 				Command: GetBotExecutable(),
-				Args:    []string{"mcp-serve"},
+				Args:    bridgeServerArgs(socketPath),
 			},
 		},
 	}
@@ -63,33 +80,111 @@ func WriteTempMCPConfigFile() (string, error) {
 	return tmpFile.Name(), nil
 }
 
-// EnsureAgyMCPConfig проверяет и добавляет bro_bot в конфигурацию ~/.gemini/config/mcp_config.json.
-func EnsureAgyMCPConfig() error {
+// EnsureAgyMCPConfig прописывает MCP-сервер бота в ~/.gemini/config/mcp_config.json.
+func EnsureAgyMCPConfig(socketPath string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	cfgDir := filepath.Join(home, ".gemini", "config")
-	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+	cfgPath := filepath.Join(home, ".gemini", "config", "mcp_config.json")
+	return ensureServerInConfig(cfgPath, bridgeServerName, GetBotExecutable(), bridgeServerArgs(socketPath))
+}
+
+// ensureServerInConfig записывает в файл конфигурации path сервер name с командой
+// command и аргументами args. Файл общий с пользователем и другими инструментами,
+// поэтому всё остальное в нём сохраняется как есть: другие серверы со всеми их
+// полями (env, cwd, url, headers…), прочие ключи верхнего уровня и дополнительные
+// поля самой записи name. Повреждённый файл не перезаписывается, а неизменный —
+// не трогается вовсе.
+func ensureServerInConfig(path, name, command string, args []string) error {
+	root := map[string]json.RawMessage{}
+	data, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return err
+	case len(bytes.TrimSpace(data)) > 0:
+		if err := json.Unmarshal(data, &root); err != nil {
+			return fmt.Errorf("mcp: %s is not valid JSON, leaving it untouched: %w", path, err)
+		}
+	}
+
+	servers := map[string]json.RawMessage{}
+	if raw := root["mcpServers"]; len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &servers); err != nil {
+			return fmt.Errorf("mcp: %s has malformed mcpServers, leaving it untouched: %w", path, err)
+		}
+	}
+
+	entry := map[string]interface{}{}
+	if raw := servers[name]; len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return fmt.Errorf("mcp: %s has malformed %q entry, leaving it untouched: %w", path, name, err)
+		}
+	}
+	if entry["command"] == command && sameArgs(entry["args"], args) {
+		return nil
+	}
+	entry["command"] = command
+	entry["args"] = args
+
+	if servers[name], err = json.Marshal(entry); err != nil {
 		return err
 	}
-	cfgPath := filepath.Join(cfgDir, "mcp_config.json")
-
-	var cfg Config
-	if data, err := os.ReadFile(cfgPath); err == nil && len(data) > 0 {
-		_ = json.Unmarshal(data, &cfg)
+	if root["mcpServers"], err = json.Marshal(servers); err != nil {
+		return err
 	}
-	if cfg.MCPServers == nil {
-		cfg.MCPServers = make(map[string]ServerConfig)
-	}
-	cfg.MCPServers["bro_bot"] = ServerConfig{
-		Command: GetBotExecutable(),
-		Args:    []string{"mcp-serve"},
-	}
-
-	out, err := json.MarshalIndent(cfg, "", "  ")
+	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(cfgPath, out, 0644)
+	return writeFileAtomic(path, append(out, '\n'))
+}
+
+// sameArgs сравнивает args из разобранного JSON с ожидаемым списком строк.
+func sameArgs(raw interface{}, want []string) bool {
+	got, ok := raw.([]interface{})
+	if !ok || len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// writeFileAtomic заменяет файл целиком через временный файл в том же каталоге:
+// агент, читающий конфигурацию параллельно, не увидит её наполовину записанной.
+// Права существующего файла сохраняются.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	perm := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	}
+
+	tmp, err := os.CreateTemp(dir, ".mcp_config-*.json")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

@@ -712,6 +712,11 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}
 	syncLegacySession(task)
 
+	// Инструменты бота, которые агент вызывает через MCP-мост, работают в контексте
+	// этой задачи: сообщения идут в её чат, прогресс — в её лог, вопрос — в её шаг.
+	mcpChannel := newTaskChannel(m, chat, task, lang)
+	defer mcpChannels.bind(agentProcess.PID(), mcpChannel)()
+
 	scanner := bufio.NewScanner(agentProcess.Stdout())
 	scanBuf := make([]byte, 64*1024)
 	scanner.Buffer(scanBuf, 10*1024*1024)
@@ -931,6 +936,13 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 			ResultStatus: resultStatus,
 			PRURL:        lastPR,
 		}
+	}
+
+	// Вопрос через MCP-инструмент ask_user равноценен вызову ask_question.
+	if q, opts, ok := mcpChannel.pendingQuestion(); ok {
+		hasAskQuestionToolCall = true
+		pendingQuestionText = q
+		pendingQuestionOptions = opts
 	}
 
 	// Оцениваем результат шага и детекцию вопросов

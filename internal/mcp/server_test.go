@@ -45,14 +45,14 @@ func TestMCPServer_Initialize(t *testing.T) {
 		t.Errorf("expected tools capability to be present")
 	}
 
-	exp, ok := caps["experimental"].(map[string]interface{})
-	if !ok || exp["claude/channel"] == nil {
-		t.Errorf("expected experimental claude/channel capability to be declared, got %v", caps["experimental"])
+	// Каналы claude/channel сервер не реализует, поэтому и не объявляет.
+	if caps["experimental"] != nil {
+		t.Errorf("unexpected experimental capabilities: %v", caps["experimental"])
 	}
 }
 
 func TestMCPServer_ToolsList(t *testing.T) {
-	srv := NewServer(nil)
+	srv := NewServer(NewBridgeTools(shortSocketPath(t)))
 	ctx := context.Background()
 
 	req := `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`
@@ -87,45 +87,59 @@ func TestMCPServer_ToolsList(t *testing.T) {
 	}
 }
 
-func TestMCPServer_ToolsCall(t *testing.T) {
-	srv := NewServer(nil)
-	ctx := context.Background()
-
-	// 1. Успешный вызов telegram_send_message
-	req := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"telegram_send_message","arguments":{"message":"Hello from agent"}}}`
-	respBytes := srv.HandleLine(ctx, []byte(req))
-
+// callTool выполняет tools/call и возвращает текст и признак ошибки результата.
+func callTool(t *testing.T, srv *Server, name, args string) (string, bool) {
+	t.Helper()
+	req := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"` + name + `","arguments":` + args + `}}`
 	var resp Response
-	if err := json.Unmarshal(respBytes, &resp); err != nil {
+	if err := json.Unmarshal(srv.HandleLine(context.Background(), []byte(req)), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-
 	if resp.Error != nil {
 		t.Fatalf("unexpected error: %+v", resp.Error)
 	}
-
 	resMap := resp.Result.(map[string]interface{})
-	if resMap["isError"] == true {
-		t.Fatalf("expected isError=false, got true")
-	}
-
 	content := resMap["content"].([]interface{})
 	if len(content) == 0 {
 		t.Fatalf("expected content in result")
 	}
-	firstItem := content[0].(map[string]interface{})
-	if !strings.Contains(firstItem["text"].(string), "Hello from agent") {
-		t.Errorf("expected text to contain message, got %v", firstItem["text"])
+	return content[0].(map[string]interface{})["text"].(string), resMap["isError"] == true
+}
+
+// TestMCPServer_ToolsCallGoesThroughBridge — вызов инструмента доходит до бота,
+// и агент получает ответ бота, а не выдуманное «доставлено».
+func TestMCPServer_ToolsCallGoesThroughBridge(t *testing.T) {
+	socket := shortSocketPath(t)
+	var got BridgeCall
+	bridge, err := ListenBridge(socket, func(_ context.Context, _ int, call BridgeCall) BridgeResult {
+		got = call
+		return BridgeResult{Text: "delivered by bot"}
+	})
+	if err != nil {
+		t.Fatalf("ListenBridge: %v", err)
+	}
+	t.Cleanup(func() { _ = bridge.Close() })
+
+	srv := NewServer(NewBridgeTools(socket))
+	text, isErr := callTool(t, srv, ToolSendMessage, `{"message":"Hello from agent"}`)
+	if isErr || text != "delivered by bot" {
+		t.Errorf("result = %q, isError=%v", text, isErr)
+	}
+	if got.Tool != ToolSendMessage || got.Arguments["message"] != "Hello from agent" {
+		t.Errorf("bot received %+v", got)
 	}
 
-	// 2. Вызов несуществующего инструмента
-	reqUnknown := `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"non_existent","arguments":{}}}`
-	respBytesUnknown := srv.HandleLine(ctx, []byte(reqUnknown))
-	var respUnknown Response
-	_ = json.Unmarshal(respBytesUnknown, &respUnknown)
-	resMapUnknown := respUnknown.Result.(map[string]interface{})
-	if resMapUnknown["isError"] != true {
-		t.Errorf("expected isError=true for unknown tool")
+	if text, isErr := callTool(t, srv, "non_existent", `{}`); !isErr {
+		t.Errorf("expected isError=true for unknown tool, got %q", text)
+	}
+}
+
+// TestMCPServer_ToolsCallWithoutBot — без бота инструмент сообщает агенту об ошибке.
+func TestMCPServer_ToolsCallWithoutBot(t *testing.T) {
+	srv := NewServer(NewBridgeTools(shortSocketPath(t)))
+	text, isErr := callTool(t, srv, ToolAskUser, `{"question":"Which branch?"}`)
+	if !isErr || !strings.Contains(text, "not reachable") {
+		t.Errorf("expected bridge error, got %q (isError=%v)", text, isErr)
 	}
 }
 

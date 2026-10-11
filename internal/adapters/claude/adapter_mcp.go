@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"bro-bot/internal/adapters/cliproc"
+	"bro-bot/internal/config"
 	"bro-bot/internal/mcp"
 	"bro-bot/internal/ports"
 
@@ -31,7 +32,7 @@ func (a *ClaudeMCPAdapter) ExecutionMode() string {
 }
 
 func (a *ClaudeMCPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
-	cfgFile, err := mcp.WriteTempMCPConfigFile()
+	cfgFile, err := mcp.WriteTempMCPConfigFile(config.MCPSocketPath)
 	if err != nil {
 		return nil, fmt.Errorf("claude-mcp: write config: %w", err)
 	}

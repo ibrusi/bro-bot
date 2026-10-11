@@ -359,6 +359,16 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 	lastAction := i18n.T(lang, "chat.init_action")
 	startedAt := time.Now()
 
+	// Инструменты бота, вызванные агентом через MCP-мост, работают в этом разговоре.
+	defer mcpChannels.bind(agentProcess.PID(), &chatChannel{
+		m: m, chat: chat, lang: lang,
+		onProgress: func(status string) {
+			mu.Lock()
+			lastAction = status
+			mu.Unlock()
+		},
+	})()
+
 	stopTicker := make(chan struct{})
 	tickerDone := make(chan struct{})
 	go func() {
