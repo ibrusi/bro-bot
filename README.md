@@ -630,6 +630,27 @@ go vet ./...
 go test -cover ./...
 ```
 
+### Versioning and Releases (CI/CD)
+
+The project adheres to [Semantic Versioning](https://semver.org/) and [Keep a Changelog](https://keepachangelog.com/).
+
+- **Single Source of Truth**: The root [`VERSION`](file:///home/deploy/projects/bro-bot/VERSION) file defines the current release version (e.g. `1.0.0` or `1.1.0-beta.1`).
+- **CLI Version Inspection**:
+  ```bash
+  ./bot -version
+  ```
+- **Automated Releases on Merge to `main`**:
+  - Pull requests and commits run full automated test suites (`go mod verify`, `go vet`, unit tests, race detector, and build checks).
+  - When code is merged into `main`, the `release` job inspects [`VERSION`](file:///home/deploy/projects/bro-bot/VERSION) and verifies whether the release already exists on GitHub.
+  - If a new version is detected:
+    - Pre-compiled binaries are cross-compiled for `linux/amd64` and `linux/arm64`.
+    - Tarball archives and SHA256 checksums (`checksums.txt`) are generated.
+    - Release notes for the version are extracted from [`CHANGELOG.md`](file:///home/deploy/projects/bro-bot/CHANGELOG.md).
+    - A GitHub Release is created via GitHub CLI.
+- **Beta / Pre-release Versions**:
+  - Versions containing a hyphen (e.g. `1.1.0-beta.1`, `2.0.0-rc.1`) are automatically published with the `--prerelease` flag and marked with the GitHub Pre-release badge.
+  - Releases can also be dispatched manually via the GitHub Actions UI (`workflow_dispatch`) with custom options (`version`, `prerelease: auto/true/false`, and `dry_run`).
+
 ---
 
 ## 🔒 Security

@@ -624,6 +624,27 @@ go vet ./...
 go test -cover ./...
 ```
 
+### Версионирование и автоматические релизы (CI/CD)
+
+Проект следует стандарту [Semantic Versioning](https://semver.org/) и формату [Keep a Changelog](https://keepachangelog.com/).
+
+- **Единый источник истины**: Корневой файл [`VERSION`](file:///home/deploy/projects/bro-bot/VERSION) содержит текущую версию приложения (например, `1.0.0` или `1.1.0-beta.1`).
+- **Проверка версии через CLI**:
+  ```bash
+  ./bot -version
+  ```
+- **Автоматический релиз при слиянии в `main`**:
+  - Все Pull Request и коммиты автоматически проверяются через CI (`go mod verify`, `go vet`, полный набор тестов, детектор гонок и тестовая компиляция).
+  - При слиянии в `main` задача `release` считывает [`VERSION`](file:///home/deploy/projects/bro-bot/VERSION) и проверяет, существует ли уже данный релиз на GitHub.
+  - Если версия новая:
+    - Выполняется нативная кросс-компиляция бинарников для архитектур `linux/amd64` и `linux/arm64`.
+    - Формируются tarball-архивы и файл контрольных сумм `checksums.txt` (SHA256).
+    - Описание изменений для этой версии автоматически извлекается из [`CHANGELOG.md`](file:///home/deploy/projects/bro-bot/CHANGELOG.md).
+    - Создаётся релиз на GitHub через GitHub CLI.
+- **Поддержка бета-версий (пререлизов)**:
+  - Версии с дефисом (например, `1.1.0-beta.1`, `2.0.0-rc.1`) автоматически помечаются флагом `--prerelease` и получают плашку **Pre-release** на GitHub.
+  - Релизы также можно запускать вручную через вкладку Actions в GitHub (`workflow_dispatch`) с гибкими параметрами (`version`, `prerelease: auto/true/false` и `dry_run`).
+
 ---
 
 ## 🔒 Безопасность
