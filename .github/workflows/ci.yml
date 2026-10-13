@@ -1,4 +1,4 @@
-name: CI & Release
+name: CI
 
 on:
   push:
@@ -6,32 +6,13 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Manual version override (e.g. 1.1.0 or 1.1.0-beta.1). Leave empty to use VERSION file.'
-        required: false
-        type: string
-      prerelease:
-        description: 'Pre-release status: auto (detects hyphen like -beta), true (force pre-release), or false (force full release)'
-        required: false
-        type: choice
-        options:
-          - auto
-          - true
-          - false
-        default: auto
-      dry_run:
-        description: 'Dry run: build binaries and check changelog without creating GitHub release'
-        required: false
-        type: boolean
-        default: false
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
@@ -62,153 +43,3 @@ jobs:
 
       - name: Build binary
         run: go build -v -o bot ./cmd/bot
-
-  release:
-    name: Publish Release
-    needs: [ test ]
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: 'go.mod'
-          cache: true
-
-      - name: Determine version and release status
-        id: version
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 1. Определение версии
-          if [ -n "${{ inputs.version }}" ]; then
-            RAW_VERSION="${{ inputs.version }}"
-          elif [ -f "VERSION" ]; then
-            RAW_VERSION=$(tr -d '[:space:]' < VERSION)
-          else
-            RAW_VERSION=$(awk -F'[][]' '/^## \[/ {print $2; exit}' CHANGELOG.md)
-          fi
-
-          VERSION="${RAW_VERSION#v}"
-          TAG="v$VERSION"
-
-          if [ -z "$VERSION" ]; then
-            echo "::error::Не удалось определить версию релиза"
-            exit 1
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-          # 2. Определение флага пререлиза (бета/альфа/rc)
-          PRERELEASE_MODE="${{ inputs.prerelease }}"
-          if [ "$PRERELEASE_MODE" = "true" ]; then
-            echo "prerelease=--prerelease" >> "$GITHUB_OUTPUT"
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          elif [ "$PRERELEASE_MODE" = "false" ]; then
-            echo "prerelease=" >> "$GITHUB_OUTPUT"
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-          else
-            # Режим auto: наличие дефиса указывает на пререлиз
-            case "$VERSION" in
-              *-*)
-                echo "prerelease=--prerelease" >> "$GITHUB_OUTPUT"
-                echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-                ;;
-              *)
-                echo "prerelease=" >> "$GITHUB_OUTPUT"
-                echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-                ;;
-            esac
-          fi
-
-          # 3. Проверка существования релиза
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Релиз $TAG уже существует. Публикация пропускается."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Релиз $TAG не найден на GitHub. Запускается публикация."
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Extract release notes
-        id: notes
-        if: steps.version.outputs.publish == 'true'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          awk -v ver="$VERSION" '
-            $0 ~ "^## \\[" ver "\\]" || $0 ~ "^## \\[v" ver "\\]" || $0 ~ "^## " ver { found=1; next }
-            found && /^## / { exit }
-            found { print }
-          ' CHANGELOG.md > RELEASE_NOTES.md
-
-          if [ ! -s RELEASE_NOTES.md ] || ! grep -q '[^[:space:]]' RELEASE_NOTES.md; then
-            echo "Секция версии $VERSION в CHANGELOG.md не найдена, будут использованы автоматические release notes."
-            echo "use_generate_notes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "use_generate_notes=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build release binaries
-        if: steps.version.outputs.publish == 'true'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          mkdir -p dist
-
-          for target in "linux/amd64" "linux/arm64"; do
-            GOOS="${target%/*}"
-            GOARCH="${target#*/}"
-            ARCHIVE_NAME="bro-bot-${GOOS}-${GOARCH}"
-            BUILD_DIR="dist/${ARCHIVE_NAME}"
-            mkdir -p "$BUILD_DIR"
-
-            echo "Компиляция для ${GOOS}/${GOARCH}..."
-            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
-              -ldflags="-s -w -X bro-bot/internal/version.Version=${VERSION}" \
-              -o "${BUILD_DIR}/bot" ./cmd/bot
-
-            cp README.md README.ru.md LICENSE .env.example "$BUILD_DIR/"
-            tar -czf "dist/${ARCHIVE_NAME}.tar.gz" -C dist "${ARCHIVE_NAME}"
-            rm -rf "$BUILD_DIR"
-          done
-
-          (cd dist && sha256sum *.tar.gz > checksums.txt)
-
-      - name: Publish GitHub release
-        if: steps.version.outputs.publish == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          PRERELEASE: ${{ steps.version.outputs.prerelease }}
-        run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "Dry run включен: релиз $TAG не будет создан на GitHub."
-            exit 0
-          fi
-
-          EXTRA_FLAGS=""
-          if [ -n "$PRERELEASE" ]; then
-            EXTRA_FLAGS="$EXTRA_FLAGS $PRERELEASE"
-          fi
-
-          if [ "${{ steps.notes.outputs.use_generate_notes }}" = "true" ]; then
-            EXTRA_FLAGS="$EXTRA_FLAGS --generate-notes"
-            gh release create "$TAG" \
-              dist/*.tar.gz dist/checksums.txt \
-              --target "$GITHUB_SHA" \
-              --title "bro-bot $TAG" \
-              $EXTRA_FLAGS
-          else
-            gh release create "$TAG" \
-              dist/*.tar.gz dist/checksums.txt \
-              --target "$GITHUB_SHA" \
-              --title "bro-bot $TAG" \
-              --notes-file RELEASE_NOTES.md \
-              $EXTRA_FLAGS
-          fi
