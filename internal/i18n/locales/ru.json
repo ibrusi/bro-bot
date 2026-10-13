@@ -682,6 +682,14 @@
     "voice.empty": "🎤 Не удалось разобрать речь в сообщении.",
     "voice.download_failed": "❌ Не удалось загрузить голосовое сообщение: <code>%s</code>",
     "voice.conversion_failed": "❌ Ошибка конвертации аудио через ffmpeg: <code>%s</code>",
-    "voice.transcribe_failed": "❌ Ошибка распознавания речи: <code>%s</code>"
+    "voice.transcribe_failed": "❌ Ошибка распознавания речи: <code>%s</code>",
+
+    "file.downloading": "📥 <i>Загружаю файл «%s»...</i>",
+    "file.download_failed": "❌ Ошибка загрузки файла: <code>%s</code>",
+    "file.save_failed": "❌ Не удалось сохранить файл: <code>%s</code>",
+    "file.too_large": "⚠️ Файл слишком большой (%s). Лимит загрузки через Telegram Bot API — 20 МБ.",
+    "file.saved_notice": "📁 Файл <b>%s</b> сохранён в <code>%s</code>",
+    "file.reused_notice": "📁 Файл <b>%s</b> идентичен существующему в <code>%s</code> (использован без дублирования)",
+    "file.prompt_attachment": "📎 [Прикреплён файл: %s (%s)]"
   }
 }

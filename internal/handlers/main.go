@@ -202,6 +202,7 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	t.OnCallback("script_stop", onScriptStop)
 	t.OnText(handleText)
 	t.OnVoice(handleVoice)
+	t.OnDocument(handleDocument)
 
 	// Каталог передаётся значением, а не читается из config внутри горутины: она
 	// просыпается через полторы секунды, и в тестах к этому моменту следующий Start

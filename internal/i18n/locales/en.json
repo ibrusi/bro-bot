@@ -682,6 +682,14 @@
     "voice.empty": "🎤 Could not recognize any speech in the message.",
     "voice.download_failed": "❌ Failed to download voice message: <code>%s</code>",
     "voice.conversion_failed": "❌ Failed to convert audio via ffmpeg: <code>%s</code>",
-    "voice.transcribe_failed": "❌ Speech recognition error: <code>%s</code>"
+    "voice.transcribe_failed": "❌ Speech recognition error: <code>%s</code>",
+
+    "file.downloading": "📥 <i>Downloading file «%s»...</i>",
+    "file.download_failed": "❌ File download error: <code>%s</code>",
+    "file.save_failed": "❌ Failed to save file: <code>%s</code>",
+    "file.too_large": "⚠️ File is too large (%s). Telegram Bot API download limit is 20 MB.",
+    "file.saved_notice": "📁 File <b>%s</b> saved to <code>%s</code>",
+    "file.reused_notice": "📁 File <b>%s</b> is identical to existing <code>%s</code> (reused without duplicate)",
+    "file.prompt_attachment": "📎 [Attached file: %s (%s)]"
   }
 }
