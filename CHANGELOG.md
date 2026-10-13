@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Context-aware routing: uploads automatically attach as followups to active or replied-to tasks, trigger new task creation in Task Mode, or forward directly to interactive agent chat in Chat Mode.
   - Bilingual user feedback and error messages in English and Russian.
 - **Continuous Integration and Automated Releases**:
-  - GitHub Actions automated CI/CD workflow (`ci.yml`) for push, pull requests, and manual dispatches (`workflow_dispatch`).
+  - Dedicated GitHub Actions CI workflow (`ci.yml`) running unit tests, race detector, static analysis, and build checks for pull requests and main branch.
+  - Dedicated release workflow (`release.yml`) for automated releases on merge to main or manual dispatch, isolated from PR checks.
   - Sequential execution: unit and integration tests, static analysis (`go vet`), dependency verification (`go mod verify`), race detector, and binary builds must succeed before release jobs run.
   - Beta and pre-release support: SemVer hyphenated versions (e.g. `1.1.0-beta.1`, `2.0.0-rc.1`) are automatically detected and published with the `--prerelease` flag.
   - Idempotent publishing: checks existing GitHub releases prior to publishing to safely skip redundant runs on routine merges.

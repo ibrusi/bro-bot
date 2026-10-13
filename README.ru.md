@@ -624,10 +624,11 @@ go test -cover ./...
   ```bash
   ./bot -version
   ```
-- **Автоматический релиз при слиянии в `main`**:
-  - Все Pull Request и коммиты автоматически проверяются через CI (`go mod verify`, `go vet`, полный набор тестов, детектор гонок и тестовая компиляция).
-  - При слиянии в `main` задача `release` считывает [`VERSION`](file:///home/deploy/projects/bro-bot/VERSION) и проверяет, существует ли уже данный релиз на GitHub.
+- **Автоматическая верификация и релизы (CI/CD)**:
+  - **Тестирование в PR**: Полный набор тестов (`go mod verify`, `go vet`, unit-тесты, детектор гонок и сборка) запускается в изолированном workflow [`ci.yml`](.github/workflows/ci.yml) для всех Pull Request и коммитов в `main`.
+  - **Пайплайн релизов**: При слиянии в `main` отдельный workflow [`release.yml`](.github/workflows/release.yml) считывает [`VERSION`](file:///home/deploy/projects/bro-bot/VERSION) и проверяет наличие релиза на GitHub.
   - Если версия новая:
+    - Выполняется верификация перед релизом.
     - Выполняется нативная кросс-компиляция бинарников для архитектур `linux/amd64` и `linux/arm64`.
     - Формируются tarball-архивы и файл контрольных сумм `checksums.txt` (SHA256).
     - Описание изменений для этой версии автоматически извлекается из [`CHANGELOG.md`](file:///home/deploy/projects/bro-bot/CHANGELOG.md).

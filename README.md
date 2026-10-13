@@ -630,10 +630,11 @@ The project adheres to [Semantic Versioning](https://semver.org/) and [Keep a Ch
   ```bash
   ./bot -version
   ```
-- **Automated Releases on Merge to `main`**:
-  - Pull requests and commits run full automated test suites (`go mod verify`, `go vet`, unit tests, race detector, and build checks).
-  - When code is merged into `main`, the `release` job inspects [`VERSION`](file:///home/deploy/projects/bro-bot/VERSION) and verifies whether the release already exists on GitHub.
+- **Automated Verification and Releases (CI/CD)**:
+  - **Pull Request CI**: Automated test suite (`go mod verify`, `go vet`, unit tests, race detector, binary build) runs in [`ci.yml`](.github/workflows/ci.yml) for all PRs and commits to `main`.
+  - **Release Pipeline**: When code is merged into `main`, the standalone release workflow [`release.yml`](.github/workflows/release.yml) checks [`VERSION`](file:///home/deploy/projects/bro-bot/VERSION) against published releases on GitHub.
   - If a new version is detected:
+    - Pre-release verification is performed.
     - Pre-compiled binaries are cross-compiled for `linux/amd64` and `linux/arm64`.
     - Tarball archives and SHA256 checksums (`checksums.txt`) are generated.
     - Release notes for the version are extracted from [`CHANGELOG.md`](file:///home/deploy/projects/bro-bot/CHANGELOG.md).
