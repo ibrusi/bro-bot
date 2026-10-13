@@ -216,9 +216,12 @@ help:
 	@echo "    $(MSG_HELP_LANG_EN)"
 	@echo "    $(MSG_HELP_LANG_RU)"
 
+VERSION ?= $(shell tr -d '[:space:]' < VERSION 2>/dev/null || echo "1.0.0")
+LDFLAGS := -s -w -X bro-bot/internal/version.Version=$(VERSION)
+
 build:
 	@echo "$(MSG_BUILD)"
-	go build -o bot ./cmd/bot
+	go build -ldflags "$(LDFLAGS)" -o bot ./cmd/bot
 
 test:
 	@echo "$(MSG_TEST)"

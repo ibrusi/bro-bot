@@ -15,9 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Filename sanitization (`SanitizeUploadFileName`) supporting Unicode and Cyrillic names while strictly preventing Path Traversal vulnerabilities.
   - Context-aware routing: uploads automatically attach as followups to active or replied-to tasks, trigger new task creation in Task Mode, or forward directly to interactive agent chat in Chat Mode.
   - Bilingual user feedback and error messages in English and Russian.
-- **Continuous Integration**:
-  - GitHub Actions automated workflow for push and pull requests on `main`.
-  - Automated dependency verification (`go mod verify`), static analysis (`go vet`), unit/integration test suites (`go test`), race detection, and binary build verification.
+- **Continuous Integration and Automated Releases**:
+  - GitHub Actions automated CI/CD workflow (`ci.yml`) for push, pull requests, and manual dispatches (`workflow_dispatch`).
+  - Sequential execution: unit and integration tests, static analysis (`go vet`), dependency verification (`go mod verify`), race detector, and binary builds must succeed before release jobs run.
+  - Beta and pre-release support: SemVer hyphenated versions (e.g. `1.1.0-beta.1`, `2.0.0-rc.1`) are automatically detected and published with the `--prerelease` flag.
+  - Idempotent publishing: checks existing GitHub releases prior to publishing to safely skip redundant runs on routine merges.
+  - Multi-architecture release packaging: automated cross-compilation for `linux/amd64` and `linux/arm64` with tarball packaging, embedded documentation, and SHA256 checksums (`checksums.txt`).
+  - Automated release notes: dynamic extraction of matching version release notes from `CHANGELOG.md` with fallback to `--generate-notes`.
+- **Application Versioning**:
+  - Single source of truth version management via root `VERSION` file and `internal/version` package.
+  - CLI version inspection via `./bot -version`, `./bot --version`, `./bot version`, and `./bot -v`.
+  - Build-time version injection via Makefile `-ldflags`.
 
 ### Changed
 - Extended `ports.Session` contract with `File() *FileMessage` and `OpenFile(ctx) (io.ReadCloser, error)`.

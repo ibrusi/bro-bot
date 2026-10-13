@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"bro-bot/internal/handlers"
 	"bro-bot/internal/mcp"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/version"
 )
 
 // buildTransport выбирает и инициализирует адаптер мессенджера. Новый мессенджер
@@ -91,11 +93,17 @@ func mcpBridgeSocket(args []string) string {
 // main — корень композиции и единственное место, где бот завершает процесс: всё
 // остальное возвращает ошибку наверх.
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "mcp-serve" {
-		if err := mcp.RunStdioServer(mcpBridgeSocket(os.Args[2:])); err != nil {
-			log.Fatalf("mcp server error: %v", err)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "mcp-serve":
+			if err := mcp.RunStdioServer(mcpBridgeSocket(os.Args[2:])); err != nil {
+				log.Fatalf("mcp server error: %v", err)
+			}
+			return
+		case "version", "-v", "--version", "-version":
+			fmt.Printf("bro-bot v%s\n", version.Version)
+			return
 		}
-		return
 	}
 
 	cfg, err := config.Load()

@@ -11,13 +11,16 @@ import (
 	"log"
 	"os"
 	"sync"
+
+	"bro-bot/internal/version"
 )
 
 const (
 	CurrentProtocolVersion = "2024-11-05"
 	ServerName             = "bro-bot"
-	ServerVersion          = "1.0.0"
 )
+
+var ServerVersion = version.Version
 
 // Server реализует сервер протокола Model Context Protocol (JSON-RPC 2.0).
 type Server struct {
