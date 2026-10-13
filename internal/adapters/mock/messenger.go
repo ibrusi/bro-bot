@@ -156,6 +156,9 @@ type Session struct {
 	VoiceVal *ports.VoiceMessage
 	VoiceReader io.ReadCloser
 	OpenVoiceErr error
+	FileVal     *ports.FileMessage
+	FileReader  io.ReadCloser
+	OpenFileErr error
 
 	mu        sync.Mutex
 	Responses []string
@@ -178,6 +181,16 @@ func (s *Session) OpenVoice(_ context.Context) (io.ReadCloser, error) {
 		return s.VoiceReader, nil
 	}
 	return nil, errors.New("mock: no voice data")
+}
+func (s *Session) File() *ports.FileMessage        { return s.FileVal }
+func (s *Session) OpenFile(_ context.Context) (io.ReadCloser, error) {
+	if s.OpenFileErr != nil {
+		return nil, s.OpenFileErr
+	}
+	if s.FileReader != nil {
+		return s.FileReader, nil
+	}
+	return nil, errors.New("mock: no file data")
 }
 func (s *Session) Messenger() ports.Messenger      { return s.M }
 

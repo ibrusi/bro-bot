@@ -91,6 +91,11 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - In debug mode (`DEBUG=true`), performance metrics are appended to the quote: STT latency, audio duration, and RTF (Real-Time Factor).
   - Voice recognition defaults to English (`en`). To switch the language, e.g. to Russian, set `WHISPER_LANGUAGE=ru` in your `.env`.
   - Easy setup via `sudo make install-whisper`.
+- **File & Photo Uploads**:
+  - Documents, source files, and photos sent in Telegram are automatically downloaded (up to 20 MB) into the active project's `uploads/` directory.
+  - Safe sanitization against Path Traversal and shell injection, preserving Unicode and Cyrillic filenames.
+  - Byte-by-byte deduplication: re-uploading an identical file reuses the existing file without creating duplicates or redundant disk writes.
+  - Contextual routing: attached to active tasks (or via Telegram Reply), passed to new tasks, or explored in conversational mode (`/chat`).
 - **Hot-Rebuild & In-Bot CI/CD**:
   - `/restart` — clean, non-blocking systemd service restart.
   - `/rebuild [branch] [--pull] [--force]` — pulls latest code from Git, compiles a fresh Go binary, atomically replaces the executable, restarts the service, and sends a Telegram notification with the new commit hash upon startup.
@@ -192,7 +197,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 
 All core logic (`internal/handlers`, `internal/domain`, `internal/system`) interacts with the messaging platform through abstract interfaces:
 - `ports.Messenger`: sending/editing messages, sending documents, and managing inline keyboards.
-- `ports.Transport`: routing commands, incoming text messages, and inline callback queries.
+- `ports.Transport`: routing commands, incoming text messages, voice, documents/photos, and inline callback queries.
 
 The current implementation is `internal/adapters/telegram`, which isolates `gopkg.in/telebot.v3`. The `MESSENGER` environment variable (defaults to `telegram`) selects the active transport in `cmd/bot/main.go`. Adding support for Discord, Slack, or Mattermost simply requires implementing `ports.Transport` in `internal/adapters/<name>/` without altering handler code.
 

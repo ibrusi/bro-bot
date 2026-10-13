@@ -14,6 +14,15 @@ type VoiceMessage struct {
 	FileName string
 }
 
+// FileMessage — нейтральное представление входящего файла, документа или фотографии.
+type FileMessage struct {
+	FileID   string
+	FileName string
+	FileSize int64
+	MIME     string
+	Caption  string
+}
+
 // IncomingMessage — нейтральное представление входящего текстового сообщения.
 type IncomingMessage struct {
 	Chat      ChatID
@@ -51,6 +60,11 @@ type Session interface {
 	// OpenVoice открывает поток чтения аудиофайла для текущего голосового сообщения.
 	// Вызывающий обязан закрыть полученный io.ReadCloser.
 	OpenVoice(ctx context.Context) (io.ReadCloser, error)
+	// File возвращает данные входящего файла, документа или фото, либо nil, если апдейт не содержит файла.
+	File() *FileMessage
+	// OpenFile открывает поток чтения файла для текущего файлового сообщения.
+	// Вызывающий обязан закрыть полученный io.ReadCloser.
+	OpenFile(ctx context.Context) (io.ReadCloser, error)
 
 	Messenger() Messenger
 
@@ -82,6 +96,8 @@ type Transport interface {
 	OnText(h Handler)
 	// OnVoice регистрирует обработчик входящих голосовых и аудиосообщений.
 	OnVoice(h Handler)
+	// OnDocument регистрирует обработчик входящих файлов, документов и фотографий.
+	OnDocument(h Handler)
 	// OnCallback регистрирует обработчик нажатия кнопки с данным Button.Action.
 	OnCallback(action string, h Handler)
 	// Use добавляет middleware, оборачивающий все последующие обработчики.

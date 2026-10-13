@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -188,5 +189,179 @@ func TestRedactURLCredentialsNeverLeaksToken(t *testing.T) {
 		if got := RedactURLCredentials(in); strings.Contains(got, token) {
 			t.Errorf("токен утёк: RedactURLCredentials(%q) = %q", in, got)
 		}
+	}
+}
+
+func TestSanitizeUploadFileName(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"normal.txt", "normal.txt"},
+		{"../../etc/passwd", "passwd"},
+		{"..\\windows\\system32\\calc.exe", "calc.exe"},
+		{"-flag.txt", "flag.txt"},
+		{"---important.pdf", "important.pdf"},
+		{"документ_2026.docx", "документ_2026.docx"},
+		{"отчёт о расходах.xlsx", "отчёт о расходах.xlsx"},
+		{"hello:world*test?.log", "hello_world_test_.log"},
+		{"", "upload.bin"},
+		{"   ", "upload.bin"},
+		{".", "upload.bin"},
+		{"..", "upload.bin"},
+		{"...", "upload.bin"},
+		{"/root/path/", "upload.bin"},
+	}
+
+	for _, tc := range cases {
+		got := SanitizeUploadFileName(tc.input)
+		if got != tc.want {
+			t.Errorf("SanitizeUploadFileName(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestFilesEqual(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	file1 := filepath.Join(tmpDir, "f1.txt")
+	file2 := filepath.Join(tmpDir, "f2.txt")
+	file3 := filepath.Join(tmpDir, "f3.txt")
+	fileEmpty1 := filepath.Join(tmpDir, "empty1.txt")
+	fileEmpty2 := filepath.Join(tmpDir, "empty2.txt")
+
+	contentA := strings.Repeat("Hello World! 1234567890\n", 4000) // ~100KB
+	contentB := contentA
+	contentC := contentA + "diff"
+
+	if err := os.WriteFile(file1, []byte(contentA), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file2, []byte(contentB), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file3, []byte(contentC), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileEmpty1, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileEmpty2, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Identical large files
+	eq, err := FilesEqual(file1, file2)
+	if err != nil || !eq {
+		t.Errorf("FilesEqual(f1, f2) = %v, err: %v, expected true", eq, err)
+	}
+
+	// Different sizes
+	eq, err = FilesEqual(file1, file3)
+	if err != nil || eq {
+		t.Errorf("FilesEqual(f1, f3) = %v, err: %v, expected false", eq, err)
+	}
+
+	// Same size but different content
+	file4 := filepath.Join(tmpDir, "f4.txt")
+	contentD := contentA[:len(contentA)-5] + "XXXXX"
+	if err := os.WriteFile(file4, []byte(contentD), 0644); err != nil {
+		t.Fatal(err)
+	}
+	eq, err = FilesEqual(file1, file4)
+	if err != nil || eq {
+		t.Errorf("FilesEqual(f1, f4) = %v, err: %v, expected false", eq, err)
+	}
+
+	// Empty files
+	eq, err = FilesEqual(fileEmpty1, fileEmpty2)
+	if err != nil || !eq {
+		t.Errorf("FilesEqual(empty1, empty2) = %v, err: %v, expected true", eq, err)
+	}
+
+	// Empty vs non-empty
+	eq, err = FilesEqual(fileEmpty1, file1)
+	if err != nil || eq {
+		t.Errorf("FilesEqual(empty1, f1) = %v, err: %v, expected false", eq, err)
+	}
+
+	// Non-existent file
+	_, err = FilesEqual(file1, filepath.Join(tmpDir, "nonexistent.txt"))
+	if err == nil {
+		t.Errorf("expected error for non-existent file")
+	}
+}
+
+func TestResolveUploadDestination(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 1. New file
+	tmp1 := filepath.Join(tmpDir, "tmp1.txt")
+	if err := os.WriteFile(tmp1, []byte("first content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	final1, isReused, err := ResolveUploadDestination(tmpDir, "doc.txt", tmp1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isReused {
+		t.Errorf("expected isReused=false for new file")
+	}
+	if final1 != filepath.Join(tmpDir, "doc.txt") {
+		t.Errorf("expected path %s, got %s", filepath.Join(tmpDir, "doc.txt"), final1)
+	}
+	if _, err := os.Stat(tmp1); !os.IsNotExist(err) {
+		t.Errorf("tmp file should be moved/renamed")
+	}
+
+	// 2. Identical file upload (should be reused without duplicates)
+	tmp2 := filepath.Join(tmpDir, "tmp2.txt")
+	if err := os.WriteFile(tmp2, []byte("first content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	final2, isReused, err := ResolveUploadDestination(tmpDir, "doc.txt", tmp2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isReused {
+		t.Errorf("expected isReused=true for identical file")
+	}
+	if final2 != filepath.Join(tmpDir, "doc.txt") {
+		t.Errorf("expected path %s, got %s", filepath.Join(tmpDir, "doc.txt"), final2)
+	}
+	if _, err := os.Stat(tmp2); !os.IsNotExist(err) {
+		t.Errorf("tmp file should be deleted")
+	}
+
+	// 3. Different content with same filename (should save as doc_1.txt)
+	tmp3 := filepath.Join(tmpDir, "tmp3.txt")
+	if err := os.WriteFile(tmp3, []byte("second different content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	final3, isReused, err := ResolveUploadDestination(tmpDir, "doc.txt", tmp3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isReused {
+		t.Errorf("expected isReused=false for modified file")
+	}
+	if final3 != filepath.Join(tmpDir, "doc_1.txt") {
+		t.Errorf("expected path %s, got %s", filepath.Join(tmpDir, "doc_1.txt"), final3)
+	}
+
+	// 4. Identical to doc_1.txt (should reuse doc_1.txt!)
+	tmp4 := filepath.Join(tmpDir, "tmp4.txt")
+	if err := os.WriteFile(tmp4, []byte("second different content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	final4, isReused, err := ResolveUploadDestination(tmpDir, "doc.txt", tmp4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isReused {
+		t.Errorf("expected isReused=true when matching doc_1.txt")
+	}
+	if final4 != filepath.Join(tmpDir, "doc_1.txt") {
+		t.Errorf("expected path %s, got %s", filepath.Join(tmpDir, "doc_1.txt"), final4)
 	}
 }

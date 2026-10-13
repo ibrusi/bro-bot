@@ -120,6 +120,60 @@ func (s *session) Voice() *ports.VoiceMessage {
 	return nil
 }
 
+// File возвращает данные входящего документа или фото, либо nil для обычного текстового сообщения или callback.
+func (s *session) File() *ports.FileMessage {
+	if s.c.Callback() != nil {
+		return nil
+	}
+	m := s.c.Message()
+	if m == nil {
+		return nil
+	}
+	if m.Document != nil {
+		fileName := m.Document.FileName
+		if fileName == "" {
+			fileName = "document"
+		}
+		return &ports.FileMessage{
+			FileID:   m.Document.FileID,
+			FileName: fileName,
+			FileSize: m.Document.FileSize,
+			MIME:     m.Document.MIME,
+			Caption:  s.c.Text(),
+		}
+	}
+	if m.Photo != nil {
+		return &ports.FileMessage{
+			FileID:   m.Photo.FileID,
+			FileName: "photo.jpg",
+			FileSize: int64(m.Photo.FileSize),
+			MIME:     "image/jpeg",
+			Caption:  s.c.Text(),
+		}
+	}
+	return nil
+}
+
+// OpenFile открывает поток чтения файла через Telegram Bot API.
+func (s *session) OpenFile(_ context.Context) (io.ReadCloser, error) {
+	if s.c.Callback() != nil {
+		return nil, errors.New("telegram: callback update has no file")
+	}
+	m := s.c.Message()
+	if m == nil {
+		return nil, errors.New("telegram: no message in session")
+	}
+	var file *tele.File
+	if m.Document != nil {
+		file = &m.Document.File
+	} else if m.Photo != nil {
+		file = &m.Photo.File
+	} else {
+		return nil, errors.New("telegram: message has no document or photo payload")
+	}
+	return s.t.bot.File(file)
+}
+
 // OpenVoice открывает поток чтения аудиофайла для текущего голосового сообщения.
 func (s *session) OpenVoice(_ context.Context) (io.ReadCloser, error) {
 	if s.c.Callback() != nil {
