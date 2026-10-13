@@ -27,15 +27,15 @@ func setupMatrixApp(t *testing.T, agentName, mode, convID, response string) (*mo
 }
 
 // TestChatWorksForEveryAgentAndMode проверяет диалог во всех четырёх сочетаниях
-// агента (agy, claude) и режима выполнения (cli, api).
+// агента (agy, claude) и режима выполнения (mcp, api).
 func TestChatWorksForEveryAgentAndMode(t *testing.T) {
 	cases := []struct {
 		agent string
 		mode  string
 	}{
-		{"agy", "cli"},
+		{"agy", "mcp"},
 		{"agy", "api"},
-		{"claude", "cli"},
+		{"claude", "mcp"},
 		{"claude", "api"},
 	}
 
@@ -73,7 +73,7 @@ func TestChatWorksForEveryAgentAndMode(t *testing.T) {
 				t.Error("агент должен запускаться в каталоге проекта")
 			}
 
-			// 2. Память режима: в api историю и преамбулу передаём сами, в cli их держит агент.
+			// 2. Память режима: в api историю и преамбулу передаём сами, в mcp их держит агент.
 			if tc.mode == "api" {
 				if first.SystemPrompt == "" || (!strings.Contains(first.SystemPrompt, "РЕЖИМ ДИАЛОГА") && !strings.Contains(first.SystemPrompt, "CHAT MODE")) {
 					t.Error("в api-режиме преамбула диалога должна уходить системным полем")
@@ -83,10 +83,10 @@ func TestChatWorksForEveryAgentAndMode(t *testing.T) {
 				}
 			} else {
 				if first.SystemPrompt != "" {
-					t.Error("в cli-режиме системное поле не используется")
+					t.Error("в mcp-режиме системное поле не используется")
 				}
 				if !strings.Contains(first.Prompt, "РЕЖИМ ДИАЛОГА") && !strings.Contains(first.Prompt, "CHAT MODE") {
-					t.Errorf("в cli-режиме преамбула должна быть в промпте: %q", first.Prompt)
+					t.Errorf("в mcp-режиме преамбула должна быть в промпте: %q", first.Prompt)
 				}
 			}
 
@@ -111,7 +111,7 @@ func TestChatWorksForEveryAgentAndMode(t *testing.T) {
 					t.Errorf("первая реплика истории = %q", second.History[0].Content)
 				}
 			} else if len(second.History) != 0 {
-				t.Error("в cli-режиме история передаваться не должна — её хранит сам агент")
+				t.Error("в mcp-режиме история передаваться не должна — её хранит сам агент")
 			}
 		})
 	}
@@ -120,7 +120,7 @@ func TestChatWorksForEveryAgentAndMode(t *testing.T) {
 // TestChatSurvivesAgentSwitch проверяет, что переключение агента посреди разговора
 // не теряет нить: новый агент получает контекст прошлых реплик и свой идентификатор сессии.
 func TestChatSurvivesAgentSwitch(t *testing.T) {
-	mt, agyAgent := setupMatrixApp(t, "agy", "cli", "agy-conv", "Отвечает agy.")
+	mt, agyAgent := setupMatrixApp(t, "agy", "mcp", "agy-conv", "Отвечает agy.")
 
 	sendText(t, mt, "расскажи про адаптеры")
 	waitFor(t, "ответ agy", func() bool { return len(agyAgent.Calls()) == 1 })
@@ -153,21 +153,21 @@ func TestChatSurvivesAgentSwitch(t *testing.T) {
 	}
 
 	session := domain.GlobalChatManager.Get("testproj")
-	if session.ConversationIDFor("agy", "cli") != "agy-conv" {
+	if session.ConversationIDFor("agy", "mcp") != "agy-conv" {
 		t.Error("сессия agy должна сохраниться после переключения агента")
 	}
-	if session.ConversationIDFor("claude", "cli") != "claude-conv" {
+	if session.ConversationIDFor("claude", "mcp") != "claude-conv" {
 		t.Error("для claude должен появиться собственный идентификатор сессии")
 	}
 }
 
-// TestChatSurvivesModeSwitch проверяет переключение cli → api посреди разговора:
+// TestChatSurvivesModeSwitch проверяет переключение mcp → api посреди разговора:
 // api-адаптер получает историю диалога из базы бота.
 func TestChatSurvivesModeSwitch(t *testing.T) {
-	mt, agent := setupMatrixApp(t, "agy", "cli", "agy-cli-conv", "Ответ в cli.")
+	mt, agent := setupMatrixApp(t, "agy", "mcp", "agy-mcp-conv", "Ответ в mcp.")
 
 	sendText(t, mt, "как работает разговорный режим?")
-	waitFor(t, "ответ в cli", func() bool { return len(agent.Calls()) == 1 })
+	waitFor(t, "ответ в mcp", func() bool { return len(agent.Calls()) == 1 })
 	waitFor(t, "завершение хода", func() bool {
 		session := domain.GlobalChatManager.Get("testproj")
 		return session != nil && !session.IsRunning()
@@ -194,16 +194,16 @@ func TestChatSurvivesModeSwitch(t *testing.T) {
 	}
 
 	session := domain.GlobalChatManager.Get("testproj")
-	if session.ConversationIDFor("agy", "cli") != "agy-cli-conv" {
-		t.Error("сессия cli должна сохраниться")
+	if session.ConversationIDFor("agy", "mcp") != "agy-mcp-conv" {
+		t.Error("сессия mcp должна сохраниться")
 	}
 	if session.ConversationIDFor("agy", "api") != "agy-api-conv" {
 		t.Error("для api-режима должен появиться отдельный идентификатор сессии")
 	}
 }
 
-// TestAgentFrameworkForRespectsExecutionMode — регрессия: раньше для неактивного агента
-// всегда создавался CLI-адаптер, даже когда включён режим api.
+// TestAgentFrameworkForRespectsExecutionMode — проверяет корректную сборку адаптеров
+// для режимов mcp и api.
 func TestAgentFrameworkForRespectsExecutionMode(t *testing.T) {
 	setupTestApp(t)
 
@@ -212,17 +212,22 @@ func TestAgentFrameworkForRespectsExecutionMode(t *testing.T) {
 	SetActiveAgent(nil, "agy")
 	t.Cleanup(func() {
 		SetActiveAgent(prevFramework, prevName)
-		config.ProjectState.SetExecutionMode("cli")
+		config.ProjectState.SetExecutionMode("mcp")
 	})
 
 	t.Setenv("GEMINI_API_KEY", "test-gemini-key")
 	t.Setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
 
-	config.ProjectState.SetExecutionMode("cli")
+	config.ProjectState.SetExecutionMode("mcp")
 	if framework, err := agentFrameworkFor("claude"); err != nil {
-		t.Fatalf("claude/cli: %v", err)
-	} else if _, ok := framework.(*claude.ClaudeAdapter); !ok {
-		t.Errorf("claude/cli: получили %T", framework)
+		t.Fatalf("claude/mcp: %v", err)
+	} else if _, ok := framework.(*claude.ClaudeMCPAdapter); !ok {
+		t.Errorf("claude/mcp: получили %T, ожидали ClaudeMCPAdapter", framework)
+	}
+	if framework, err := agentFrameworkFor("agy"); err != nil {
+		t.Fatalf("agy/mcp: %v", err)
+	} else if _, ok := framework.(*agy.AgyMCPAdapter); !ok {
+		t.Errorf("agy/mcp: получили %T, ожидали AgyMCPAdapter", framework)
 	}
 
 	config.ProjectState.SetExecutionMode("api")
@@ -237,14 +242,14 @@ func TestAgentFrameworkForRespectsExecutionMode(t *testing.T) {
 		t.Errorf("agy/api: получили %T, ожидали API-адаптер", framework)
 	}
 
-	// Проверяем случай, когда активный агент уже собран для CLI, но режим переключили в API:
-	// agentFrameworkFor не должен слепо возвращать CLI-адаптер из-за совпадения имени.
-	SetActiveAgent(claude.NewClaudeAdapter(), "claude")
+	// Проверяем случай, когда активный агент уже собран для MCP, но режим переключили в API:
+	// agentFrameworkFor не должен слепо возвращать MCP-адаптер из-за совпадения имени.
+	SetActiveAgent(claude.NewClaudeMCPAdapter(), "claude")
 	config.ProjectState.SetExecutionMode("api")
 	if framework, err := agentFrameworkFor("claude"); err != nil {
-		t.Fatalf("claude/api with active cli: %v", err)
+		t.Fatalf("claude/api with active mcp: %v", err)
 	} else if _, ok := framework.(*claude.ClaudeAPIAdapter); !ok {
-		t.Errorf("claude/api with active cli: получили %T, ожидали ClaudeAPIAdapter", framework)
+		t.Errorf("claude/api with active mcp: получили %T, ожидали ClaudeAPIAdapter", framework)
 	}
 }
 
@@ -256,7 +261,7 @@ func TestAgentFrameworkForRequiresAPIKey(t *testing.T) {
 	SetActiveAgent(nil, "agy")
 	t.Cleanup(func() {
 		SetActiveAgent(prevFramework, prevName)
-		config.ProjectState.SetExecutionMode("cli")
+		config.ProjectState.SetExecutionMode("mcp")
 	})
 
 	t.Setenv("GEMINI_API_KEY", "")

@@ -48,7 +48,7 @@ func ErrorText(err error, lang string) string {
 
 	var unsupportedMode *agents.UnsupportedModeError
 	if errors.As(err, &unsupportedMode) {
-		key := "err.agent_no_cli"
+		key := "err.agent_no_mcp"
 		if unsupportedMode.Mode == agents.ModeAPI {
 			key = "err.agent_no_api"
 		}

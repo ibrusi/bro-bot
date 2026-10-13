@@ -23,7 +23,7 @@ type AgentFramework interface {
 	GetCredits(ctx context.Context) ([]byte, error)
 }
 
-// ModeAwareFramework позволяет адаптеру явно сообщить свой режим выполнения ("cli" или "api").
+// ModeAwareFramework позволяет адаптеру явно сообщить свой режим выполнения ("mcp" или "api").
 // Адаптеры, реализующие этот интерфейс, защищены от переиспользования в несовместимом режиме.
 type ModeAwareFramework interface {
 	ExecutionMode() string

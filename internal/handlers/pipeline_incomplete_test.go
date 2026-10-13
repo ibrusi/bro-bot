@@ -49,7 +49,6 @@ func setupIncompletePipeline(t *testing.T, autoContinueMax int, steps ...mock.St
 	reg := testAgentRegistry()
 	reg.Register(agents.Spec{
 		Name:   "mock-agent",
-		NewCLI: func() ports.AgentFramework { return framework },
 		NewMCP: func() ports.AgentFramework { return framework },
 		NewAPI: func() ports.AgentFramework { return framework },
 	})

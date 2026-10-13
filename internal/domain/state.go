@@ -30,7 +30,7 @@ type ProjectState struct {
 	CurrentProject string
 	CurrentModel   string
 	CurrentAgent   string
-	ExecutionMode  string // "cli" или "api"
+	ExecutionMode  string // "mcp" или "api"
 	PlanMode       bool
 	// InteractionMode задаёт, что делать с обычным сообщением без активной задачи:
 	// "chat" — отвечать в диалоге, "task" — сразу создавать задачу.
@@ -59,7 +59,7 @@ func (ps *ProjectState) SetCurrentAgent(agent string) {
 	ps.CurrentAgent = agent
 }
 
-// GetExecutionMode возвращает текущий режим выполнения ("mcp", "cli" или "api", по умолчанию "mcp").
+// GetExecutionMode возвращает текущий режим выполнения ("mcp" или "api", по умолчанию "mcp").
 func (ps *ProjectState) GetExecutionMode() string {
 	ps.RLock()
 	defer ps.RUnlock()
@@ -76,8 +76,6 @@ func (ps *ProjectState) SetExecutionMode(mode string) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "api":
 		ps.ExecutionMode = "api"
-	case "cli":
-		ps.ExecutionMode = "cli"
 	default:
 		ps.ExecutionMode = "mcp"
 	}

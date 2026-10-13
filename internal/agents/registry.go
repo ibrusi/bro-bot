@@ -19,7 +19,6 @@ import (
 
 // Режимы выполнения агента.
 const (
-	ModeCLI = "cli"
 	ModeAPI = "api"
 	ModeMCP = "mcp"
 )
@@ -30,10 +29,6 @@ func NormalizeMode(mode string) string {
 	switch m {
 	case ModeAPI:
 		return ModeAPI
-	case ModeCLI:
-		return ModeCLI
-	case ModeMCP:
-		return ModeMCP
 	default:
 		return ModeMCP
 	}
@@ -43,8 +38,7 @@ func NormalizeMode(mode string) string {
 type Spec struct {
 	// Name — каноническое имя в нижнем регистре, по которому агента выбирают командой /agent.
 	Name string
-	// CLITitle, APITitle и MCPTitle — как называть источник данных в отчётах (/usage) в каждом режиме.
-	CLITitle string
+	// APITitle и MCPTitle — как называть источник данных в отчётах (/usage) в каждом режиме.
 	APITitle string
 	MCPTitle string
 	// APIKeyEnv — переменные окружения, любая из которых даёт ключ для api-режима.
@@ -55,8 +49,7 @@ type Spec struct {
 	RejectsModel func(model string) bool
 	// ModelAliases — псевдонимы моделей агента (/model sonnet), общие для всех режимов.
 	ModelAliases models.Aliases
-	// NewCLI, NewAPI и NewMCP собирают адаптер для соответствующего режима.
-	NewCLI func() ports.AgentFramework
+	// NewAPI и NewMCP собирают адаптер для соответствующего режима.
 	NewAPI func() ports.AgentFramework
 	NewMCP func() ports.AgentFramework
 }
@@ -66,13 +59,11 @@ func (s Spec) Title(mode string) string {
 	switch NormalizeMode(mode) {
 	case ModeAPI:
 		return s.APITitle
-	case ModeCLI:
-		return s.CLITitle
 	default:
 		if s.MCPTitle != "" {
 			return s.MCPTitle
 		}
-		return s.CLITitle + " (MCP)"
+		return s.Name + " (MCP)"
 	}
 }
 
@@ -186,8 +177,6 @@ func (r *Registry) Title(name, mode, lang string) string {
 	switch NormalizeMode(mode) {
 	case ModeAPI:
 		return i18n.T(lang, "agent.source_api")
-	case ModeCLI:
-		return i18n.T(lang, "agent.source_cli")
 	default:
 		return i18n.T(lang, "agent.source_mcp")
 	}
@@ -210,17 +199,9 @@ func (r *Registry) Build(name, mode string) (ports.AgentFramework, error) {
 			return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeAPI}
 		}
 		return spec.NewAPI(), nil
-	case ModeCLI:
-		if spec.NewCLI == nil {
-			return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeCLI}
-		}
-		return spec.NewCLI(), nil
 	default:
 		if spec.NewMCP != nil {
 			return spec.NewMCP(), nil
-		}
-		if spec.NewCLI != nil {
-			return spec.NewCLI(), nil
 		}
 		return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeMCP}
 	}

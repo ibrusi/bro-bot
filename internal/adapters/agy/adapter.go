@@ -22,11 +22,10 @@ func NewAgyAdapter() *AgyAdapter {
 }
 
 func (a *AgyAdapter) ExecutionMode() string {
-	return "cli"
+	return "mcp"
 }
 
-// buildAgyArgs собирает аргументы CLI agy. Ими пользуются оба режима — cli и mcp:
-// MCP-режим отличается только конфигурацией сервера, а не флагами запуска.
+// buildAgyArgs собирает аргументы CLI agy для режима mcp.
 func buildAgyArgs(args ports.ExecuteArgs) []string {
 	cmdArgs := []string{
 		"--dangerously-skip-permissions",

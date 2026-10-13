@@ -57,15 +57,15 @@ type ChatSession struct {
 	storage       storage.Storage
 }
 
-// ChatConversationKey формирует ключ пары «агент/режим» (например "agy/cli").
+// ChatConversationKey формирует ключ пары «агент/режим» (например "agy/mcp").
 func ChatConversationKey(agent, mode string) string {
 	agent = strings.ToLower(strings.TrimSpace(agent))
 	if agent == "" {
 		agent = "agy"
 	}
 	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		mode = "cli"
+	if mode == "" || mode == "cli" {
+		mode = "mcp"
 	}
 	return agent + "/" + mode
 }
@@ -103,7 +103,7 @@ func (cs *ChatSession) SetConversationID(agent, mode, conversationID string) {
 }
 
 // NeedsContextBootstrap сообщает, нужно ли подмешать в промпт краткий контекст прошлых реплик.
-// Это требуется, когда агент в cli-режиме ещё не имеет своей сессии (например, пользователь
+// Это требуется, когда агент в mcp-режиме ещё не имеет своей сессии (например, пользователь
 // переключил агента или режим посреди разговора), а история у нас уже есть:
 // api-режим получает историю напрямую в запросе и в бутстрапе не нуждается.
 func (cs *ChatSession) NeedsContextBootstrap(agent, mode string) bool {

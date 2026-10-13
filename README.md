@@ -14,7 +14,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 > [!WARNING]
 > **Safety and Usage Disclaimer**:
 > - **Autonomous Command Execution & Elevated Privileges**: `bro-bot` executes AI agent CLIs (`agy`, `claude`) with elevated system permissions (`--dangerously-skip-permissions`). Autonomous agents can run shell commands, create, modify, or delete files, install dependencies, and push Git changes without manual approval for every action. Always run the bot under a dedicated non-root user account (e.g., `deploy`), restrict `sudoers` privileges, and strictly limit bot access via `TELEGRAM_ADMIN_ID` (never run the bot as `root`).
-> - **Account Suspension Risk with Subscription Plans (CLI Mode)**: Running CLI agents authenticated with personal subscriptions (Claude Pro/Team/Max, Google One AI Premium/Gemini Advanced) in automated bot workflows (`cli` mode) violates the Terms of Service of those providers (prohibition against automated or unattended use of non-API interfaces). Using `cli` mode is strictly at your own risk and may lead to account penalties or bans. In contrast, operating via official API keys (`api` mode) fully complies with provider policies and will not result in account bans.
+> - **Account Suspension Risk with Subscription Plans (MCP Mode)**: Running CLI agents authenticated with personal subscriptions (Claude Pro/Team/Max, Google One AI Premium/Gemini Advanced) in automated bot workflows (`mcp` mode) violates the Terms of Service of those providers (prohibition against automated or unattended use of non-API interfaces). Using `mcp` mode is strictly at your own risk and may lead to account penalties or bans. In contrast, operating via official API keys (`api` mode) fully complies with provider policies and will not result in account bans.
 > - **Verification Responsibility**: While agents follow `AGENTS.md` guidelines by running tests and linters, final validation of all generated code, commits, and Pull Requests before merging them into production remains the sole responsibility of the repository maintainer.
 > - **Token Quotas & API Costs**: Autonomous agents make numerous calls to advanced LLMs (Google Gemini, Anthropic Claude), consuming significant context, generation, and reasoning (thinking) tokens. Regularly inspect your quotas, credit balances, and provider dashboards, as well as bot commands `/usage` and `/tokens`, to prevent unexpected expenses.
 > - **Disclaimer of Warranty (AS IS)**: This open-source software is distributed under the MIT License on an "AS IS" basis, without warranty of any kind, express or implied. The authors and contributors accept no liability for data loss, system disruption, account suspensions, or financial expenses resulting from its operation.
@@ -47,7 +47,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 - **Conversational Mode (default)**:
   - A plain message is a conversation with the agent about the active project: context is preserved between messages, so `/resume` is no longer needed.
   - When a message looks like a code-change request, the bot does not run it silently — it offers buttons: answer in chat, draft a plan, or create a task.
-  - Works for every agent (`agy`, `claude`) and every execution mode (`mcp`, `cli`, `api`); switching `/agent` or `/mode` mid-conversation keeps the thread.
+  - Works for every agent (`agy`, `claude`) and every execution mode (`mcp`, `api`); switching `/agent` or `/mode` mid-conversation keeps the thread.
   - In chat the agent only reads the code and answers: file edits, branches, commits and PRs go through a task.
   - Controls: `/chat` (status), `/chat <question>`, `/chat new`, `/chat stop`, `/chatmode [on|off]`.
 - **Intelligent Task Pipeline**:
@@ -75,9 +75,8 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - `/tokens` (or `/stats`) — granular token statistics for the current/completed task: Input, Output, Thinking, Cache Read, and Cache Hit Rate.
   - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
   - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, active `agy`/`claude` processes, and the `whisper-server` speech recognition engine.
-- **Execution Modes: MCP, CLI & API (`/mode [mcp|cli|api]`)**:
+- **Execution Modes: MCP & API (`/mode [mcp|api]`)**:
   - `mcp` (default): agents run with the bot's built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`). Its tools (`telegram_send_message`, `ask_user`, `report_progress`) reach the running bot over a local Unix-socket bridge and act on the task that started the agent.
-  - `cli`: spawns local `agy` and `claude` CLI tools via PTY.
   - `api`: connects directly to provider APIs (Google Gemini API & Anthropic Messages API) with built-in workspace file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`).
   - Safe sandboxing: chat mode (`/chat`) provides strictly read-only file access, while file writes and command executions are enabled for pipeline tasks. All paths are validated within the project directory.
 - **Multilingual Interface**:
@@ -132,43 +131,41 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 │  internal/i18n/      ──► Message catalogs (locales/*.json)│
 │  internal/system/    ──► Hot-Rebuild, Systemd & Top/PS   │
 │  internal/utils/     ──► Rich-text & Markdown parser     │
-└───────┬───────────────────┬────────────────────┬─────────┘
-        │ Mode: mcp         │ Mode: cli          │ Mode: api
-        │ (Default)         │ (PTY)              │ (Direct REST)
-        ▼                   ▼                    ▼
-┌────────────────┐  ┌────────────────┐  ┌────────────────┐
-│ Claude / Agy   │  │ Claude / Agy   │  │ Direct API     │
-│ with MCP Tools │  │ CLI processes  │  │ Clients:       │
-│                │  │                │  │ • Gemini API   │
-│ • bot mcp-serve│  │ • stream-json  │  │ • Anthropic    │
-│ • JSON-RPC 2.0 │  │ • PTY terminal │  │   Messages API │
-│ • Socket bridge│  │ • Raw stream   │  │ • File Tools   │
-│   to the bot   │  │   events       │  │   (read/write) │
-└───────┬────────┘  └───────┬────────┘  └───────┬────────┘
-        │                   │                   │
-        └───────────────────┼───────────────────┘
-                            ▼
-               ┌─────────────────────────┐
-               │   Projects Root Dir     │
-               │   /home/deploy/projects │
-               │   ├── project-1/        │
-               │   └── project-2/        │
-               └────────────┬────────────┘
-                            │
-                            ▼ WAL Mode
-               ┌─────────────────────────┐
-               │   SQLite Database       │
-               │   data/bot.db           │
-               │   (Tasks, Plans, Logs)  │
-               └─────────────────────────┘
+└───────┬────────────────────────────────────────────┬─────────┘
+        │ Mode: mcp (Default)                        │ Mode: api (Direct REST)
+        ▼                                            ▼
+┌────────────────────────────────────────┐   ┌────────────────────────────────┐
+│ Claude / Agy with MCP Tools            │   │ Direct API Clients:            │
+│ • bot mcp-serve & JSON-RPC 2.0         │   │ • Gemini API                   │
+│ • Socket bridge to the bot             │   │ • Anthropic Messages API       │
+│ • PTY terminal & stream-json events    │   │ • File Tools (read/write/exec) │
+└───────────────────┬────────────────────┘   └───────────────┬────────────────┘
+                    │                                        │
+                    └───────────────────┬────────────────────┘
+                                        ▼
+                           ┌─────────────────────────┐
+                           │   Projects Root Dir     │
+                           │   /home/deploy/projects │
+                           │   ├── project-1/        │
+                           │   └── project-2/        │
+                           └────────────┬────────────┘
+                                        │
+                                        ▼ WAL Mode
+                           ┌─────────────────────────┐
+                           │   SQLite Database       │
+                           │   data/bot.db           │
+                           │   (Tasks, Plans, Logs)  │
+                           └─────────────────────────┘
 ```
 
 ### Execution Modes Architecture
 
-`bro-bot` abstracts agent execution behind `ports.Agent` and `agents.Registry`, supporting three distinct operation modes:
+`bro-bot` abstracts agent execution behind `ports.Agent` and `agents.Registry`, supporting two distinct operation modes:
 
 1. **MCP Mode (`mcp`, default)**:
-   - Local CLI agents (`claude`, `agy`) are started the same way as in `cli` mode (the task and the final result travel through `stream-json`) and are additionally connected to the bot's built-in Model Context Protocol (MCP) server — the `bot mcp-serve` subcommand speaking JSON-RPC 2.0 over stdio.
+   - Local agents (`claude`, `agy`) are executed inside isolated pseudo-terminals (PTY) with streaming NDJSON output (`stream-json`) and connected to the bot's built-in Model Context Protocol (MCP) server — the `bot mcp-serve` subcommand speaking JSON-RPC 2.0 over stdio:
+     - `agy --dangerously-skip-permissions --print-timeout 30m --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
+     - `claude --dangerously-skip-permissions --print --output-format stream-json [--resume <id>] --model <model> -p <prompt>`
    - `claude` connects using `--mcp-config` with an ephemeral config file that is removed after the process exits.
    - `agy` connects via `~/.gemini/config/mcp_config.json`. The bot updates only its own `bro_bot` entry and keeps every other server and setting in the file intact; a malformed file is left untouched.
    - The agent spawns `bot mcp-serve` as its own child process, so the server forwards every tool call to the running bot over a Unix socket (`<BOT_DIR>/data/mcp/bridge.sock`, directory mode `0700`): one JSON request, one JSON response. The bot identifies the caller by the kernel-reported PID of the socket peer (`SO_PEERCRED`) and walks up its parent processes to the agent it started, so a call always lands in the right task and cannot impersonate another one.
@@ -178,13 +175,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
      - `report_progress`: shows the current step, optionally with a percentage, in the live task status.
    - If the bot is not running or the agent was not started by the bot, the tools return an error to the agent instead of pretending the action succeeded.
 
-2. **CLI Mode (`cli`)**:
-   - Spawns agent CLI processes (`agy`, `claude`) inside isolated pseudo-terminals (PTY) with invocation flags:
-     `agy --dangerously-skip-permissions --print-timeout 30m --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
-     `claude --dangerously-skip-permissions --print --output-format stream-json [--resume <id>] --model <model> -p <prompt>`
-   - The bot parses the NDJSON `stream-json` stream, intercepts thinking phases, tool calls, and completion events, and formats them into intuitive Telegram updates.
-
-3. **API Mode (`api`)**:
+2. **API Mode (`api`)**:
    - Direct HTTP/REST communication with model provider endpoints:
      - Google Gemini API (`GEMINI_API_KEY`) via Google GenAI SDK;
      - Anthropic Messages API (`ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`).
@@ -441,10 +432,10 @@ The bot is operated via text messages and slash commands in Telegram.
 The conversation transcript lives in the bot's database and is independent of agent and mode,
 while the agent session id is kept separately for each "agent + mode" pair:
 
-| | `mcp` (default) | `cli` | `api` |
-|---|---|---|---|
-| **agy** | agent's own session with MCP config (`mcp_config.json`) | the agent's own session (`--conversation`) | transcript replayed from the bot's database |
-| **claude** | agent's own session with MCP config (`--mcp-config`) | the agent's own session (`--resume`) | transcript replayed from the bot's database |
+| | `mcp` (default) | `api` |
+|---|---|---|
+| **agy** | agent's own session with MCP config (`mcp_config.json`) | transcript replayed from the bot's database |
+| **claude** | agent's own session with MCP config (`--mcp-config`) | transcript replayed from the bot's database |
 
 When you switch `/agent` or `/mode`, the new agent receives a short context of previous turns,
 so the conversation continues. Reset it with `/chat new`.
@@ -495,7 +486,7 @@ so the conversation continues. Reset it with `/chat new`.
 | `/model [name]` | Switch active model for future tasks. | `/model flash` or `/model claude-sonnet-4-6` |
 | `/effort [level]` | Show or set the agent reasoning effort: `auto`, `low`, `medium`, `high`, `xhigh`, `max`. Without a level — current value and selection buttons. | `/effort high` |
 | `/agent [name]` | Switch the active agent engine (`agy` or `claude`). | `/agent claude` |
-| `/mode [mcp|cli|api]` | Switch agent execution mode (CLI with the bot's MCP tools, local CLI, or direct API with workspace file tools). | `/mode mcp` |
+| `/mode [mcp|api]` | Switch agent execution mode (local agent with the bot's MCP tools, or direct API with workspace file tools). | `/mode mcp` |
 | `/usage` (or `/limits`) | Check remaining free quotas and paid credit balances for Antigravity. | `/usage` |
 | `/tokens` (or `/stats`) | Token usage stats for the task: Input, Output, Thinking, Cache Read, and Hit Rate. | `/tokens` |
 | `/context [id]` | Visual breakdown of model context window utilization. | `/context` |
@@ -508,7 +499,7 @@ so the conversation continues. Reset it with `/chat new`.
 - The level applies from the next agent run: a running task step or chat answer keeps the level it started with.
 - How the level reaches the agent:
 
-| Agent | `mcp` / `cli` | `api` |
+| Agent | `mcp` (default) | `api` |
 |---|---|---|
 | `claude` | `--effort <level>` flag of Claude Code | `output_config.effort` of the Messages API — only when `/v1/models` confirms the model supports this level (for example, `xhigh` requires Opus 4.7+, Haiku 4.5 has no effort at all); otherwise the model default is used and the bot logs it |
 | `agy` | The level is passed as the exact model variant from `agy models`: `/effort low` with `gemini-3.1-pro-high` runs `gemini-3.1-pro-low`, and the bare family name (`claude-opus-5-5`) gets a level suffix (with `auto` — `medium`, or `high` if the family has no `medium`). If the family lacks the requested level, the highest level not above it is used, otherwise the lowest available (`/effort max` → `-high`). Models outside the catalog get `--effort <level>` as is, legacy Claude models (`claude-sonnet-4-6`) get none | Not supported: the Gemini SDK in use cannot configure reasoning, so `/effort` warns and the model default is used |

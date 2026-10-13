@@ -18,9 +18,9 @@ func TestCancelStopsAgentForEveryAgentAndMode(t *testing.T) {
 		agent string
 		mode  string
 	}{
-		{"agy", "cli"},
+		{"agy", "mcp"},
 		{"agy", "api"},
-		{"claude", "cli"},
+		{"claude", "mcp"},
 		{"claude", "api"},
 	}
 

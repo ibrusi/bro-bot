@@ -30,7 +30,7 @@ func NewClaudeAdapter() *ClaudeAdapter {
 }
 
 func (a *ClaudeAdapter) ExecutionMode() string {
-	return "cli"
+	return "mcp"
 }
 
 // agyVariantSuffixes — суффиксы ID моделей Claude из каталога agy: уровень рассуждений
@@ -59,8 +59,7 @@ func resolveClaudeModel(modelName string) string {
 	return modelName
 }
 
-// buildClaudeArgs собирает аргументы CLI claude. Ими пользуются оба режима — cli и mcp:
-// MCP-режим лишь добавляет перед ними --mcp-config.
+// buildClaudeArgs собирает аргументы CLI claude для режима mcp.
 func buildClaudeArgs(args ports.ExecuteArgs) []string {
 	cmdArgs := []string{
 		"--dangerously-skip-permissions",
@@ -120,7 +119,7 @@ const claudeCLIAliases = "sonnet Claude Sonnet (current version)\n" +
 	"opus Claude Opus (current version)\n" +
 	"fable Claude Fable (current version)\n"
 
-// GetModels возвращает список моделей для cli-режима. Раньше здесь был зашитый список
+// GetModels возвращает список моделей для mcp-режима. Раньше здесь был зашитый список
 // конкретных версий, который устаревал так же, как устарели claude-3-*: теперь при
 // наличии ключа список живой (/v1/models), а без ключа — только псевдонимы CLI.
 func (a *ClaudeAdapter) GetModels(ctx context.Context) ([]byte, error) {

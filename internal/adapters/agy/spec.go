@@ -16,11 +16,10 @@ var apiKeyEnv = []string{"GEMINI_API_KEY"}
 // (например, адаптер собрали в тесте без запуска Start).
 const fallbackDefaultModel = "gemini-3.1-pro-high"
 
-// Spec описывает агента agy для реестра: CLI Google Antigravity, Gemini API либо режим MCP.
+// Spec описывает агента agy для реестра: Gemini API либо режим Google Antigravity (MCP).
 func Spec() agents.Spec {
 	return agents.Spec{
 		Name:         "agy",
-		CLITitle:     "Google Antigravity",
 		APITitle:     "Gemini API",
 		MCPTitle:     "Google Antigravity (MCP)",
 		APIKeyEnv:    apiKeyEnv,
@@ -29,7 +28,6 @@ func Spec() agents.Spec {
 		// заменяются на модель по умолчанию.
 		RejectsModel: rejectsModel,
 		ModelAliases: modelAliases,
-		NewCLI:       func() ports.AgentFramework { return NewAgyAdapter() },
 		NewAPI:       func() ports.AgentFramework { return NewAgyAPIAdapter() },
 		NewMCP:       func() ports.AgentFramework { return NewAgyMCPAdapter() },
 	}
