@@ -24,15 +24,15 @@ func TestChatSessionConversationsPerAgentAndMode(t *testing.T) {
 	cm.InitWithStorage(newChatTestStorage(t))
 
 	cs := cm.GetOrCreate("proj", "gemini-3.1-pro-high")
-	cs.SetConversationID("agy", "cli", "agy-cli-1")
-	cs.SetConversationID("claude", "cli", "claude-cli-1")
+	cs.SetConversationID("agy", "mcp", "agy-mcp-1")
+	cs.SetConversationID("claude", "mcp", "claude-mcp-1")
 	cs.SetConversationID("agy", "api", "agy-api-1")
 
-	if got := cs.ConversationIDFor("agy", "cli"); got != "agy-cli-1" {
-		t.Errorf("agy/cli = %q", got)
+	if got := cs.ConversationIDFor("agy", "mcp"); got != "agy-mcp-1" {
+		t.Errorf("agy/mcp = %q", got)
 	}
-	if got := cs.ConversationIDFor("claude", "cli"); got != "claude-cli-1" {
-		t.Errorf("claude/cli = %q", got)
+	if got := cs.ConversationIDFor("claude", "mcp"); got != "claude-mcp-1" {
+		t.Errorf("claude/mcp = %q", got)
 	}
 	if got := cs.ConversationIDFor("agy", "api"); got != "agy-api-1" {
 		t.Errorf("agy/api = %q", got)
@@ -47,22 +47,22 @@ func TestChatSessionNeedsContextBootstrap(t *testing.T) {
 	cm := NewChatManager()
 	cs := cm.GetOrCreate("proj", "model")
 
-	if cs.NeedsContextBootstrap("agy", "cli") {
+	if cs.NeedsContextBootstrap("agy", "mcp") {
 		t.Error("пустой истории бутстрап не нужен")
 	}
 
 	cs.AppendTurn(ChatRoleUser, "привет")
 	cs.AppendTurn(ChatRoleAssistant, "привет, чем помочь?")
 
-	if !cs.NeedsContextBootstrap("claude", "cli") {
-		t.Error("новому cli-агенту нужен контекст прошлых реплик")
+	if !cs.NeedsContextBootstrap("claude", "mcp") {
+		t.Error("новому mcp-агенту нужен контекст прошлых реплик")
 	}
 	if cs.NeedsContextBootstrap("agy", "api") {
 		t.Error("в api-режиме история передаётся напрямую, бутстрап не нужен")
 	}
 
-	cs.SetConversationID("claude", "cli", "claude-conv")
-	if cs.NeedsContextBootstrap("claude", "cli") {
+	cs.SetConversationID("claude", "mcp", "claude-conv")
+	if cs.NeedsContextBootstrap("claude", "mcp") {
 		t.Error("у агента появилась своя сессия — бутстрап больше не нужен")
 	}
 }
@@ -190,7 +190,7 @@ func TestChatManagerResetStartsCleanSession(t *testing.T) {
 
 	first := cm.GetOrCreate("proj", "model")
 	first.AppendTurn(ChatRoleUser, "первый разговор")
-	first.SetConversationID("agy", "cli", "conv-1")
+	first.SetConversationID("agy", "mcp", "conv-1")
 
 	second := cm.Reset("proj", "")
 	if second.ID == first.ID {
@@ -199,7 +199,7 @@ func TestChatManagerResetStartsCleanSession(t *testing.T) {
 	if second.TurnsCount() != 0 {
 		t.Error("новая сессия должна быть пустой")
 	}
-	if second.ConversationIDFor("agy", "cli") != "" {
+	if second.ConversationIDFor("agy", "mcp") != "" {
 		t.Error("новая сессия не должна наследовать идентификатор сессии агента")
 	}
 	if second.Model != "model" {
@@ -215,7 +215,7 @@ func TestChatManagerPersistsAndReloads(t *testing.T) {
 	cs := cm.GetOrCreate("proj", "gemini-3.1-pro-high")
 	cs.AppendTurn(ChatRoleUser, "как работает роутер?")
 	cs.AppendTurn(ChatRoleAssistant, "он разбирает сообщения")
-	cs.SetConversationID("agy", "cli", "conv-cli")
+	cs.SetConversationID("agy", "mcp", "conv-mcp")
 	cs.SetConversationID("claude", "api", "conv-api")
 
 	// Перезапуск бота: новый менеджер поверх того же хранилища.
@@ -229,8 +229,8 @@ func TestChatManagerPersistsAndReloads(t *testing.T) {
 	if session.TurnsCount() != 2 {
 		t.Errorf("восстановлено %d реплик, ожидали 2", session.TurnsCount())
 	}
-	if session.ConversationIDFor("agy", "cli") != "conv-cli" {
-		t.Errorf("не восстановлен id сессии agy/cli: %q", session.ConversationIDFor("agy", "cli"))
+	if session.ConversationIDFor("agy", "mcp") != "conv-mcp" {
+		t.Errorf("не восстановлен id сессии agy/mcp: %q", session.ConversationIDFor("agy", "mcp"))
 	}
 	if session.ConversationIDFor("claude", "api") != "conv-api" {
 		t.Errorf("не восстановлен id сессии claude/api: %q", session.ConversationIDFor("claude", "api"))
@@ -260,10 +260,13 @@ func TestChatManagerSessionsAreIsolatedPerProject(t *testing.T) {
 }
 
 func TestChatConversationKeyNormalizes(t *testing.T) {
-	if got := ChatConversationKey(" AGY ", " CLI "); got != "agy/cli" {
+	if got := ChatConversationKey(" AGY ", " CLI "); got != "agy/mcp" {
 		t.Errorf("ChatConversationKey = %q", got)
 	}
-	if got := ChatConversationKey("", ""); got != "agy/cli" {
+	if got := ChatConversationKey("", ""); got != "agy/mcp" {
 		t.Errorf("значения по умолчанию = %q", got)
+	}
+	if got := ChatConversationKey("claude", "api"); got != "claude/api" {
+		t.Errorf("ChatConversationKey = %q", got)
 	}
 }

@@ -207,7 +207,6 @@ func TestEffortReachesExecuteArgs(t *testing.T) {
 	reg := testAgentRegistry()
 	reg.Register(agents.Spec{
 		Name:   "effort-mock",
-		NewCLI: func() ports.AgentFramework { return framework },
 		NewMCP: func() ports.AgentFramework { return framework },
 		NewAPI: func() ports.AgentFramework { return framework },
 	})
@@ -230,7 +229,7 @@ func TestEffortReachesExecuteArgs(t *testing.T) {
 	setup := chatTurnSetup{
 		Project:   "testproj",
 		Agent:     "effort-mock",
-		Mode:      "cli",
+		Mode:      "mcp",
 		Model:     "mock-model",
 		Effort:    config.ProjectState.GetEffort(),
 		Framework: framework,

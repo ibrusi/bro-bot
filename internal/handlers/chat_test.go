@@ -25,15 +25,15 @@ func setupChatTestApp(t *testing.T, response string) (*mockTransport, *mock.Agen
 	// поэтому каждый тест диалога начинает с чистого состояния.
 	mt := setupTestApp(t)
 
-	agent := &mock.AgentFramework{Name: "agy", Response: response, ConversationID: "conv-agy-cli"}
+	agent := &mock.AgentFramework{Name: "agy", Response: response, ConversationID: "conv-agy-mcp"}
 	prevFramework, prevName := ActiveAgent()
 	SetActiveAgent(agent, "agy")
-	config.ProjectState.SetExecutionMode("cli")
+	config.ProjectState.SetExecutionMode("mcp")
 	config.ProjectState.SetInteractionMode(domain.InteractionModeChat)
 
 	t.Cleanup(func() {
 		SetActiveAgent(prevFramework, prevName)
-		config.ProjectState.SetExecutionMode("cli")
+		config.ProjectState.SetExecutionMode("mcp")
 		config.ProjectState.SetInteractionMode(domain.InteractionModeChat)
 	})
 
@@ -152,8 +152,8 @@ func TestChatKeepsContextBetweenMessages(t *testing.T) {
 		t.Errorf("первый ход должен идти без сессии агента, получили %q", calls[0].ConversationID)
 	}
 	// Второй ход продолжает ту же сессию агента — пользователю не нужен /resume.
-	if calls[1].ConversationID != "conv-agy-cli" {
-		t.Errorf("второй ход должен продолжать сессию conv-agy-cli, получили %q", calls[1].ConversationID)
+	if calls[1].ConversationID != "conv-agy-mcp" {
+		t.Errorf("второй ход должен продолжать сессию conv-agy-mcp, получили %q", calls[1].ConversationID)
 	}
 
 	session := domain.GlobalChatManager.Get("testproj")
@@ -383,9 +383,9 @@ func TestChatNewResetsConversation(t *testing.T) {
 	if session == nil {
 		t.Fatal("после сброса ожидали новую сессию")
 	}
-	if session.TurnsCount() != 0 || session.ConversationIDFor("agy", "cli") != "" {
+	if session.TurnsCount() != 0 || session.ConversationIDFor("agy", "mcp") != "" {
 		t.Errorf("после /chat new контекст должен быть пустым: реплик %d, сессия %q",
-			session.TurnsCount(), session.ConversationIDFor("agy", "cli"))
+			session.TurnsCount(), session.ConversationIDFor("agy", "mcp"))
 	}
 }
 
@@ -401,7 +401,7 @@ func TestChatStatusShowsAgentAndMode(t *testing.T) {
 	if last == nil {
 		t.Fatal("ожидали карточку статуса диалога")
 	}
-	if !strings.Contains(last.Text, "agy") || !strings.Contains(last.Text, "cli") {
+	if !strings.Contains(last.Text, "agy") || !strings.Contains(last.Text, "mcp") {
 		t.Errorf("статус должен показывать агента и режим: %s", last.Text)
 	}
 	if !strings.Contains(last.Text, "testproj") {
@@ -495,7 +495,7 @@ func TestChatPTYEIOHandledGracefully(t *testing.T) {
 			ports.MessageRef{ID: "msg-1"},
 			fw,
 			ports.ExecuteArgs{Prompt: "Тест"},
-			chatTurnSetup{Project: "testproj", Agent: "agy", Mode: "cli", Model: "sonnet"},
+			chatTurnSetup{Project: "testproj", Agent: "agy", Mode: "mcp", Model: "sonnet"},
 			"ru",
 		)
 
@@ -524,7 +524,7 @@ func TestChatPTYEIOHandledGracefully(t *testing.T) {
 			ports.MessageRef{ID: "msg-1"},
 			fw,
 			ports.ExecuteArgs{Prompt: "Тест"},
-			chatTurnSetup{Project: "testproj", Agent: "agy", Mode: "cli", Model: "sonnet"},
+			chatTurnSetup{Project: "testproj", Agent: "agy", Mode: "mcp", Model: "sonnet"},
 			"ru",
 		)
 
@@ -548,11 +548,11 @@ func TestChatPTYEIOHandledGracefully(t *testing.T) {
 
 		prevFramework, prevName := ActiveAgent()
 		SetActiveAgent(fw, "agy")
-		config.ProjectState.SetExecutionMode("cli")
+		config.ProjectState.SetExecutionMode("mcp")
 		config.ProjectState.SetInteractionMode(domain.InteractionModeChat)
 		t.Cleanup(func() {
 			SetActiveAgent(prevFramework, prevName)
-			config.ProjectState.SetExecutionMode("cli")
+			config.ProjectState.SetExecutionMode("mcp")
 			config.ProjectState.SetInteractionMode(domain.InteractionModeChat)
 		})
 

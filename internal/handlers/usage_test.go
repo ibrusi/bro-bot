@@ -37,9 +37,9 @@ func TestUsageNeverLeaksServiceJSON(t *testing.T) {
 		agent string
 		mode  string
 	}{
-		{"agy", "cli"},
+		{"agy", "mcp"},
 		{"agy", "api"},
-		{"claude", "cli"},
+		{"claude", "mcp"},
 		{"claude", "api"},
 	}
 
@@ -70,10 +70,10 @@ func TestUsageHeaderAndFooterMatchMode(t *testing.T) {
 		wantFooter string
 		notFooter  string
 	}{
-		{"claude", "cli", "Claude Code", "5-hour and weekly windows", "/tokens"},
-		{"claude", "api", "Claude API", "/tokens", "5-hour and weekly windows"},
-		{"agy", "cli", "Google Antigravity", "5-hour and weekly windows", "/tokens"},
-		{"agy", "api", "Gemini API", "/tokens", "5-hour and weekly windows"},
+		{"claude", "mcp", "Claude Code (MCP)", "Model Context Protocol", "/tokens"},
+		{"claude", "api", "Claude API", "/tokens", "Model Context Protocol"},
+		{"agy", "mcp", "Google Antigravity (MCP)", "Model Context Protocol", "/tokens"},
+		{"agy", "api", "Gemini API", "/tokens", "Model Context Protocol"},
 	}
 
 	for _, tc := range cases {
@@ -100,11 +100,11 @@ func TestUsageSourceTitle(t *testing.T) {
 		want  string
 	}{
 		{"claude", "api", "Claude API"},
-		{"claude", "cli", "Claude Code"},
+		{"claude", "mcp", "Claude Code (MCP)"},
 		{"agy", "api", "Gemini API"},
-		{"agy", "cli", "Google Antigravity"},
+		{"agy", "mcp", "Google Antigravity (MCP)"},
 		{"", "api", "API агента"},
-		{"неизвестный", "cli", "CLI агента"},
+		{"неизвестный", "mcp", "MCP-канал"},
 	}
 	for _, tc := range cases {
 		if got := usageSourceTitle(tc.agent, tc.mode, "ru"); got != tc.want {
@@ -116,7 +116,7 @@ func TestUsageSourceTitle(t *testing.T) {
 // TestUsageUsesCLIResultWithoutSecondProcess — конверт CLI Claude Code уже несёт текст
 // в поле result; второй запуск процесса ради GetQuotaText — лишняя секунда ожидания.
 func TestUsageUsesCLIResultWithoutSecondProcess(t *testing.T) {
-	mt, agent := setupMatrixApp(t, "claude", "cli", "claude-cli-usage", "ответ")
+	mt, agent := setupMatrixApp(t, "claude", "mcp", "claude-mcp-usage", "ответ")
 	// Снято с настоящего `claude --output-format json -p /usage` (лишние поля опущены).
 	agent.QuotaOutput = `{"type":"result","subtype":"success","is_error":false,` +
 		`"result":"Total cost:            $0.0000\nUsage:                 0 input, 0 output",` +

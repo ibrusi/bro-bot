@@ -91,8 +91,8 @@ func isKnownAgent(name string) bool {
 	return registry().Known(name)
 }
 
-// usageSourceTitle называет источник лимитов в шапке /usage. В cli-режиме это название
-// CLI-продукта, в api-режиме работа идёт по ключу API — и подписывать её именем
+// usageSourceTitle называет источник лимитов в шапке /usage. В mcp-режиме это название
+// агента с суффиксом (MCP), в api-режиме работа идёт по ключу API — и подписывать её именем
 // CLI-продукта было бы неверно.
 func usageSourceTitle(agentName, execMode, lang string) string {
 	return registry().Title(agentName, execMode, lang)
@@ -177,7 +177,7 @@ func formatAgentSwitch(r AgentSwitch, lang string) string {
 
 // initActiveAgent выставляет активного агента при старте: сохранённого в базе либо агента
 // по умолчанию. Если для сохранённого режима адаптер не собирается (например, api без
-// ключа), бот стартует в cli-режиме, а не без агента.
+// ключа), бот стартует в mcp-режиме, а не без агента.
 func initActiveAgent(savedAgent string) {
 	reg := registry()
 	name := reg.Normalize(savedAgent)
@@ -198,9 +198,9 @@ func initActiveAgent(savedAgent string) {
 	mode := config.ProjectState.GetExecutionMode()
 	adapter, err := reg.Build(name, mode)
 	if err != nil {
-		log.Printf("warning: agent %s is unavailable in %s mode (%v), starting in cli mode", name, mode, err)
-		config.ProjectState.SetExecutionMode(agents.ModeCLI)
-		if adapter, err = reg.Build(name, agents.ModeCLI); err != nil {
+		log.Printf("warning: agent %s is unavailable in %s mode (%v), falling back to mcp mode", name, mode, err)
+		config.ProjectState.SetExecutionMode(agents.ModeMCP)
+		if adapter, err = reg.Build(name, agents.ModeMCP); err != nil {
 			log.Printf("warning: agent %s is unavailable: %v", name, err)
 			return
 		}

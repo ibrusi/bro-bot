@@ -40,7 +40,6 @@ func TestExecuteStepForTask_InjectsSystemPromptOnlyOnNewSession(t *testing.T) {
 	reg := testAgentRegistry()
 	reg.Register(agents.Spec{
 		Name:   "mock-agent",
-		NewCLI: func() ports.AgentFramework { return mockFramework },
 		NewMCP: func() ports.AgentFramework { return mockFramework },
 		NewAPI: func() ports.AgentFramework { return mockFramework },
 	})
@@ -116,7 +115,6 @@ func TestRunChatTurn_InjectsRulesOnlyOnFirstTurn(t *testing.T) {
 	reg := testAgentRegistry()
 	reg.Register(agents.Spec{
 		Name:   "chat-mock-agent",
-		NewCLI: func() ports.AgentFramework { return mockFramework },
 		NewMCP: func() ports.AgentFramework { return mockFramework },
 		NewAPI: func() ports.AgentFramework { return mockFramework },
 	})
@@ -130,7 +128,7 @@ func TestRunChatTurn_InjectsRulesOnlyOnFirstTurn(t *testing.T) {
 	setup := chatTurnSetup{
 		Project:   "chatproj",
 		Agent:     "chat-mock-agent",
-		Mode:      "cli",
+		Mode:      "mcp",
 		Model:     "mock-model",
 		Framework: mockFramework,
 	}

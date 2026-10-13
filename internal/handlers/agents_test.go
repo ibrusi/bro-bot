@@ -104,14 +104,14 @@ func TestModeAPIRefusesWithoutKeyAndKeepsMode(t *testing.T) {
 	if _, err := SwitchActiveAgent("agy"); err != nil {
 		t.Fatal(err)
 	}
-	config.ProjectState.SetExecutionMode("cli")
+	config.ProjectState.SetExecutionMode("mcp")
 
 	handler := mt.commands["mode"]
 	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{"api"}})); err != nil {
 		t.Fatalf("/mode api: %v", err)
 	}
 
-	if got := config.ProjectState.GetExecutionMode(); got != "cli" {
+	if got := config.ProjectState.GetExecutionMode(); got != "mcp" {
 		t.Errorf("режим не должен был смениться без ключа, получили %q", got)
 	}
 	last := mt.LastSent()
@@ -130,7 +130,7 @@ func TestModeAPISwitchesWithKey(t *testing.T) {
 	if _, err := SwitchActiveAgent("agy"); err != nil {
 		t.Fatal(err)
 	}
-	config.ProjectState.SetExecutionMode("cli")
+	config.ProjectState.SetExecutionMode("mcp")
 
 	handler := mt.commands["mode"]
 	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{"api"}})); err != nil {

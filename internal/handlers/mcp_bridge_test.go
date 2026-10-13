@@ -156,7 +156,6 @@ func TestStepHandlesMCPToolCalls(t *testing.T) {
 	reg := testAgentRegistry()
 	reg.Register(agents.Spec{
 		Name:   "mcp-agent",
-		NewCLI: func() ports.AgentFramework { return framework },
 		NewMCP: func() ports.AgentFramework { return framework },
 		NewAPI: func() ports.AgentFramework { return framework },
 	})

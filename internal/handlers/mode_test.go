@@ -21,9 +21,10 @@ func TestExecutionModeState(t *testing.T) {
 		t.Errorf("expected execution mode to be 'api', got: %s", ps.GetExecutionMode())
 	}
 
+	// Устаревший режим cli нормализуется в mcp
 	ps.SetExecutionMode("cli")
-	if ps.GetExecutionMode() != "cli" {
-		t.Errorf("expected execution mode to be 'cli', got: %s", ps.GetExecutionMode())
+	if ps.GetExecutionMode() != "mcp" {
+		t.Errorf("expected execution mode 'cli' to fallback to 'mcp', got: %s", ps.GetExecutionMode())
 	}
 
 	ps.SetExecutionMode("mcp")
@@ -64,14 +65,15 @@ func TestModeCommandAndAgentSwitchWithMode(t *testing.T) {
 		t.Errorf("expected result to carry api mode, got: %+v", res)
 	}
 
+	// Переключение в устаревший cli нормализуется в mcp
 	config.ProjectState.SetExecutionMode("cli")
 	res, err = SwitchActiveAgent("claude")
 	if err != nil {
 		t.Fatalf("unexpected error switching agent: %v", err)
 	}
 
-	if res.Mode != "cli" {
-		t.Errorf("expected result to carry cli mode, got: %+v", res)
+	if res.Mode != "mcp" {
+		t.Errorf("expected result to carry mcp mode, got: %+v", res)
 	}
 
 	savedMode, err := st.GetSetting(context.Background(), "execution_mode")

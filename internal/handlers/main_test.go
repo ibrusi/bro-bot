@@ -2051,8 +2051,8 @@ func TestStartGreetingAndMenuModeDescription(t *testing.T) {
 	if last == nil {
 		t.Fatalf("expected message from /start")
 	}
-	if !strings.Contains(last.Text, "/mode [mcp|cli|api]") {
-		t.Errorf("expected /start text to contain '/mode [mcp|cli|api]', got:\n%s", last.Text)
+	if !strings.Contains(last.Text, "/mode [mcp|api]") {
+		t.Errorf("expected /start text to contain '/mode [mcp|api]', got:\n%s", last.Text)
 	}
 	if !strings.Contains(last.Text, "/agent") {
 		t.Errorf("expected /start text to contain '/agent', got:\n%s", last.Text)
@@ -2071,8 +2071,8 @@ func TestStartGreetingAndMenuModeDescription(t *testing.T) {
 		if foundModeCmd == nil {
 			t.Fatalf("expected 'mode' command in getDefaultCommands(%s)", lang)
 		}
-		if !strings.Contains(foundModeCmd.Description, "[mcp|cli|api]") {
-			t.Errorf("expected 'mode' command description in %s to mention '[mcp|cli|api]', got %q", lang, foundModeCmd.Description)
+		if !strings.Contains(foundModeCmd.Description, "[mcp|api]") {
+			t.Errorf("expected 'mode' command description in %s to mention '[mcp|api]', got %q", lang, foundModeCmd.Description)
 		}
 	}
 }
@@ -2130,7 +2130,7 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 	if lastClaude == nil {
 		t.Fatalf("expected message from /models refresh (claude)")
 	}
-	// Без ключа API cli-адаптер claude отдаёт псевдонимы CLI (sonnet/opus/fable):
+	// Без ключа API mcp-адаптер claude отдаёт псевдонимы (sonnet/opus/fable):
 	// зашитых версий, которые протухают, в списке больше нет.
 	if !strings.Contains(lastClaude.Text, "sonnet") {
 		t.Errorf("expected claude models message to contain sonnet alias, got: %s", lastClaude.Text)

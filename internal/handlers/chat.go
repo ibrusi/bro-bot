@@ -686,7 +686,7 @@ func formatChatStatus(project, lang string) string {
 	if strings.EqualFold(mode, "api") {
 		bldr.WriteString(i18n.T(lang, "chat.status_memory_api"))
 	} else {
-		bldr.WriteString(i18n.T(lang, "chat.status_memory_cli"))
+		bldr.WriteString(i18n.T(lang, "chat.status_memory_mcp"))
 	}
 	if session.IsRunning() {
 		bldr.WriteString(i18n.T(lang, "chat.status_running"))
