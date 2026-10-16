@@ -138,7 +138,7 @@ func TestFormatModelsMessage(t *testing.T) {
 	if !strings.Contains(msg, "/model flash") {
 		t.Errorf("expected aliases in message")
 	}
-	if !strings.Contains(msg, "/models refresh") {
+	if !strings.Contains(msg, "/model refresh") {
 		t.Errorf("expected refresh instruction in message")
 	}
 

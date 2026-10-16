@@ -53,39 +53,34 @@ func handleContext(s ports.Session) error {
 	return s.Send(msg, ports.Rich())
 }
 
-// handleModels — обработчик команды /models.
-func handleModels(s ports.Session) error {
-	lang := uiLang()
-
-	args := s.Args()
-	forceRefresh := len(args) > 0 && (args[0] == "refresh" || args[0] == "update")
-	if forceRefresh {
-		if _, err := models.GlobalModelRegistry.RefreshModels(true); err != nil {
-			return s.Send(i18n.Tf(lang, "models.refresh_failed", ActiveAgentName(), err), nil)
-		}
-	}
-
-	config.ProjectState.RLock()
-	curModel := config.ProjectState.CurrentModel
-	config.ProjectState.RUnlock()
-
-	msg := models.GlobalModelRegistry.FormatModelsMessage(curModel, lang)
-	return s.Send(msg, ports.Rich())
-}
-
-// handleModel — обработчик команды /model.
+// handleModel — обработчик команды /model: список моделей, обновление каталога и смена активной модели.
 func handleModel(s ports.Session) error {
 	lang := uiLang()
 
 	args := s.Args()
 	if len(args) == 0 {
 		config.ProjectState.RLock()
-		cur := config.ProjectState.CurrentModel
+		curModel := config.ProjectState.CurrentModel
 		config.ProjectState.RUnlock()
-		return s.Send(i18n.Tf(lang, "models.current", html.EscapeString(cur)), ports.Rich())
+
+		msg := models.GlobalModelRegistry.FormatModelsMessage(curModel, lang)
+		return s.Send(msg, ports.Rich())
 	}
 
 	target := strings.TrimSpace(args[0])
+	if strings.EqualFold(target, "refresh") || strings.EqualFold(target, "update") {
+		if _, err := models.GlobalModelRegistry.RefreshModels(true); err != nil {
+			return s.Send(i18n.Tf(lang, "models.refresh_failed", ActiveAgentName(), err), nil)
+		}
+
+		config.ProjectState.RLock()
+		curModel := config.ProjectState.CurrentModel
+		config.ProjectState.RUnlock()
+
+		msg := models.GlobalModelRegistry.FormatModelsMessage(curModel, lang)
+		return s.Send(msg, ports.Rich())
+	}
+
 	resolved, ok := models.GlobalModelRegistry.ResolveModel(target)
 	if !ok {
 		active := ActiveAgentName()

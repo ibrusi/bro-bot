@@ -87,3 +87,46 @@ func TestModelCommandRejectsAliasOfOtherAgent(t *testing.T) {
 		}
 	}
 }
+
+// /model без аргументов выводит список доступных моделей, активную модель, алиасы и подсказку /model refresh.
+func TestModelCommandWithoutArgsListsModels(t *testing.T) {
+	mt := setupTestApp(t)
+
+	if _, exists := mt.commands["models"]; exists {
+		t.Fatal("команда /models не должна быть зарегистрирована после объединения в /model")
+	}
+
+	if _, err := SwitchActiveAgent("agy"); err != nil {
+		t.Fatalf("SwitchActiveAgent(agy): %v", err)
+	}
+	runModelCommand(t, mt, "flash")
+
+	msg := runModelCommand(t, mt)
+	if !strings.Contains(msg.Text, "Available models:") {
+		t.Errorf("/model без аргументов должен выводить заголовок списка моделей, ответ: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "👉 <b>gemini-3.8-flash-medium</b> <i>(active)</i>") {
+		t.Errorf("/model без аргументов должен отмечать активную модель, ответ: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "/model flash") {
+		t.Errorf("/model без аргументов должен выводить короткие алиасы, ответ: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "/model refresh") {
+		t.Errorf("/model без аргументов должен содержать подсказку /model refresh, ответ: %s", msg.Text)
+	}
+}
+
+// При передаче неизвестной модели /model подсказывает посмотреть список через /model.
+func TestModelCommandUnknownSuggestsModelList(t *testing.T) {
+	mt := setupTestApp(t)
+
+	before := currentModel()
+	msg := runModelCommand(t, mt, "unknown-model-xyz")
+	if got := currentModel(); got != before {
+		t.Errorf("/model unknown-model-xyz сменил модель на %q", got)
+	}
+	if !strings.Contains(msg.Text, "List: /model") || strings.Contains(msg.Text, "List: /models") {
+		t.Errorf("ожидали подсказку 'List: /model', ответ: %s", msg.Text)
+	}
+}
+

@@ -67,7 +67,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
     - `agy`: `default`, `flash`, `flash-high`, `flash-low`, `pro`, `pro-low`, `sonnet` (Claude Sonnet 5.5), `opus` (Claude Opus 5.5), `oss`. There is no Claude Haiku in the `agy` catalog.
     - `claude`: `default`, `sonnet` (Claude Sonnet 5.5), `opus` (Claude Opus 5.5), `haiku` (Claude Haiku 5.5), `sonnet-5`.
     - An alias of another agent is not applied: the bot suggests switching with `/agent`.
-  - Instant model switching (`/models`, `/model <name|alias>`).
+  - Instant model viewing and switching (`/model`, `/model <name|alias>`, `/model refresh`).
   - Reasoning effort control (`/effort [auto|low|medium|high|xhigh|max]`), shared by `agy` and `claude` and saved across restarts.
   - Multi-agent toggle (`/agent <agy|claude>`).
 - **Quota, Token & Resource Monitoring**:
@@ -482,8 +482,7 @@ so the conversation continues. Reset it with `/chat new`.
 
 | Command | Description | Example |
 |---|---|---|
-| `/models` | List all available models from the agent CLI with descriptions and aliases. | `/models` |
-| `/model [name]` | Switch active model for future tasks. | `/model flash` or `/model claude-sonnet-4-6` |
+| `/model [name\|refresh]` | List all available models with descriptions and aliases, refresh the catalog, or switch active model for future tasks. | `/model`, `/model flash`, `/model refresh` |
 | `/effort [level]` | Show or set the agent reasoning effort: `auto`, `low`, `medium`, `high`, `xhigh`, `max`. Without a level — current value and selection buttons. | `/effort high` |
 | `/agent [name]` | Switch the active agent engine (`agy` or `claude`). | `/agent claude` |
 | `/mode [mcp|api]` | Switch agent execution mode (local agent with the bot's MCP tools, or direct API with workspace file tools). | `/mode mcp` |
