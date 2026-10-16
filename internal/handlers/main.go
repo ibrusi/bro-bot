@@ -86,7 +86,7 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	ctx := context.Background()
 	if savedProj, err := sqliteStorage.GetSetting(ctx, "current_project"); err == nil && savedProj != "" {
 		// Значение приходит из базы, но проверяем его так же, как ввод пользователя:
-		// в базу оно когда-то попало из команды /use.
+		// в базу оно когда-то попало из команды /project.
 		if projPath, pathErr := utils.SafeJoinSegment(config.ProjectsRoot, savedProj); pathErr != nil {
 			log.Printf("stored project %q rejected: %v", savedProj, pathErr)
 		} else if fi, err := os.Stat(projPath); err == nil && fi.IsDir() {
@@ -155,8 +155,7 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	onCmd("mode", handleMode)
 	onCmd("usage", handleUsage)
 	onCmd("limits", handleUsage)
-	onCmd("projects", handleProjects)
-	onCmd("use", handleUse)
+	onCmd("project", handleProject)
 	onCmd("clone", handleCloneCommand)
 	onCmd("task", handleTask)
 	onCmd("add", handleAdd)
@@ -282,7 +281,7 @@ func getDefaultCommands(lang string) []ports.BotCommand {
 		"status", "tasks", "task", "plan", "planmode", "approve", "planfile", "history",
 		"add", "chat", "chatmode", "new", "resume", "retry", "pause", "cancel",
 		"tokens", "context", "top", "usage", "model", "effort", "agent", "mode",
-		"projects", "use", "clone", "script", "language", "restart", "rebuild", "start",
+		"project", "clone", "script", "language", "restart", "rebuild", "start",
 	}
 
 	cmds := make([]ports.BotCommand, 0, len(names))
