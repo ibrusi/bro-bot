@@ -148,7 +148,6 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	onCmd("tokens", handleTokens)
 	onCmd("stats", handleStats)
 	onCmd("context", handleContext)
-	onCmd("models", handleModels)
 	onCmd("model", handleModel)
 	onCmd("effort", handleEffort)
 	t.OnCallback(effortCallbackAction, onEffortSel)
@@ -282,7 +281,7 @@ func getDefaultCommands(lang string) []ports.BotCommand {
 	names := []string{
 		"status", "tasks", "task", "plan", "planmode", "approve", "planfile", "history",
 		"add", "chat", "chatmode", "new", "resume", "retry", "pause", "cancel",
-		"tokens", "context", "top", "usage", "models", "model", "effort", "agent", "mode",
+		"tokens", "context", "top", "usage", "model", "effort", "agent", "mode",
 		"projects", "use", "clone", "script", "language", "restart", "rebuild", "start",
 	}
 

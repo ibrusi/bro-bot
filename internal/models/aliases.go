@@ -2,7 +2,7 @@ package models
 
 import "strings"
 
-// AliasHint — псевдоним, который /models показывает в подсказке, и название модели,
+// AliasHint — псевдоним, который /model показывает в подсказке, и название модели,
 // на которую он указывает.
 type AliasHint struct {
 	Alias string
@@ -20,7 +20,7 @@ type Aliases struct {
 }
 
 // NewAliases создаёт набор псевдонимов. Имена приводятся к нижнему регистру, как и ввод
-// пользователя в Resolve; hints — подсказки для /models в порядке показа.
+// пользователя в Resolve; hints — подсказки для /model в порядке показа.
 func NewAliases(byName map[string]string, hints ...AliasHint) Aliases {
 	normalized := make(map[string]string, len(byName))
 	for name, model := range byName {
@@ -38,7 +38,7 @@ func (a Aliases) Resolve(name string) (string, bool) {
 	return model, ok
 }
 
-// Hints возвращает подсказки для /models.
+// Hints возвращает подсказки для /model.
 func (a Aliases) Hints() []AliasHint {
 	return append([]AliasHint(nil), a.hints...)
 }

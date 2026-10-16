@@ -279,7 +279,6 @@ func TestGetDefaultCommands(t *testing.T) {
 		"context",
 		"top",
 		"usage",
-		"models",
 		"model",
 		"projects",
 		"use",
@@ -311,6 +310,9 @@ func TestGetDefaultCommands(t *testing.T) {
 		if !seen[req] {
 			t.Errorf("expected command '%s' to be present in getDefaultCommands", req)
 		}
+	}
+	if seen["models"] {
+		t.Errorf("command 'models' should not be present in getDefaultCommands after merging into 'model'")
 	}
 }
 
@@ -2080,12 +2082,16 @@ func TestStartGreetingAndMenuModeDescription(t *testing.T) {
 func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 	mt := setupTestApp(t)
 
-	modelsHandler, ok := mt.commands["models"]
-	if !ok {
-		t.Fatalf("models command handler not found")
+	if _, exists := mt.commands["models"]; exists {
+		t.Fatalf("models command handler should not be registered after merging into /model")
 	}
 
-	// 1. Проверяем /models refresh для agy (может вернуть ошибку или кэшированный список, если agy не установлен)
+	modelHandler, ok := mt.commands["model"]
+	if !ok {
+		t.Fatalf("model command handler not found")
+	}
+
+	// 1. Проверяем /model refresh для agy (может вернуть ошибку или кэшированный список, если agy не установлен)
 	if _, err := SwitchActiveAgent("agy"); err != nil {
 		t.Fatalf("SwitchActiveAgent(agy) failed: %v", err)
 	}
@@ -2096,19 +2102,19 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 		Sender:  string(testChatID),
 		ArgsVal: []string{"refresh"},
 	}
-	if err := modelsHandler(sessAgy); err != nil {
-		t.Fatalf("modelsHandler with agy failed: %v", err)
+	if err := modelHandler(sessAgy); err != nil {
+		t.Fatalf("modelHandler with agy failed: %v", err)
 	}
 
 	lastAgy := mt.LastSent()
 	if lastAgy == nil {
-		t.Fatalf("expected message from /models refresh (agy)")
+		t.Fatalf("expected message from /model refresh (agy)")
 	}
 	if !strings.Contains(lastAgy.Text, "gemini") && !strings.Contains(lastAgy.Text, "Failed to sync") {
 		t.Errorf("expected agy models message to contain gemini or sync error, got: %s", lastAgy.Text)
 	}
 
-	// 2. Переключаемся на claude и проверяем /models refresh
+	// 2. Переключаемся на claude и проверяем /model refresh
 	t.Setenv("CLAUDE_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 
@@ -2122,13 +2128,13 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 		Sender:  string(testChatID),
 		ArgsVal: []string{"refresh"},
 	}
-	if err := modelsHandler(sessClaude); err != nil {
-		t.Fatalf("modelsHandler with claude failed: %v", err)
+	if err := modelHandler(sessClaude); err != nil {
+		t.Fatalf("modelHandler with claude failed: %v", err)
 	}
 
 	lastClaude := mt.LastSent()
 	if lastClaude == nil {
-		t.Fatalf("expected message from /models refresh (claude)")
+		t.Fatalf("expected message from /model refresh (claude)")
 	}
 	// Без ключа API mcp-адаптер claude отдаёт псевдонимы (sonnet/opus/fable):
 	// зашитых версий, которые протухают, в списке больше нет.
@@ -2142,7 +2148,7 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 		t.Errorf("claude models message should not contain gemini models, got: %s", lastClaude.Text)
 	}
 
-	// 3. Переключаемся обратно на agy и проверяем /models refresh
+	// 3. Переключаемся обратно на agy и проверяем /model refresh
 	if _, err := SwitchActiveAgent("agy"); err != nil {
 		t.Fatalf("SwitchActiveAgent(agy) failed: %v", err)
 	}
@@ -2153,13 +2159,13 @@ func TestModelsRefreshCommand_BothAgents(t *testing.T) {
 		Sender:  string(testChatID),
 		ArgsVal: []string{"refresh"},
 	}
-	if err := modelsHandler(sessAgy2); err != nil {
-		t.Fatalf("modelsHandler with agy back failed: %v", err)
+	if err := modelHandler(sessAgy2); err != nil {
+		t.Fatalf("modelHandler with agy back failed: %v", err)
 	}
 
 	lastAgy2 := mt.LastSent()
 	if lastAgy2 == nil {
-		t.Fatalf("expected message from /models refresh (agy back)")
+		t.Fatalf("expected message from /model refresh (agy back)")
 	}
 	if !strings.Contains(lastAgy2.Text, "gemini") && !strings.Contains(lastAgy2.Text, "Failed to sync") {
 		t.Errorf("expected agy back models message to contain gemini or sync error, got: %s", lastAgy2.Text)

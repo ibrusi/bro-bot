@@ -66,7 +66,7 @@
     - `agy`: `default`, `flash`, `flash-high`, `flash-low`, `pro`, `pro-low`, `sonnet` (Claude Sonnet 5.5), `opus` (Claude Opus 5.5), `oss`. Claude Haiku в каталоге `agy` нет.
     - `claude`: `default`, `sonnet` (Claude Sonnet 5.5), `opus` (Claude Opus 5.5), `haiku` (Claude Haiku 5.5), `sonnet-5`.
     - Алиас другого агента не применяется: бот подскажет переключиться через `/agent`.
-  - Мгновенная смена активной модели (`/models`, `/model <имя|алиас>`).
+  - Просмотр списка и мгновенная смена активной модели (`/model`, `/model <имя|алиас>`, `/model refresh`).
   - Управление усилием рассуждений (`/effort [auto|low|medium|high|xhigh|max]`): уровень общий для `agy` и `claude` и сохраняется между перезапусками.
 - **Мониторинг квот, токенов и контекста**:
   - `/usage` (or `/limits`) — актуальные остатки квот и баланс кредитов аккаунта Antigravity (`agy /quota`, `agy /credits`).
@@ -476,8 +476,7 @@ journalctl -u bro-bot.service -f
 
 | Команда | Описание | Пример |
 |---|---|---|
-| `/models` | Список всех доступных моделей из Antigravity CLI с их описанием и алиасами. | `/models` |
-| `/model [имя]` | Переключить активную модель для будущих задач. | `/model flash` или `/model claude-sonnet-4-6` |
+| `/model [имя\|refresh]` | Список всех доступных моделей с описанием и алиасами, обновление каталога или переключение активной модели для будущих задач. | `/model`, `/model flash`, `/model refresh` |
 | `/effort [уровень]` | Показать или задать усилие рассуждений агента: `auto`, `low`, `medium`, `high`, `xhigh`, `max`. Без уровня — текущее значение и кнопки выбора. | `/effort high` |
 | `/agent [имя]` | Переключить активного агента между agy и claude. | `/agent claude` |
 | `/mode [mcp|api]` | Переключить режим выполнения (агент с MCP-инструментами бота или прямой API с файловыми инструментами). | `/mode mcp` |
