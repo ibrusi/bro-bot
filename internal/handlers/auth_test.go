@@ -74,9 +74,9 @@ func TestAuthMiddlewareWithoutAdmin(t *testing.T) {
 func TestCommandsGoThroughAuthMiddleware(t *testing.T) {
 	mt := setupTestApp(t)
 
-	handler, ok := mt.commands["projects"]
+	handler, ok := mt.commands["project"]
 	if !ok {
-		t.Fatal("команда /projects не зарегистрирована")
+		t.Fatal("команда /project не зарегистрирована")
 	}
 
 	stranger := &mock.Session{M: mt.Messenger, Sender: "99999", ChatID: "99999"}
@@ -93,7 +93,7 @@ func TestCommandsGoThroughAuthMiddleware(t *testing.T) {
 		t.Fatalf("обработчик вернул ошибку для администратора: %v", err)
 	}
 	if len(mt.AllTexts()) == 0 {
-		t.Error("администратору команда /projects должна отвечать")
+		t.Error("администратору команда /project должна отвечать")
 	}
 }
 
@@ -102,9 +102,9 @@ func TestCommandsGoThroughAuthMiddleware(t *testing.T) {
 func TestGroupChatIsRejectedEndToEnd(t *testing.T) {
 	mt := setupTestApp(t)
 
-	handler, ok := mt.commands["projects"]
+	handler, ok := mt.commands["project"]
 	if !ok {
-		t.Fatal("команда /projects не зарегистрирована")
+		t.Fatal("команда /project не зарегистрирована")
 	}
 
 	group := &mock.Session{M: mt.Messenger, Sender: string(testChatID), ChatID: "-1001234567890"}

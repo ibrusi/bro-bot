@@ -280,8 +280,7 @@ func TestGetDefaultCommands(t *testing.T) {
 		"top",
 		"usage",
 		"model",
-		"projects",
-		"use",
+		"project",
 		"clone",
 		"restart",
 		"rebuild",
@@ -313,6 +312,12 @@ func TestGetDefaultCommands(t *testing.T) {
 	}
 	if seen["models"] {
 		t.Errorf("command 'models' should not be present in getDefaultCommands after merging into 'model'")
+	}
+	if seen["projects"] {
+		t.Errorf("command 'projects' should not be present in getDefaultCommands after merging into 'project'")
+	}
+	if seen["use"] {
+		t.Errorf("command 'use' should not be present in getDefaultCommands after merging into 'project'")
 	}
 }
 

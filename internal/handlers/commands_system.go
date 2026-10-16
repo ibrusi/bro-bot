@@ -49,58 +49,51 @@ func handleStart(s ports.Session) error {
 	return s.Send(msg, ports.Rich())
 }
 
-// handleProjects — обработчик команды /projects.
-func handleProjects(s ports.Session) error {
-	lang := uiLang()
-
-	entries, err := os.ReadDir(config.ProjectsRoot)
-	if err != nil {
-		return s.Send(i18n.Tf(lang, "projects.read_error", err), nil)
-	}
-
-	config.ProjectState.RLock()
-	cur := config.ProjectState.CurrentProject
-	config.ProjectState.RUnlock()
-
-	var bldr strings.Builder
-	bldr.WriteString(i18n.T(lang, "projects.header"))
-
-	found := false
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		gitPath := filepath.Join(config.ProjectsRoot, e.Name(), ".git")
-		if _, err := os.Stat(gitPath); err == nil {
-			found = true
-			if e.Name() == cur {
-				bldr.WriteString(i18n.Tf(lang, "projects.active_item", html.EscapeString(e.Name())))
-			} else {
-				bldr.WriteString(i18n.Tf(lang, "projects.item", html.EscapeString(e.Name()), html.EscapeString(e.Name())))
-			}
-		}
-	}
-
-	if !found {
-		return s.Send(i18n.T(lang, "projects.empty"), ports.Rich())
-	}
-
-	bldr.WriteString(i18n.T(lang, "projects.footer"))
-	return s.Send(bldr.String(), ports.Rich())
-}
-
-// handleUse — обработчик команды /use.
-func handleUse(s ports.Session) error {
+// handleProject — обработчик команды /project: список проектов и переключение активного проекта.
+func handleProject(s ports.Session) error {
 	lang := uiLang()
 
 	args := s.Args()
 	if len(args) == 0 {
-		return s.Send(i18n.T(lang, "projects.use_usage"), ports.Rich())
+		entries, err := os.ReadDir(config.ProjectsRoot)
+		if err != nil {
+			return s.Send(i18n.Tf(lang, "projects.read_error", err), nil)
+		}
+
+		config.ProjectState.RLock()
+		cur := config.ProjectState.CurrentProject
+		config.ProjectState.RUnlock()
+
+		var bldr strings.Builder
+		bldr.WriteString(i18n.T(lang, "projects.header"))
+
+		found := false
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			gitPath := filepath.Join(config.ProjectsRoot, e.Name(), ".git")
+			if _, err := os.Stat(gitPath); err == nil {
+				found = true
+				if e.Name() == cur {
+					bldr.WriteString(i18n.Tf(lang, "projects.active_item", html.EscapeString(e.Name())))
+				} else {
+					bldr.WriteString(i18n.Tf(lang, "projects.item", html.EscapeString(e.Name()), html.EscapeString(e.Name())))
+				}
+			}
+		}
+
+		if !found {
+			return s.Send(i18n.T(lang, "projects.empty"), ports.Rich())
+		}
+
+		bldr.WriteString(i18n.T(lang, "projects.footer"))
+		return s.Send(bldr.String(), ports.Rich())
 	}
 
 	target := strings.TrimSpace(args[0])
 
-	// Без проверки имени "/use ../../etc" сделал бы рабочим каталогом агента
+	// Без проверки имени "/project ../../etc" сделал бы рабочим каталогом агента
 	// произвольную директорию хоста.
 	targetPath, err := utils.SafeJoinSegment(config.ProjectsRoot, target)
 	if err != nil {

@@ -42,7 +42,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 ## ✨ Key Features
 
 - **Project and Repository Management**:
-  - Instant switching between active project workspaces (`/projects`, `/use <name>`).
+  - Instant listing and switching between active project workspaces (`/project [name]`).
   - On-the-fly Git cloning over SSH or HTTPS (`/clone <url> [name]`) with automatic provisioning of the `AGENTS.md` rules template.
 - **Conversational Mode (default)**:
   - A plain message is a conversation with the agent about the active project: context is preserved between messages, so `/resume` is no longer needed.
@@ -472,8 +472,7 @@ so the conversation continues. Reset it with `/chat new`.
 
 | Command | Description | Example |
 |---|---|---|
-| `/projects` | List all available projects in `PROJECTS_ROOT` with the active one highlighted. | `/projects` |
-| `/use <name>` | Switch active working project. | `/use my-backend-api` |
+| `/project [name]` | List all available projects in `PROJECTS_ROOT` with the active one highlighted, or switch active working project. | `/project`, `/project my-backend-api` |
 | `/clone <url> [name]` | Clone a repository via SSH or HTTPS into `PROJECTS_ROOT`. | `/clone git@github.com:org/repo.git my-repo` |
 
 ---
