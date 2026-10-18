@@ -211,3 +211,125 @@ func assertPausedAsIncomplete(t *testing.T, mt *mockTransport, task *domain.Task
 		t.Errorf("оборванная задача не должна объявляться завершённой")
 	}
 }
+
+const agyAskQuestionEvent = `{"event":"step_update","step_update":{"step_type":"tool","state":"ACTIVE","tool_name":"ask_question",` +
+	`"tool_info":{"name":"ask_question","parameters":{"questions":[{"question":"Какой режим выбрать?","options":["Быстрый","Полный"]}]}}}}`
+
+func TestPipeline_QuestionAnswerViaFollowupDoesNotDuplicatePipeline(t *testing.T) {
+	const prURL = "https://github.com/org/repo/pull/95"
+	mt, framework, workDir := setupIncompletePipeline(t, 2,
+		mock.Step{
+			Response:    "Уточни, пожалуйста, режим.",
+			ExtraEvents: []string{agyAskQuestionEvent},
+		},
+		mock.Step{
+			Response: "Готово!\nPR_URL: " + prURL,
+		},
+	)
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "mock-model", "mock-agent", "добавить статистику", testChatID, false)
+	task.Update(func(ts *domain.TaskSession) { ts.Status = domain.TaskStatusRunning })
+	_, _ = domain.GlobalTaskManager.SetActiveTask(task.Snapshot().ID)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runAgentTaskPipeline(mt.Messenger, testChatID, task, workDir, config.ProjectsRoot)
+	}()
+
+	waitFor(t, "переход задачи в ожидание ответа", func() bool {
+		v := task.Snapshot()
+		return v.Status == domain.TaskStatusWaitingInput && !v.HasLiveProcess && v.HasActivePipeline
+	})
+
+	taskID := task.Snapshot().ID
+	sess := adminSession(mt, &mock.Session{TextVal: "Полный"})
+	if err := handleAddFollowupToTask(sess, taskID, "Полный"); err != nil {
+		t.Fatalf("handleAddFollowupToTask: %v", err)
+	}
+
+	<-done
+
+	calls := framework.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("ожидалось ровно 2 запуска агента (вопрос + продолжение), получено %d", len(calls))
+	}
+	if calls[1].Prompt != "Полный" {
+		t.Errorf("промпт второго шага = %q, ожидали %q", calls[1].Prompt, "Полный")
+	}
+
+	lang := i18n.Active()
+	delivered := i18n.Tf(lang, "task.answer_delivered", taskID, "testproj")
+	if !sentTextsContain(mt, delivered) {
+		t.Errorf("не отправлено подтверждение доставки ответа %q", delivered)
+	}
+
+	completedPrefix := i18n.Tf(lang, "pipeline.completed_with_pr", taskID, "testproj", prURL)
+	completedCount := 0
+	for _, text := range mt.AllTexts() {
+		if strings.Contains(text, completedPrefix) {
+			completedCount++
+		}
+	}
+	if completedCount != 1 {
+		t.Errorf("сообщение о завершении задачи отправлено %d раз, ожидали ровно 1", completedCount)
+	}
+}
+
+func TestPipeline_QuestionAnswerViaInlineButtonDoesNotDuplicatePipeline(t *testing.T) {
+	const prURL = "https://github.com/org/repo/pull/96"
+	mt, framework, workDir := setupIncompletePipeline(t, 2,
+		mock.Step{
+			Response:    "Выбери вариант.",
+			ExtraEvents: []string{agyAskQuestionEvent},
+		},
+		mock.Step{
+			Response: "Готово!\nPR_URL: " + prURL,
+		},
+	)
+
+	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "mock-model", "mock-agent", "настроить кеш", testChatID, false)
+	task.Update(func(ts *domain.TaskSession) { ts.Status = domain.TaskStatusRunning })
+	_, _ = domain.GlobalTaskManager.SetActiveTask(task.Snapshot().ID)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runAgentTaskPipeline(mt.Messenger, testChatID, task, workDir, config.ProjectsRoot)
+	}()
+
+	waitFor(t, "переход задачи в ожидание ответа", func() bool {
+		v := task.Snapshot()
+		return v.Status == domain.TaskStatusWaitingInput && !v.HasLiveProcess && v.HasActivePipeline
+	})
+
+	taskID := task.Snapshot().ID
+	cbSess := adminSession(mt, &mock.Session{
+		CB: &ports.CallbackQuery{
+			ID:          "cb-1",
+			Action:      "q_choice",
+			Payload:     "1:0",
+			MessageText: "Вопрос агента",
+		},
+	})
+	if err := mt.callbacks["q_choice"](cbSess); err != nil {
+		t.Fatalf("onQuestionChoice callback: %v", err)
+	}
+
+	<-done
+
+	calls := framework.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("ожидалось ровно 2 запуска агента, получено %d", len(calls))
+	}
+	if calls[1].Prompt != "Быстрый" {
+		t.Errorf("промпт второго шага = %q, ожидали %q", calls[1].Prompt, "Быстрый")
+	}
+
+	lang := i18n.Active()
+	optDelivered := i18n.Tf(lang, "task.option_delivered", 1, taskID, "Быстрый")
+	if !sentTextsContain(mt, optDelivered) {
+		t.Errorf("не отправлено подтверждение выбора варианта %q", optDelivered)
+	}
+}
+

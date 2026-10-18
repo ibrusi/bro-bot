@@ -45,6 +45,15 @@ func runAgentPipeline(m ports.Messenger, chat ports.ChatID, workDir, projectName
 // снимок конфигурации, который переписывается при старте бота. Читать его по ходу
 // работы значит гонку, которую видит детектор гонок в тестах, перезапускающих бота.
 func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, workDir, projectsRoot string) {
+	if task == nil {
+		return
+	}
+	pipelineGen, ok := task.BeginPipeline()
+	if !ok {
+		return
+	}
+	defer task.EndPipeline(pipelineGen)
+
 	// Язык интерфейса снимаем один раз на весь прогон: пайплайн живёт минутами,
 	// и сообщения одной задачи не должны оказаться на разных языках, если
 	// пользователь переключит язык по ходу работы.
@@ -208,6 +217,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			t.Status = domain.TaskStatusWaitingApproval
 			t.ResetOutputLocked()
 			t.RecentLogs = nil
+			t.ReleasePipelineLocked()
 		})
 
 		syncLegacySession(task)
@@ -311,6 +321,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			hasPlan = t.Plan != ""
 			t.Status = domain.TaskStatusCompleted
 			t.FinishedAt = time.Now()
+			t.ReleasePipelineLocked()
 		})
 
 		if completed {
@@ -1043,6 +1054,7 @@ func pauseTaskForResume(task *domain.TaskSession) (convID, agent string) {
 		if agent == "" {
 			agent = "agy"
 		}
+		t.ReleasePipelineLocked()
 	})
 	syncLegacySession(task)
 	return convID, agent
@@ -1108,6 +1120,7 @@ func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.Task
 		t.Status = domain.TaskStatusFailed
 		t.FinishedAt = time.Now()
 		convID = t.ConversationID
+		t.ReleasePipelineLocked()
 	})
 
 	syncLegacySession(task)
@@ -1167,6 +1180,7 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 			if !isCancelled {
 				t.Status = domain.TaskStatusPaused
 			}
+			t.ReleasePipelineLocked()
 		})
 		syncLegacySession(task)
 
@@ -1180,6 +1194,7 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 			if t.Status == domain.TaskStatusWaitingInput {
 				t.Status = domain.TaskStatusPaused
 			}
+			t.ReleasePipelineLocked()
 		})
 		syncLegacySession(task)
 

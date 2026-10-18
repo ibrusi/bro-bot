@@ -99,6 +99,13 @@ type TaskSession struct {
 	process ports.AgentProcess
 	cancel  context.CancelFunc
 
+	// pipelineActive — работает ли сейчас горутина runAgentTaskPipeline для задачи
+	// (в том числе между шагами и во время ожидания ответа в waitForTaskInput).
+	// pipelineGen защищает от гонки, когда старая горутина завершается в defer уже
+	// после того, как задача была поставлена на паузу и тут же запущена заново.
+	pipelineActive bool
+	pipelineGen    uint64
+
 	// outputTruncated — FullOutput упёрся в потолок; дальше вывод не копится.
 	outputTruncated bool
 	// logSink принимает строки лога для записи в хранилище пачками; nil — писать
@@ -182,6 +189,49 @@ func (t *TaskSession) hasLiveProcessLocked() bool {
 	return t.process != nil
 }
 
+// BeginPipeline отмечает старт горутины пайплайна задачи и возвращает номер её
+// поколения. Если пайплайн уже активен, возвращает (0, false), предотвращая
+// параллельный запуск второй горутины на одну задачу.
+func (t *TaskSession) BeginPipeline() (uint64, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.pipelineActive {
+		return 0, false
+	}
+	t.pipelineGen++
+	t.pipelineActive = true
+	return t.pipelineGen, true
+}
+
+// EndPipeline снимает отметку активности пайплайна при выходе из горутины,
+// если поколение совпадает с текущим.
+func (t *TaskSession) EndPipeline(gen uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.pipelineGen == gen {
+		t.pipelineActive = false
+	}
+}
+
+// ReleasePipelineLocked освобождает признак активного пайплайна под уже захваченным
+// мьютексом задачи (при переходе в паузу, ожидание утверждения плана или завершение).
+func (t *TaskSession) ReleasePipelineLocked() {
+	t.pipelineActive = false
+	t.pipelineGen++
+}
+
+// HasActivePipeline сообщает, активен ли сейчас пайплайн задачи (жива горутина
+// пайплайна или привязан процесс шага).
+func (t *TaskSession) HasActivePipeline() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.hasActivePipelineLocked()
+}
+
+func (t *TaskSession) hasActivePipelineLocked() bool {
+	return t.pipelineActive || t.process != nil
+}
+
 // terminateLocked останавливает процесс шага: отмена контекста обрывает API-стрим и
 // убивает CLI-процесс через CommandContext, Kill добивает группу процессов у CLI и
 // закрывает pipe у API. Все вызовы неблокирующие, держать мьютекс безопасно.
@@ -194,6 +244,7 @@ func (t *TaskSession) terminateLocked() {
 	}
 	t.process = nil
 	t.cancel = nil
+	t.ReleasePipelineLocked()
 }
 
 // writeStdinLocked передаёт строку в stdin агента, если процесс запущен.
@@ -274,10 +325,11 @@ type TaskView struct {
 	QuestionAskedAt time.Time
 	Duration        time.Duration
 
-	// IsActive и HasLiveProcess лежат в снимке, чтобы статус задачи и наличие живого
-	// процесса читались вместе: раздельные вызовы могли бы застать разные моменты.
-	IsActive       bool
-	HasLiveProcess bool
+	// IsActive, HasLiveProcess и HasActivePipeline лежат в снимке, чтобы статус задачи
+	// и состояние процесса/пайплайна читались вместе: раздельные вызовы могли бы застать разные моменты.
+	IsActive          bool
+	HasLiveProcess    bool
+	HasActivePipeline bool
 
 	RecentLogs       []string
 	PendingFollowups []string
@@ -320,8 +372,9 @@ func (t *TaskSession) Snapshot() TaskView {
 		QuestionAskedAt: t.QuestionAskedAt,
 		Duration:        t.durationLocked(),
 
-		IsActive:       t.isActiveLocked(),
-		HasLiveProcess: t.hasLiveProcessLocked(),
+		IsActive:          t.isActiveLocked(),
+		HasLiveProcess:    t.hasLiveProcessLocked(),
+		HasActivePipeline: t.hasActivePipelineLocked(),
 
 		RecentLogs:       append([]string(nil), t.RecentLogs...),
 		PendingFollowups: append([]string(nil), t.PendingFollowups...),
@@ -882,7 +935,7 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 
 	// Если задача всё ещё ждёт ввода в живом пайплайне
 	if task.Status == TaskStatusWaitingInput {
-		if task.hasLiveProcessLocked() {
+		if task.hasActivePipelineLocked() {
 			if answer != "" {
 				task.writeStdinLocked(answer)
 				if task.AnswerChan == nil {
@@ -902,7 +955,7 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 			tm.Unlock()
 			return task, nil
 		}
-		// Если процесс не запущен (например, после рестарта или завершения шага), продолжаем логику возобновления
+		// Если пайплайн не запущен (например, после рестарта бота), продолжаем логику возобновления
 	}
 
 	// Задача была в TaskStatusPaused
@@ -1058,8 +1111,15 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 		return resumedTask, 0, true, err
 	}
 
-	// Если задача ждёт ответа на вопрос (ask_question): DeliverAnswer сам пишет в stdin.
+	// Если задача ждёт ответа на вопрос (ask_question):
+	// при живом пайплайне передаём ответ в AnswerChan/stdin, а после рестарта бота —
+	// возобновляем задачу через ResumeTask.
 	if task.Status == TaskStatusWaitingInput {
+		if !task.hasActivePipelineLocked() {
+			task.mu.Unlock()
+			resumedTask, err := tm.ResumeTask(id, text)
+			return resumedTask, 0, true, err
+		}
 		task.mu.Unlock()
 		task.DeliverAnswer(text)
 		return task, 0, true, nil

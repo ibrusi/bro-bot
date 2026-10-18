@@ -1391,3 +1391,116 @@ func TestSnapshotAndUpdateAreRaceFree(t *testing.T) {
 		t.Error("снимок потерял идентификатор задачи")
 	}
 }
+
+func TestTaskSessionPipelineLifecycleAndSingleFlight(t *testing.T) {
+	tm := NewTaskManager()
+	task := tm.CreateTask("proj", "m", "тест пайплайна", testChatID)
+
+	if task.HasActivePipeline() || task.Snapshot().HasActivePipeline {
+		t.Fatal("у новой задачи пайплайн не должен числиться активным")
+	}
+
+	gen1, ok := task.BeginPipeline()
+	if !ok || gen1 == 0 {
+		t.Fatalf("первый BeginPipeline должен пройти успешно: gen=%d, ok=%v", gen1, ok)
+	}
+	if !task.HasActivePipeline() || !task.Snapshot().HasActivePipeline {
+		t.Fatal("после BeginPipeline пайплайн должен быть активен")
+	}
+
+	// Повторный запуск на уже работающем пайплайне обязан отклоняться (single-flight).
+	if genDup, okDup := task.BeginPipeline(); okDup || genDup != 0 {
+		t.Fatalf("повторный BeginPipeline должен вернуть (0, false), получено (%d, %v)", genDup, okDup)
+	}
+
+	// Пауза задачи в ожидании ввода сбрасывает активный пайплайн и сдвигает поколение.
+	task.mu.Lock()
+	task.Status = TaskStatusWaitingInput
+	task.mu.Unlock()
+	if !task.PauseTask() {
+		t.Fatal("PauseTask должен перевести задачу в паузу")
+	}
+	if task.HasActivePipeline() {
+		t.Fatal("после PauseTask пайплайн должен освободиться")
+	}
+
+	// Новый запуск после паузы получает новое поколение, и запоздавший EndPipeline(gen1)
+	// от старой горутины не должен сбросить активность нового прогона.
+	gen2, ok := task.BeginPipeline()
+	if !ok || gen2 <= gen1 {
+		t.Fatalf("новый BeginPipeline после паузы должен выдать поколение > %d, получено (%d, %v)", gen1, gen2, ok)
+	}
+	task.EndPipeline(gen1)
+	if !task.HasActivePipeline() {
+		t.Fatal("EndPipeline со старым поколением не должен сбрасывать активный новый пайплайн")
+	}
+	task.EndPipeline(gen2)
+	if task.HasActivePipeline() {
+		t.Fatal("EndPipeline с актуальным поколением должен завершить пайплайн")
+	}
+}
+
+func TestAddFollowupWaitingInputWithAndWithoutActivePipeline(t *testing.T) {
+	tm := NewTaskManager()
+
+	// 1. Живой пайплайн ждёт ответа в waitForTaskInput (процесс шага уже отвязан):
+	// AddFollowup доставляет ответ в AnswerChan и не сбрасывает статус через ResumeTask.
+	liveTask := tm.CreateTask("proj-live", "m1", "задача с вопросом", testChatID)
+	gen, ok := liveTask.BeginPipeline()
+	if !ok {
+		t.Fatal("BeginPipeline не запустился")
+	}
+	defer liveTask.EndPipeline(gen)
+
+	liveTask.Update(func(ts *TaskSession) {
+		ts.Status = TaskStatusWaitingInput
+		ts.LastQuestion = "Какой вариант?"
+		ts.QuestionOptions = []string{"A", "B"}
+	})
+
+	gotTask, qLen, isAnswer, err := tm.AddFollowup(liveTask.ID, "Вариант A")
+	if err != nil {
+		t.Fatalf("AddFollowup вернул ошибку: %v", err)
+	}
+	if !isAnswer || qLen != 0 || gotTask != liveTask {
+		t.Fatalf("неожиданный результат AddFollowup: isAnswer=%v, qLen=%d", isAnswer, qLen)
+	}
+	select {
+	case ans := <-liveTask.AnswerChannel():
+		if ans != "Вариант A" {
+			t.Errorf("в AnswerChannel пришло %q, ожидали %q", ans, "Вариант A")
+		}
+	default:
+		t.Fatal("ответ должен быть доставлен в AnswerChannel живого пайплайна")
+	}
+
+	// 2. Задача в TaskStatusWaitingInput после рестарта бота (пайплайн не активен):
+	// AddFollowup возобновляет её через ResumeTask, переводя в Running, и не засоряет AnswerChan.
+	restartedTask := tm.CreateTask("proj-restarted", "m1", "задача после рестарта", testChatID)
+	restartedTask.Update(func(ts *TaskSession) {
+		ts.Status = TaskStatusWaitingInput
+		ts.ConversationID = "conv-restart-1"
+		ts.LastQuestion = "Продолжать?"
+	})
+
+	resumed, qLen2, isAnswer2, err := tm.AddFollowup(restartedTask.ID, "Да, продолжай")
+	if err != nil {
+		t.Fatalf("AddFollowup после рестарта вернул ошибку: %v", err)
+	}
+	if !isAnswer2 || qLen2 != 0 {
+		t.Fatalf("ожидали isAnswer=true и qLen=0, получено isAnswer=%v, qLen=%d", isAnswer2, qLen2)
+	}
+	view := resumed.Snapshot()
+	if view.Status != TaskStatusRunning {
+		t.Errorf("статус после возобновления = %s, ожидали %s", view.Status, TaskStatusRunning)
+	}
+	if view.CurrentPrompt != "Да, продолжай" {
+		t.Errorf("CurrentPrompt = %q, ожидали %q", view.CurrentPrompt, "Да, продолжай")
+	}
+	select {
+	case stale := <-restartedTask.AnswerChannel():
+		t.Errorf("AnswerChannel не должен содержать непрочитанный ответ после ResumeTask, получено %q", stale)
+	default:
+	}
+}
+
