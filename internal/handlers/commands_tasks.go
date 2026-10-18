@@ -292,7 +292,7 @@ func onQuestionChoice(s ports.Session) error {
 	if optIdx >= 0 && optIdx < len(view3.QuestionOptions) {
 		chosenText = view3.QuestionOptions[optIdx]
 	}
-	cmdIsNil := !task.HasLiveProcess()
+	hasPipeline := view3.HasActivePipeline
 
 	if chosenText == "" {
 		return s.Respond(i18n.T(lang, "task.toast_option_missing"))
@@ -306,7 +306,7 @@ func onQuestionChoice(s ports.Session) error {
 	}
 
 	if status == domain.TaskStatusWaitingInput {
-		if !cmdIsNil {
+		if hasPipeline {
 			task.DeliverAnswer(chosenText)
 			return s.Send(i18n.Tf(lang, "task.option_delivered", optIdx+1, taskID, html.EscapeString(chosenText)), ports.Rich())
 		}
@@ -675,11 +675,8 @@ func handleResume(s ports.Session) error {
 
 	if status == domain.TaskStatusWaitingInput {
 		if answer != "" {
-			view11 := task.Snapshot()
-			proj := view11.Project
-			cmdIsNil := !task.HasLiveProcess()
-
-			if !cmdIsNil {
+			proj := view10.Project
+			if view10.HasActivePipeline {
 				task.DeliverAnswer(answer)
 				return s.Send(i18n.Tf(lang, "task.answer_delivered", targetID, html.EscapeString(proj)), ports.Rich())
 			}
@@ -984,7 +981,7 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 
 	view12 := task.Snapshot()
 	status := view12.Status
-	cmdIsNil := !task.HasLiveProcess()
+	hadActivePipeline := view12.HasActivePipeline
 
 	if status == domain.TaskStatusWaitingApproval {
 		if isConfirmationText(text) {
@@ -993,7 +990,7 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 		return handleRevisePlan(s.Messenger(), s.Chat(), taskID, text)
 	}
 
-	if (status == domain.TaskStatusPaused || status == domain.TaskStatusCancelled || (status == domain.TaskStatusWaitingInput && cmdIsNil)) && HasAgentConflict(task, ActiveAgentName()) {
+	if (status == domain.TaskStatusPaused || status == domain.TaskStatusCancelled || (status == domain.TaskStatusWaitingInput && !hadActivePipeline)) && HasAgentConflict(task, ActiveAgentName()) {
 		task.Update(func(t *domain.TaskSession) {
 			t.CurrentPrompt = text
 		})
@@ -1012,39 +1009,28 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 		view13 := task.Snapshot()
 		curStatus := view13.Status
 		proj := view13.Project
-		cmdIsNil = !task.HasLiveProcess()
+
+		if hadActivePipeline || view13.HasActivePipeline {
+			return s.Send(i18n.Tf(lang, "task.answer_delivered", taskID, html.EscapeString(proj)), ports.Rich())
+		}
 
 		if curStatus == domain.TaskStatusQueued {
 			return s.Send(i18n.Tf(lang, "task.queued_with_answer",
 				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
-		} else if (curStatus == domain.TaskStatusRunning || curStatus == domain.TaskStatusWaitingInput) && cmdIsNil {
-			if HasAgentConflict(task, ActiveAgentName()) {
-				task.Update(func(t *domain.TaskSession) {
-					t.CurrentPrompt = text
-				})
-				domain.GlobalTaskManager.SaveTask(task)
-				return sendAgentConflictDialog(s, task)
-			}
-			task.Update(func(t *domain.TaskSession) {
-				if t.RequiresPlan && !t.PlanApproved {
-					t.Status = domain.TaskStatusPlanning
-				} else {
-					t.Status = domain.TaskStatusRunning
-				}
-				t.StartedAt = time.Now()
-				t.CurrentPrompt = text
-				t.LastQuestion = ""
-				t.QuestionOptions = nil
-			})
-			syncLegacySession(task)
-
-			workDir := filepath.Join(config.ProjectsRoot, proj)
-			go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir, config.ProjectsRoot)
-			return s.Send(i18n.Tf(lang, "task.resumed_with_followup",
-				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
 		}
 
-		return s.Send(i18n.Tf(lang, "task.answer_delivered", taskID, html.EscapeString(task.Snapshot().Project)), ports.Rich())
+		if HasAgentConflict(task, ActiveAgentName()) {
+			task.Update(func(t *domain.TaskSession) {
+				t.CurrentPrompt = text
+			})
+			domain.GlobalTaskManager.SaveTask(task)
+			return sendAgentConflictDialog(s, task)
+		}
+
+		workDir := filepath.Join(config.ProjectsRoot, proj)
+		go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir, config.ProjectsRoot)
+		return s.Send(i18n.Tf(lang, "task.resumed_with_followup",
+			taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
 	}
 
 	msg := i18n.Tf(lang, "task.followup_saved",
