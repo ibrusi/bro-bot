@@ -48,7 +48,9 @@ func adapterMatchesMode(framework ports.AgentFramework, targetMode string) bool 
 		return false
 	}
 	if aware, ok := framework.(ports.ModeAwareFramework); ok {
-		return strings.EqualFold(aware.ExecutionMode(), targetMode)
+		if mode := aware.ExecutionMode(); mode != "" {
+			return strings.EqualFold(mode, targetMode)
+		}
 	}
 	return true
 }

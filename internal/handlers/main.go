@@ -77,8 +77,6 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	domain.GlobalTaskManager.InitWithStorage(sqliteStorage)
 	domain.GlobalChatManager.InitWithStorage(sqliteStorage)
 
-	models.GlobalModelRegistry = models.NewModelRegistry(10 * time.Minute)
-
 	initDefaultProject(cfg.ProjectsRoot, cfg.DefaultProject)
 	initDefaultModel(cfg.DefaultModel)
 
@@ -131,6 +129,8 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 
 	savedAgent, _ := sqliteStorage.GetSetting(ctx, "current_agent")
 	initActiveAgent(savedAgent)
+
+	models.GlobalModelRegistry = models.NewModelRegistry(10 * time.Minute)
 
 	registerBotCommands(t)
 

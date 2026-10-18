@@ -315,7 +315,7 @@ step3-service:
 	@echo "$(MSG_STEP3_TITLE)"
 	@if [ ! -f $(SERVICE_FILE) ]; then \
 		echo "$(MSG_STEP3_CREATING)"; \
-		printf "[Unit]\nDescription=Bro Bot Agent Service\nAfter=network.target\n\n[Service]\nType=simple\nUser=$(DEPLOY_USER)\nWorkingDirectory=$(REPO_DIR)\nExecStart=$(REPO_DIR)/bot\nRestart=always\nRestartSec=5\nEnvironmentFile=-$(REPO_DIR)/.env\n\n[Install]\nWantedBy=multi-user.target\n" > $(SERVICE_FILE); \
+		printf "[Unit]\nDescription=Bro Bot Agent Service\nAfter=network.target\n\n[Service]\nType=simple\nUser=$(DEPLOY_USER)\nWorkingDirectory=$(REPO_DIR)\nExecStart=$(REPO_DIR)/bot\nRestart=always\nRestartSec=5\nOOMPolicy=continue\nEnvironmentFile=-$(REPO_DIR)/.env\n\n[Install]\nWantedBy=multi-user.target\n" > $(SERVICE_FILE); \
 		systemctl daemon-reload; \
 		systemctl enable $(BOT_NAME).service; \
 	else \

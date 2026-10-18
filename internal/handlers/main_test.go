@@ -1558,6 +1558,41 @@ func setupTestApp(t *testing.T) *mockTransport {
 	if err := Start(mt, testAgentRegistry(), cfg); err != nil {
 		t.Fatalf("запуск тестового бота: %v", err)
 	}
+
+	t.Cleanup(func() {
+		if domain.GlobalTaskManager == nil {
+			return
+		}
+		for _, task := range domain.GlobalTaskManager.ListTasks() {
+			snap := task.Snapshot()
+			if snap.Status != domain.TaskStatusCompleted && snap.Status != domain.TaskStatusCancelled {
+				_, _ = domain.GlobalTaskManager.CancelTask(snap.ID)
+			}
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			active := false
+			for _, task := range domain.GlobalTaskManager.ListTasks() {
+				if task.HasActivePipeline() {
+					active = true
+					break
+				}
+			}
+			if !active {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		st := domain.GlobalTaskManager.Storage()
+		domain.GlobalTaskManager.InitWithStorage(nil)
+		if domain.GlobalChatManager != nil {
+			domain.GlobalChatManager.InitWithStorage(nil)
+		}
+		if st != nil {
+			_ = st.Close()
+		}
+	})
+
 	return mt
 }
 
@@ -2367,4 +2402,3 @@ func TestNoChangesValidationLogic(t *testing.T) {
 		})
 	}
 }
-

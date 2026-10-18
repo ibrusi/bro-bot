@@ -49,9 +49,17 @@ var (
 // псевдонимы моделей: ResolveModel разрешает имена в контексте этого агента.
 func SetAgent(a ports.AgentFramework, aliases Aliases) {
 	agentMu.Lock()
-	defer agentMu.Unlock()
+	changed := agent != a
 	agent = a
 	agentAliases = aliases
+	reg := GlobalModelRegistry
+	if changed && reg != nil {
+		reg.setModels(fallbackModels)
+		reg.Lock()
+		reg.lastFetched = time.Time{}
+		reg.Unlock()
+	}
+	agentMu.Unlock()
 }
 
 // CurrentAgent возвращает текущего агента реестра моделей.
@@ -265,7 +273,8 @@ func (m *ModelRegistry) RefreshModels(force bool) ([]ModelInfo, error) {
 
 	var out []byte
 	var err error
-	if currentAgent := CurrentAgent(); currentAgent != nil {
+	currentAgent := CurrentAgent()
+	if currentAgent != nil {
 		out, err = currentAgent.GetModels(ctx)
 	} else {
 		err = fmt.Errorf("Agent is not configured")
@@ -287,7 +296,17 @@ func (m *ModelRegistry) RefreshModels(force bool) ([]ModelInfo, error) {
 		return cached, errors.New("models: the model list came back empty")
 	}
 
+	agentMu.RLock()
+	if agent != currentAgent {
+		agentMu.RUnlock()
+		m.RLock()
+		cached := m.models
+		m.RUnlock()
+		return cached, nil
+	}
 	m.setModels(parsed)
+	agentMu.RUnlock()
+
 	return parsed, nil
 }
 
