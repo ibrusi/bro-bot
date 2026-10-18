@@ -380,6 +380,7 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 TimeoutStopSec=15
 KillMode=mixed
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target
