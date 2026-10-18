@@ -18,6 +18,11 @@ type AgentFramework struct {
 
 	// Name — имя агента, попадает в ошибки и удобно для отладки тестов.
 	Name string
+	// Mode — режим выполнения ("mcp" или "api") для проверки ModeAwareFramework.
+	// Пустое значение означает универсальный мок, подходящий к любому режиму.
+	Mode string
+	// DisableEffort — если true, SupportsEffort() возвращает false (имитация адаптера без поддержки /effort).
+	DisableEffort bool
 	// ConversationID — идентификатор сессии, который мок сообщает в событии system.
 	ConversationID string
 	// Response — текст ответа агента.
@@ -111,15 +116,26 @@ func (f *AgentFramework) Stopped() bool {
 	return f.stopped
 }
 
-// newHangingProcess собирает процесс, который пишет событие system и затем держит поток
-// открытым до Kill или отмены ctx — так же ведёт себя настоящий API-стрим.
+// ExecutionMode реализует ports.ModeAwareFramework.
+func (f *AgentFramework) ExecutionMode() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Mode
+}
+
+// SupportsEffort реализует ports.EffortAwareFramework.
+func (f *AgentFramework) SupportsEffort() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.DisableEffort
+}
+
+// newHangingProcess собирает процесс, который пишет событие system (если задан ConversationID)
+// и затем держит поток открытым до Kill или отмены ctx — так же ведёт себя настоящий стрим.
 func (f *AgentFramework) newHangingProcess(ctx context.Context) *AgentProcess {
 	f.mu.Lock()
 	convID := f.ConversationID
 	f.mu.Unlock()
-	if convID == "" {
-		convID = "mock-conversation"
-	}
 
 	pr, pw := io.Pipe()
 	killCh := make(chan struct{})
@@ -137,9 +153,11 @@ func (f *AgentFramework) newHangingProcess(ctx context.Context) *AgentProcess {
 
 	go func() {
 		defer close(done)
-		var bldr strings.Builder
-		writeEvent(&bldr, map[string]interface{}{"type": "system", "session_id": convID})
-		_, _ = io.WriteString(pw, bldr.String())
+		if convID != "" {
+			var bldr strings.Builder
+			writeEvent(&bldr, map[string]interface{}{"type": "system", "session_id": convID})
+			_, _ = io.WriteString(pw, bldr.String())
+		}
 
 		select {
 		case <-killCh:

@@ -10,13 +10,73 @@ import (
 	"bro-bot/internal/adapters/mock"
 	"bro-bot/internal/agents"
 	"bro-bot/internal/config"
+	"bro-bot/internal/ports"
 )
 
-// testAgentRegistry — тот же набор агентов, что собирает cmd/bot/main.go.
+const (
+	testAgyModelsOutput    = "gemini-3.8-flash-medium Gemini 3.8 Flash (Medium)\ngemini-3.1-pro-high Gemini 3.1 Pro (High)\n"
+	testClaudeModelsOutput = "sonnet Claude Sonnet\nopus Claude Opus\nfable Claude Haiku\n"
+)
+
+// testAgentRegistry собирает тот же набор спецификаций агентов, что и cmd/bot/main.go,
+// но подменяет фабрики NewMCP и NewAPI на in-memory моки, чтобы unit-тесты не запускали
+// тяжёлые внешние процессы CLI (agy, claude) и не делали сетевых вызовов.
 func testAgentRegistry() *agents.Registry {
+	reg := agents.NewRegistry()
+
+	agySpec := agy.Spec()
+	agySpec.NewMCP = func() ports.AgentFramework {
+		return &mock.AgentFramework{
+			Name:         "agy",
+			Mode:         agents.ModeMCP,
+			Hang:         true,
+			ModelsOutput: testAgyModelsOutput,
+		}
+	}
+	agySpec.NewAPI = func() ports.AgentFramework {
+		return &mock.AgentFramework{
+			Name:          "agy",
+			Mode:          agents.ModeAPI,
+			DisableEffort: true,
+			Hang:          true,
+			ModelsOutput:  testAgyModelsOutput,
+		}
+	}
+
+	claudeSpec := claude.Spec()
+	claudeSpec.NewMCP = func() ports.AgentFramework {
+		return &mock.AgentFramework{
+			Name:         "claude",
+			Mode:         agents.ModeMCP,
+			Hang:         true,
+			ModelsOutput: testClaudeModelsOutput,
+		}
+	}
+	claudeSpec.NewAPI = func() ports.AgentFramework {
+		return &mock.AgentFramework{
+			Name:         "claude",
+			Mode:         agents.ModeAPI,
+			Hang:         true,
+			ModelsOutput: testClaudeModelsOutput,
+		}
+	}
+
+	reg.Register(agySpec)
+	reg.Register(claudeSpec)
+	return reg
+}
+
+// realSpecAgentRegistry временно устанавливает боевые спецификации agy.Spec() и claude.Spec()
+// для тестов, которые проверяют только конкретные типы адаптеров без запуска задач.
+func realSpecAgentRegistry(t *testing.T) *agents.Registry {
+	t.Helper()
 	reg := agents.NewRegistry()
 	reg.Register(agy.Spec())
 	reg.Register(claude.Spec())
+	setAgentRegistry(reg)
+	t.Cleanup(func() {
+		setAgentRegistry(testAgentRegistry())
+	})
 	return reg
 }
 
@@ -141,7 +201,7 @@ func TestModeAPISwitchesWithKey(t *testing.T) {
 	}
 	if framework, _ := ActiveAgent(); framework == nil {
 		t.Error("после /mode api активный адаптер должен быть собран")
-	} else if _, ok := framework.(*agy.AgyAPIAdapter); !ok {
+	} else if aware, ok := framework.(ports.ModeAwareFramework); !ok || aware.ExecutionMode() != "api" {
 		t.Errorf("активный адаптер %T, ожидали API-адаптер agy", framework)
 	}
 }

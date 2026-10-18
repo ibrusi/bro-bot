@@ -206,6 +206,7 @@ func TestChatSurvivesModeSwitch(t *testing.T) {
 // для режимов mcp и api.
 func TestAgentFrameworkForRespectsExecutionMode(t *testing.T) {
 	setupTestApp(t)
+	realSpecAgentRegistry(t)
 
 	prevFramework, prevName := ActiveAgent()
 	// Пустой адаптер заставляет agentFrameworkFor собирать его заново — это и проверяем.
