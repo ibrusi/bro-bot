@@ -1310,7 +1310,7 @@ func sendLongMarkdown(m ports.Messenger, chat ports.ChatID, text string) {
 		return
 	}
 
-	chunks := utils.SplitMarkdown(text, 3500)
+	chunks := utils.SplitMarkdown(text, utils.SafeMessageRunes)
 	for _, chunk := range chunks {
 		chunk = strings.TrimSpace(chunk)
 		if chunk == "" {

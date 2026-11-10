@@ -109,7 +109,7 @@ func SplitTelegramHTML(text string, maxChunkLen int) []string {
 		return nil
 	}
 	if maxChunkLen <= 0 {
-		maxChunkLen = 3800
+		maxChunkLen = SafeMessageRunes
 	}
 
 	runes := []rune(text)
@@ -208,7 +208,7 @@ func SplitPlainText(text string, maxChunkLen int) []string {
 		return nil
 	}
 	if maxChunkLen <= 0 {
-		maxChunkLen = 3800
+		maxChunkLen = SafeMessageRunes
 	}
 
 	runes := []rune(text)
@@ -269,7 +269,7 @@ func SplitPlainText(text string, maxChunkLen int) []string {
 // SplitMessageByMode разбивает текст сообщения в зависимости от режима разметки (HTML, Markdown или текст).
 func SplitMessageByMode(text string, parseMode string, maxChunkLen int) []string {
 	if maxChunkLen <= 0 {
-		maxChunkLen = 3800
+		maxChunkLen = SafeMessageRunes
 	}
 	runes := []rune(text)
 	if len(runes) <= maxChunkLen {

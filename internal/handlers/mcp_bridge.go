@@ -23,13 +23,15 @@ const (
 	maxAncestorDepth = 16
 	// maxQuestionOptions — сколько вариантов ответа превращается в кнопки.
 	maxQuestionOptions = 10
-	// maxToolTextRunes ограничивает текст, который агент отправляет пользователю.
-	maxToolTextRunes = 3500
+	// maxToolMessageRunes — потолок telegram_send_message. Транспорт сам режет текст
+	// на части по utils.SafeMessageRunes; больше восьми частей один вызов не шлёт.
+	maxToolMessageRunes = utils.SafeMessageRunes * 8
 )
 
 // agentChannel — то, что агент может сделать с пользователем через инструменты бота.
 type agentChannel interface {
 	SendMessage(text string) error
+	SendFile(path, caption string) error
 	ReportProgress(status string)
 	AskUser(question string, options []string) error
 }
@@ -97,10 +99,21 @@ func (c *agentChannels) handle(_ context.Context, peerPID int, call mcp.BridgeCa
 		if message == "" {
 			return bridgeError("the message argument is required")
 		}
-		if err := ch.SendMessage(utils.TruncateString(message, maxToolTextRunes)); err != nil {
+		if err := ch.SendMessage(utils.TruncateString(message, maxToolMessageRunes)); err != nil {
 			return bridgeError("failed to deliver the message: " + err.Error())
 		}
 		return mcp.BridgeResult{Text: "The message has been delivered to the user."}
+
+	case mcp.ToolSendFile:
+		path := stringArg(call.Arguments, "path")
+		if path == "" {
+			return bridgeError("the path argument is required")
+		}
+		caption := stringArg(call.Arguments, "caption")
+		if err := ch.SendFile(path, caption); err != nil {
+			return bridgeError("failed to send the file: " + err.Error())
+		}
+		return mcp.BridgeResult{Text: "The file has been sent to the user."}
 
 	case mcp.ToolAskUser:
 		question := stringArg(call.Arguments, "question")
@@ -108,7 +121,7 @@ func (c *agentChannels) handle(_ context.Context, peerPID int, call mcp.BridgeCa
 			return bridgeError("the question argument is required")
 		}
 		options := stringsArg(call.Arguments, "options", maxQuestionOptions)
-		if err := ch.AskUser(utils.TruncateString(question, maxToolTextRunes), options); err != nil {
+		if err := ch.AskUser(utils.TruncateString(question, utils.SafeMessageRunes), options); err != nil {
 			return bridgeError("failed to ask the user: " + err.Error())
 		}
 		return mcp.BridgeResult{Text: "The question has been shown to the user. " +
@@ -160,18 +173,19 @@ func stringsArg(args map[string]interface{}, key string, limit int) []string {
 // и пайплайн задаёт его тем же путём, что и вопросы ask_question, — с кнопками,
 // ожиданием ответа и возобновлением сессии с ответом.
 type taskChannel struct {
-	m    ports.Messenger
-	chat ports.ChatID
-	task *domain.TaskSession
-	lang string
+	m       ports.Messenger
+	chat    ports.ChatID
+	task    *domain.TaskSession
+	lang    string
+	workDir string
 
 	mu       sync.Mutex
 	question string
 	options  []string
 }
 
-func newTaskChannel(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, lang string) *taskChannel {
-	return &taskChannel{m: m, chat: chat, task: task, lang: lang}
+func newTaskChannel(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, lang, workDir string) *taskChannel {
+	return &taskChannel{m: m, chat: chat, task: task, lang: lang, workDir: workDir}
 }
 
 func (c *taskChannel) SendMessage(text string) error {
@@ -184,6 +198,17 @@ func (c *taskChannel) SendMessage(text string) error {
 	if ref.ID != "" {
 		// Ответ на это сообщение должен попасть в ту же задачу.
 		domain.GlobalTaskManager.RegisterMessageTask(ref, view.ID)
+	}
+	return nil
+}
+
+func (c *taskChannel) SendFile(path, caption string) error {
+	ref, err := sendProjectFile(c.m, c.chat, c.workDir, c.lang, path, caption)
+	if err != nil {
+		return err
+	}
+	if ref.ID != "" {
+		domain.GlobalTaskManager.RegisterMessageTask(ref, c.task.Snapshot().ID)
 	}
 	return nil
 }
@@ -214,11 +239,17 @@ type chatChannel struct {
 	m          ports.Messenger
 	chat       ports.ChatID
 	lang       string
+	workDir    string
 	onProgress func(status string)
 }
 
 func (c *chatChannel) SendMessage(text string) error {
 	_, err := c.m.Send(context.Background(), c.chat, utils.MarkdownToTelegramHTML(text), ports.Rich())
+	return err
+}
+
+func (c *chatChannel) SendFile(path, caption string) error {
+	_, err := sendProjectFile(c.m, c.chat, c.workDir, c.lang, path, caption)
 	return err
 }
 

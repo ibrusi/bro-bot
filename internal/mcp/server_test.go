@@ -85,6 +85,9 @@ func TestMCPServer_ToolsList(t *testing.T) {
 	if !names["report_progress"] {
 		t.Errorf("missing tool report_progress")
 	}
+	if !names["telegram_send_file"] {
+		t.Errorf("missing tool telegram_send_file")
+	}
 }
 
 // callTool выполняет tools/call и возвращает текст и признак ошибки результата.

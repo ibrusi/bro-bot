@@ -268,8 +268,8 @@
     "plan.approval_request": "📋 <b>Implementation plan of task #%d</b> (<code>%s</code>):\n\n📝 <b>Task:</b> <i>«%s»</i>\n\n%s%s\n\n👆 <b>The plan is waiting for your approval:</b>\n• Press <b>«%s»</b> (or pick a variant) or use <code>/approve %d</code>.\n• To amend it, send <code>/add %d &lt;notes&gt;</code> or reply to the message.\n• To cancel: <b>«%s»</b> or <code>/cancel %d</code>.",
     "plan.empty_fallback": "The agent did not produce a detailed plan. You can add notes to the task or approve it as is.",
 
-    "chat.system_preamble": "CHAT MODE. You answer the user's questions about the project in chat.\nAllowed: read files, search the code, run safe read-only commands (git log, git status, ls, grep), explain the architecture and propose solutions in words.\nFORBIDDEN: creating git branches, changing, creating or deleting files, committing and pushing, opening pull requests, running migrations and deployments.\nIf answering would require a code change — do not make it; briefly describe what needs to be done instead: the user will file it as a separate task.\nAnswer briefly, to the point, and in English.",
-    "chat.short_reminder": "(chat mode: read and answer only, no changes to files or git)",
+    "chat.system_preamble": "CHAT MODE. You answer the user's questions about the project in chat.\nAllowed: read files, search the code, run safe read-only commands (git log, git status, ls, grep), explain the architecture and propose solutions in words.\nFORBIDDEN: creating git branches, changing, creating or deleting files, committing and pushing, opening pull requests, running migrations and deployments.\nIf answering would require a code change — do not make it; briefly describe what needs to be done instead: the user will file it as a separate task.\nIf the user asks to save information into a file, put the full contents in the answer. The bot attaches the file. Do not edit other project files.\nAnswer briefly, to the point, and in English.",
+    "chat.short_reminder": "(chat mode: read and answer only, no changes to files or git; if the user asks for a file, put the full text in the answer and the bot will attach it)",
     "chat.prompt_previous_context": "\n\nCONTEXT OF THE PREVIOUS CONVERSATION (carried over from another agent or mode):\n",
     "chat.prompt_user_question": "\n\nUSER QUESTION:\n",
     "chat.prompt_speaker_user": "User",
@@ -723,6 +723,10 @@
     "file.too_large": "⚠️ File is too large (%s). Telegram Bot API download limit is 20 MB.",
     "file.saved_notice": "📁 File <b>%s</b> saved to <code>%s</code>",
     "file.reused_notice": "📁 File <b>%s</b> is identical to existing <code>%s</code> (reused without duplicate)",
-    "file.prompt_attachment": "📎 [Attached file: %s (%s)]"
+    "file.prompt_attachment": "📎 [Attached file: %s (%s)]",
+    "file.sent": "📎 %s",
+    "file.send_too_large": "⚠️ File <b>%s</b> is too large (%s). The Telegram limit is 20 MB.",
+    "file.outside_project": "⚠️ Path <code>%s</code> is outside the project.",
+    "file.send_failed": "❌ Failed to send the file: <code>%s</code>"
   }
 }

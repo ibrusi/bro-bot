@@ -11,6 +11,7 @@ import (
 // инструменты агенту, бот выполняет вызовы.
 const (
 	ToolSendMessage    = "telegram_send_message"
+	ToolSendFile       = "telegram_send_file"
 	ToolAskUser        = "ask_user"
 	ToolReportProgress = "report_progress"
 )
@@ -71,6 +72,26 @@ func BridgeToolDefinitions() []Tool {
 					},
 				},
 				"required": []string{"message"},
+			},
+		},
+		{
+			Name: ToolSendFile,
+			Description: "Send a file from the project directory to the user in Telegram. " +
+				"Use it when the user asks to save information into a file. " +
+				"The path must stay inside the project. Do not use it to attach ordinary source edits.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Project file path, absolute or relative to the project root",
+					},
+					"caption": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional caption shown with the file",
+					},
+				},
+				"required": []string{"path"},
 			},
 		},
 		{
