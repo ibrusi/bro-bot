@@ -50,6 +50,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Works for every agent (`agy`, `claude`, `grok`) and every execution mode that agent supports (`mcp`, `api`, `acp`); switching `/agent` or `/mode` mid-conversation keeps the thread. Grok keeps its own ACP session.
   - In chat the agent only reads the code and answers: file edits, branches, commits and PRs go through a task.
   - Controls: `/chat` (status), `/chat <question>`, `/chat new`, `/chat stop`, `/chatmode [on|off]`.
+  - While an answer is in progress, `/queue` shows what is waiting, `/btw <text>` jumps the queue, `/flush` sends it at the next boundary, and `/clearqueue` drops it without stopping the answer. `/sessions` lists the chat sessions and tasks the bot stored for the project.
 - **Intelligent Task Pipeline**:
   - Independent, per-project task queues.
   - Pre-planning mode (`/plan <task>`, `/planmode [on|off]`): the agent inspects the repository, composes and justifies an architectural plan, awaits user confirmation via interactive inline buttons (`/approve`, `/confirm`), and only then starts writing code.
@@ -462,6 +463,11 @@ so the conversation continues. Reset it with `/chat new`.
 | `<message>` | In conversational mode (default) — a question to the agent with preserved context; a code-change request is offered as a plan or a task. With `/chatmode off` — creates a task right away. | `How does the task pipeline work?` |
 | `/chat [question\|new\|stop]` | With no arguments — conversation status (project, agent, mode, memory kind). With text — a one-off question bypassing the classifier. `new` starts a fresh conversation, `stop` aborts the current answer. | `/chat show where commands are registered` |
 | `/chatmode [on\|off]` | Answer plain messages in chat (`on`, default) or create a task immediately (`off`). | `/chatmode off` |
+| `/queue` | Show the chat queue and the additions of the current project's task. Does not stop the running answer. | `/queue` |
+| `/clearqueue` | Clear the chat queue and the task additions. The current answer keeps running. | `/clearqueue` |
+| `/flush` | Send a waiting chat queue now, or after the current answer if one is running. A paused task is not resumed. | `/flush` |
+| `/btw <text>` | While a chat or a task is working, put the text at the front of that queue. While idle, send it as a normal message. | `/btw what should we check first?` |
+| `/sessions` | List chat sessions and tasks the bot stored for the current project. A button starts a new chat. | `/sessions` |
 | `/plan [project] <task>` | Start a task in pre-planning mode (agent inspects repo, drafts a plan, and awaits approval). | `/plan Design distributed caching architecture` |
 | `/planmode [on\|off]` | Toggle mandatory planning mode for all incoming tasks. | `/planmode on` |
 | `/approve [id]` (or `/confirm`) | Approve the agent's proposed architectural plan and trigger implementation. | `/approve 3` |

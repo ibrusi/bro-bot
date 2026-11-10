@@ -132,6 +132,62 @@ func TestChatSessionTurnIsExclusive(t *testing.T) {
 	}
 }
 
+func TestChatPendingPrependAndClear(t *testing.T) {
+	cm := NewChatManager()
+	cs := cm.GetOrCreate("proj", "model")
+
+	cs.EnqueuePending("second")
+	cs.EnqueuePending("third")
+	if n := cs.PrependPending("first"); n != 3 {
+		t.Fatalf("длина очереди = %d, ожидали 3", n)
+	}
+	got := cs.PendingTexts()
+	if len(got) != 3 || got[0] != "first" || got[1] != "second" || got[2] != "third" {
+		t.Fatalf("порядок = %#v", got)
+	}
+	// Чтение не забирает очередь.
+	if again := cs.PendingTexts(); len(again) != 3 {
+		t.Fatalf("повторное чтение изменило очередь: %#v", again)
+	}
+
+	cleared := cs.ClearPending()
+	if len(cleared) != 3 || cleared[0] != "first" {
+		t.Fatalf("очистка вернула %#v", cleared)
+	}
+	if cs.PendingTexts() != nil {
+		t.Fatalf("после очистки очередь не пуста: %#v", cs.PendingTexts())
+	}
+}
+
+func TestChatAgentSessions(t *testing.T) {
+	cm := NewChatManager()
+	cs := cm.GetOrCreate("proj", "model")
+
+	cs.SetConversationID("grok", "acp", "grok-1")
+	cs.SetConversationID("agy", "mcp", "agy-mcp")
+	cs.SetConversationID("agy", "api", "agy-api")
+	cs.SetConversationID("claude", "mcp", "claude-1")
+	cs.Lock()
+	cs.conversations["blank/mcp"] = "  "
+	cs.Unlock()
+
+	got := cs.AgentSessions()
+	if len(got) != 4 {
+		t.Fatalf("сессий %d, ожидали 4: %#v", len(got), got)
+	}
+	want := []ChatAgentSession{
+		{Agent: "agy", Mode: "api", ConversationID: "agy-api"},
+		{Agent: "agy", Mode: "mcp", ConversationID: "agy-mcp"},
+		{Agent: "claude", Mode: "mcp", ConversationID: "claude-1"},
+		{Agent: "grok", Mode: "acp", ConversationID: "grok-1"},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("сессия %d = %#v, ожидали %#v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestChatSessionCancel(t *testing.T) {
 	cm := NewChatManager()
 	cs := cm.GetOrCreate("proj", "model")

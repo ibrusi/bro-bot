@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -173,6 +174,64 @@ func (cs *ChatSession) EnqueuePending(text string) int {
 	defer cs.Unlock()
 	cs.Pending = append(cs.Pending, text)
 	return len(cs.Pending)
+}
+
+// PrependPending ставит сообщение в начало очереди. Его заберут первым.
+func (cs *ChatSession) PrependPending(text string) int {
+	cs.Lock()
+	defer cs.Unlock()
+	cs.Pending = append([]string{text}, cs.Pending...)
+	return len(cs.Pending)
+}
+
+// PendingTexts возвращает копию очереди, не забирая её.
+func (cs *ChatSession) PendingTexts() []string {
+	cs.Lock()
+	defer cs.Unlock()
+	if len(cs.Pending) == 0 {
+		return nil
+	}
+	return append([]string(nil), cs.Pending...)
+}
+
+// ClearPending очищает очередь и возвращает то, что в ней было.
+func (cs *ChatSession) ClearPending() []string {
+	cs.Lock()
+	defer cs.Unlock()
+	pending := cs.Pending
+	cs.Pending = nil
+	return pending
+}
+
+// ChatAgentSession — сохранённая сессия агента внутри разговора проекта.
+type ChatAgentSession struct {
+	Agent          string
+	Mode           string
+	ConversationID string
+}
+
+// AgentSessions возвращает сессии агентов, которые бот сам открыл в этом разговоре.
+func (cs *ChatSession) AgentSessions() []ChatAgentSession {
+	cs.Lock()
+	defer cs.Unlock()
+	if len(cs.conversations) == 0 {
+		return nil
+	}
+	out := make([]ChatAgentSession, 0, len(cs.conversations))
+	for key, id := range cs.conversations {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		agent, mode, _ := strings.Cut(key, "/")
+		out = append(out, ChatAgentSession{Agent: agent, Mode: mode, ConversationID: id})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Agent != out[j].Agent {
+			return out[i].Agent < out[j].Agent
+		}
+		return out[i].Mode < out[j].Mode
+	})
+	return out
 }
 
 // DrainPending забирает отложенные сообщения.

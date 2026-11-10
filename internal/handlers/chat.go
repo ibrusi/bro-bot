@@ -696,6 +696,15 @@ func formatChatStatus(project, lang string) string {
 	return bldr.String()
 }
 
+// resetProjectChat прерывает текущий ответ и начинает разговор проекта заново.
+// Очередь этого ответа тоже сбрасывается: её уже некому забрать.
+func resetProjectChat(project, model string) {
+	if session := domain.GlobalChatManager.Get(project); session != nil {
+		session.Cancel()
+	}
+	domain.GlobalChatManager.Reset(project, model)
+}
+
 // handleChat — обработчик команды /chat.
 func handleChat(s ports.Session) error {
 	lang := uiLang()
@@ -718,10 +727,7 @@ func handleChat(s ports.Session) error {
 		if curProj == "" {
 			return s.Send(i18n.T(lang, "projects.select_first"), nil)
 		}
-		if session := domain.GlobalChatManager.Get(curProj); session != nil {
-			session.Cancel()
-		}
-		domain.GlobalChatManager.Reset(curProj, curModel)
+		resetProjectChat(curProj, curModel)
 		return s.Send(i18n.Tf(lang, "chat.reset", html.EscapeString(curProj)), ports.Rich())
 
 	case "stop", "стоп", "отмена":

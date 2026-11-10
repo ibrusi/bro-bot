@@ -5,6 +5,7 @@ import (
 	"bro-bot/internal/ports"
 	"bro-bot/internal/storage"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -150,6 +151,63 @@ func TestTaskManagerAddFollowup(t *testing.T) {
 	}
 	if resumedT1.Status != TaskStatusRunning && resumedT1.Status != TaskStatusQueued {
 		t.Fatalf("expected resumed cancelled task to be Running or Queued, got %s", resumedT1.Status)
+	}
+}
+
+func TestTaskManagerPrependFollowup(t *testing.T) {
+	st, err := storage.NewSQLiteStorage(":memory:")
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	tm := NewTaskManagerWithStorage(st)
+	task := tm.CreateTask("proj-1", "m1", "first task", testChatID)
+	task.Status = TaskStatusRunning
+	id := task.ID
+
+	if _, err := tm.PrependFollowup(id, "   "); err == nil {
+		t.Fatal("empty followup must be rejected")
+	}
+	if _, err := tm.PrependFollowup(99, "missing"); err == nil {
+		t.Fatal("missing task must be rejected")
+	}
+
+	if _, _, _, err := tm.AddFollowup(id, "second"); err != nil {
+		t.Fatalf("add followup: %v", err)
+	}
+	n, err := tm.PrependFollowup(id, "first")
+	if err != nil {
+		t.Fatalf("prepend: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("queue len = %d, want 2", n)
+	}
+	got := task.Snapshot().PendingFollowups
+	if len(got) != 2 || got[0] != "first" || got[1] != "second" {
+		t.Fatalf("order = %#v", got)
+	}
+	stored, err := st.GetFollowups(context.Background(), id)
+	if err != nil {
+		t.Fatalf("stored followups: %v", err)
+	}
+	if len(stored) != 2 || stored[0] != "first" || stored[1] != "second" {
+		t.Fatalf("stored order = %#v", stored)
+	}
+
+	task.Status = TaskStatusCompleted
+	_, err = tm.PrependFollowup(id, "too late")
+	var finished *TaskAlreadyFinishedError
+	if !errors.As(err, &finished) {
+		t.Fatalf("completed task must stay unchanged, got %v", err)
+	}
+	if after := task.Snapshot().PendingFollowups; len(after) != 2 || after[0] != "first" {
+		t.Fatalf("completed task queue changed: %#v", after)
+	}
+
+	task.Status = TaskStatusCancelled
+	if _, err := tm.PrependFollowup(id, "nope"); !errors.As(err, &finished) {
+		t.Fatalf("cancelled task must stay unchanged, got %v", err)
 	}
 }
 
@@ -1503,4 +1561,3 @@ func TestAddFollowupWaitingInputWithAndWithoutActivePipeline(t *testing.T) {
 	default:
 	}
 }
-
