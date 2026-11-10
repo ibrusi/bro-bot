@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The bot MCP server `bro_bot` is passed into the Grok session, so `ask_user`, `telegram_send_message`, and `report_progress` reach the running bot.
   - Model and reasoning effort are applied with `session/set_config_option` (`/effort max` maps to Grok's `xhigh`). Project rules from `AGENTS.md` go into session `_meta.rules` on a new session.
   - Switching to Grok from `mcp` or `api` stores `acp`. Switching back to `agy` or `claude` restores `mcp`. An explicit `/mode mcp` or `/mode api` while Grok is active is rejected.
+  - `/top` reports the `grok` CLI the same way as `agy` and `claude`: version, the active worker, background processes, and the compact status line.
 
 ## [1.0.0] - 2026-10-13
 
