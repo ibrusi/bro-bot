@@ -10,6 +10,7 @@ import (
 
 	"bro-bot/internal/adapters/agy"
 	"bro-bot/internal/adapters/claude"
+	"bro-bot/internal/adapters/grok"
 	"bro-bot/internal/adapters/telegram"
 	"bro-bot/internal/adapters/whisper"
 	"bro-bot/internal/agents"
@@ -52,6 +53,7 @@ func buildAgentRegistry() *agents.Registry {
 	reg := agents.NewRegistry()
 	reg.Register(agy.Spec())
 	reg.Register(claude.Spec())
+	reg.Register(grok.Spec())
 	return reg
 }
 

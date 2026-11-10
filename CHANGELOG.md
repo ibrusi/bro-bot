@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-10
+
+### Added
+- **Grok agent over ACP**:
+  - `/agent grok` in the agent menu. Grok speaks Agent Client Protocol on `grok agent stdio` (`/mode acp`).
+  - Sessions resume with `session/resume`. A failed resume opens `session/new` and continues from the current message.
+  - Tasks run with `--always-approve` and `yoloMode` unless `GROK_ACP_YOLO` is `false`, `0`, `no`, or `off`. Chat stays read-only: edit, execute, delete, and move permissions are rejected.
+  - The bot MCP server `bro_bot` is passed into the Grok session, so `ask_user`, `telegram_send_message`, and `report_progress` reach the running bot.
+  - Model and reasoning effort are applied with `session/set_config_option` (`/effort max` maps to Grok's `xhigh`). Project rules from `AGENTS.md` go into session `_meta.rules` on a new session.
+  - Switching to Grok from `mcp` or `api` stores `acp`. Switching back to `agy` or `claude` restores `mcp`. An explicit `/mode mcp` or `/mode api` while Grok is active is rejected.
+
 ## [1.0.0] - 2026-10-13
 
 ### Added

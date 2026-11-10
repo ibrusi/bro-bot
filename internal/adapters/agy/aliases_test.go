@@ -42,6 +42,7 @@ func TestRejectsModel(t *testing.T) {
 		{"claude-sonnet-5-5-low", false},
 		{"sonnet", false}, // псевдоним agy
 		{"opus", false},
+		{"grok-4.7", true},
 		{"haiku", true},
 		{"claude-haiku-5-5", true},
 		{"claude-sonnet-5", true},

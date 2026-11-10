@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bro-bot/internal/agents"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
 	"bro-bot/internal/i18n"
@@ -131,14 +132,15 @@ func handleMode(s ports.Session) error {
 		return s.Send(i18n.Tf(lang, "agent.mode_current", html.EscapeString(curMode)), ports.Rich())
 	}
 
-	targetMode := strings.ToLower(strings.TrimSpace(args[0]))
-	if targetMode != "api" && targetMode != "mcp" {
+	targetMode, ok := agents.ParseMode(args[0])
+	if !ok {
 		return s.Send(i18n.T(lang, "agent.mode_unknown"), ports.Rich())
 	}
 
 	// Сначала собираем адаптер для нового режима (в api — с проверкой ключа),
 	// и только если это удалось, переключаем и сохраняем режим.
-	res, err := switchActiveAgent(ActiveAgentName(), targetMode)
+	// Запасной режим здесь не подставляется: /mode mcp у grok — это ошибка.
+	res, err := switchActiveAgent(ActiveAgentName(), targetMode, false)
 	if err != nil {
 		return s.Send("⚠️ "+html.EscapeString(ErrorText(err, lang)), ports.Rich())
 	}

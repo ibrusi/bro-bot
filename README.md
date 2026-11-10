@@ -6,14 +6,14 @@
 
 **English** | [Русский](README.ru.md)
 
-**bro-bot** is an autonomous Go-based service bridge connecting **Telegram** with agentic developer environments: **Google Antigravity CLI (`agy`)** and **Claude Code CLI (`claude`)**.
+**bro-bot** is an autonomous Go-based service bridge connecting **Telegram** with agentic developer environments: **Google Antigravity CLI (`agy`)**, **Claude Code CLI (`claude`)**, and **Grok CLI (`grok`)**.
 
 The bot empowers a developer or engineering team to manage a pool of projects, assign coding and refactoring tasks, approve interactive architectural plans, answer clarifying agent questions, inspect session transcripts, track token spending, and monitor server resource usage — all without leaving Telegram.
 
 <a id="disclaimer"></a>
 > [!WARNING]
 > **Safety and Usage Disclaimer**:
-> - **Autonomous Command Execution & Elevated Privileges**: `bro-bot` executes AI agent CLIs (`agy`, `claude`) with elevated system permissions (`--dangerously-skip-permissions`). Autonomous agents can run shell commands, create, modify, or delete files, install dependencies, and push Git changes without manual approval for every action. Always run the bot under a dedicated non-root user account (e.g., `deploy`), restrict `sudoers` privileges, and strictly limit bot access via `TELEGRAM_ADMIN_ID` (never run the bot as `root`).
+> - **Autonomous Command Execution & Elevated Privileges**: `bro-bot` executes AI agent CLIs (`agy`, `claude`) with elevated system permissions (`--dangerously-skip-permissions`). Grok tasks use `grok agent --always-approve stdio` (disable with `GROK_ACP_YOLO=false`). Autonomous agents can run shell commands, create, modify, or delete files, install dependencies, and push Git changes without manual approval for every action. Always run the bot under a dedicated non-root user account (e.g., `deploy`), restrict `sudoers` privileges, and strictly limit bot access via `TELEGRAM_ADMIN_ID` (never run the bot as `root`).
 > - **Account Suspension Risk with Subscription Plans (MCP Mode)**: Running CLI agents authenticated with personal subscriptions (Claude Pro/Team/Max, Google One AI Premium/Gemini Advanced) in automated bot workflows (`mcp` mode) violates the Terms of Service of those providers (prohibition against automated or unattended use of non-API interfaces). Using `mcp` mode is strictly at your own risk and may lead to account penalties or bans. In contrast, operating via official API keys (`api` mode) fully complies with provider policies and will not result in account bans.
 > - **Verification Responsibility**: While agents follow `AGENTS.md` guidelines by running tests and linters, final validation of all generated code, commits, and Pull Requests before merging them into production remains the sole responsibility of the repository maintainer.
 > - **Token Quotas & API Costs**: Autonomous agents make numerous calls to advanced LLMs (Google Gemini, Anthropic Claude), consuming significant context, generation, and reasoning (thinking) tokens. Regularly inspect your quotas, credit balances, and provider dashboards, as well as bot commands `/usage` and `/tokens`, to prevent unexpected expenses.
@@ -47,7 +47,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 - **Conversational Mode (default)**:
   - A plain message is a conversation with the agent about the active project: context is preserved between messages, so `/resume` is no longer needed.
   - When a message looks like a code-change request, the bot does not run it silently — it offers buttons: answer in chat, draft a plan, or create a task.
-  - Works for every agent (`agy`, `claude`) and every execution mode (`mcp`, `api`); switching `/agent` or `/mode` mid-conversation keeps the thread.
+  - Works for every agent (`agy`, `claude`, `grok`) and every execution mode that agent supports (`mcp`, `api`, `acp`); switching `/agent` or `/mode` mid-conversation keeps the thread. Grok keeps its own ACP session.
   - In chat the agent only reads the code and answers: file edits, branches, commits and PRs go through a task.
   - Controls: `/chat` (status), `/chat <question>`, `/chat new`, `/chat stop`, `/chatmode [on|off]`.
 - **Intelligent Task Pipeline**:
@@ -66,18 +66,20 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Per-agent aliases, resolved for the active agent:
     - `agy`: `default`, `flash`, `flash-high`, `flash-low`, `pro`, `pro-low`, `sonnet` (Claude Sonnet 5.5), `opus` (Claude Opus 5.5), `oss`. There is no Claude Haiku in the `agy` catalog.
     - `claude`: `default`, `sonnet` (Claude Sonnet 5.5), `opus` (Claude Opus 5.5), `haiku` (Claude Haiku 5.5), `sonnet-5`.
+    - `grok`: `default`, `grok`, `4.7` (Grok 4.7), `fast` (Grok 4.7 Fast), `4.6`, `4.5`.
     - An alias of another agent is not applied: the bot suggests switching with `/agent`.
   - Instant model viewing and switching (`/model`, `/model <name|alias>`, `/model refresh`).
-  - Reasoning effort control (`/effort [auto|low|medium|high|xhigh|max]`), shared by `agy` and `claude` and saved across restarts.
-  - Multi-agent toggle (`/agent <agy|claude>`).
+  - Reasoning effort control (`/effort [auto|low|medium|high|xhigh|max]`), shared by `agy`, `claude`, and `grok` and saved across restarts. Grok has no `max` step: the bot sends `xhigh`.
+  - Multi-agent toggle (`/agent <agy|claude|grok>`). Choosing `grok` switches the execution mode to `acp`. Choosing `agy` or `claude` while `acp` is active returns to `mcp`.
 - **Quota, Token & Resource Monitoring**:
   - `/usage` (or `/limits`) — live quota limits and credit balances (`agy /quota`, `agy /credits`).
   - `/tokens` (or `/stats`) — granular token statistics for the current/completed task: Input, Output, Thinking, Cache Read, and Cache Hit Rate.
   - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
   - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, active `agy`/`claude` processes, and the `whisper-server` speech recognition engine.
-- **Execution Modes: MCP & API (`/mode [mcp|api]`)**:
-  - `mcp` (default): agents run with the bot's built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`). Its tools (`telegram_send_message`, `ask_user`, `report_progress`) reach the running bot over a local Unix-socket bridge and act on the task that started the agent.
-  - `api`: connects directly to provider APIs (Google Gemini API & Anthropic Messages API) with built-in workspace file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`).
+- **Execution Modes: MCP, API & ACP (`/mode [mcp|api|acp]`)**:
+  - `mcp` (default for `agy` and `claude`): agents run with the bot's built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`). Its tools (`telegram_send_message`, `ask_user`, `report_progress`) reach the running bot over a local Unix-socket bridge and act on the task that started the agent.
+  - `api`: connects directly to provider APIs (Google Gemini API & Anthropic Messages API) with built-in workspace file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`). `grok` does not support this mode.
+  - `acp`: Grok only. The bot speaks newline-delimited JSON-RPC to `grok agent stdio`, resumes the ACP session, and translates `session/update` into the same stream the rest of the bot already reads. The project directory is the session `cwd`. The bot MCP server is declared in `mcpServers`.
   - Safe sandboxing: chat mode (`/chat`) provides strictly read-only file access, while file writes and command executions are enabled for pipeline tasks. All paths are validated within the project directory.
 - **Multilingual Interface**:
   - Every bot reply, button, command description and agent prompt comes from a message catalog — English and Russian ship out of the box.
@@ -160,7 +162,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 
 ### Execution Modes Architecture
 
-`bro-bot` abstracts agent execution behind `ports.Agent` and `agents.Registry`, supporting two distinct operation modes:
+`bro-bot` abstracts agent execution behind `ports.Agent` and `agents.Registry`, supporting three operation modes:
 
 1. **MCP Mode (`mcp`, default)**:
    - Local agents (`claude`, `agy`) are executed inside isolated pseudo-terminals (PTY) with streaming NDJSON output (`stream-json`) and connected to the bot's built-in Model Context Protocol (MCP) server — the `bot mcp-serve` subcommand speaking JSON-RPC 2.0 over stdio:
@@ -184,6 +186,13 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
      - Shell command execution (`run_command`) for pipeline tasks.
      - Sandboxed read-only permissions in conversational mode (`/chat`) and full workspace manipulation in pipeline tasks (`/new`, `/plan`).
 
+3. **ACP Mode (`acp`, Grok)**:
+   - `grok agent [--always-approve] [--model <id>] [--reasoning-effort <level>] stdio`.
+   - Handshake: `initialize`, then `authenticate` with the saved login (`cached_token`) or an API-key method. A browser login is not opened; sign in with `grok login` or set `XAI_API_KEY` for the CLI.
+   - `session/resume` continues a stored session id. `session/load` is not used, because it replays history into the Telegram answer. If resume fails, `session/new` replaces the id.
+   - Chat (`ReadOnly`) answers `session/request_permission` with reject for anything except read, search, think, and fetch. Tasks approve with `allow_always` unless `GROK_ACP_YOLO` is turned off.
+   - Follow-up text is not written to the ACP stdin. Stopping the turn kills the process group.
+
 ### Messenger Abstraction
 
 All core logic (`internal/handlers`, `internal/domain`, `internal/system`) interacts with the messaging platform through abstract interfaces:
@@ -201,7 +210,7 @@ The current implementation is `internal/adapters/telegram`, which isolates `gopk
 - **Git**: Installed and configured.
 - **GitHub CLI (`gh`)**: Installed and authenticated (`gh auth login`) to enable automatic Pull Request creation.
 - **SSH Keys**: Configured on GitHub / GitLab for cloning and pushing project repositories.
-- **Agent CLI**: Google Antigravity CLI (`agy`) and/or Claude Code CLI (`claude`), installed, authenticated, and available in the user's `$PATH` (e.g., `/home/deploy/.local/bin/agy`).
+- **Agent CLI**: Google Antigravity CLI (`agy`), Claude Code CLI (`claude`), and/or Grok CLI (`grok`), installed, authenticated, and available in the user's `$PATH` (e.g., `/home/deploy/.local/bin/agy`). Grok needs `grok login` or `XAI_API_KEY`.
 - **Telegram Bot Token**: Created via [@BotFather](https://t.me/BotFather).
 - **Telegram User ID**: Numeric account ID (obtainable via [@userinfobot](https://t.me/userinfobot)).
 
@@ -310,6 +319,8 @@ nano .env
 | `ANTHROPIC_API_KEY` | No | — | Anthropic key used by the `claude` agent in `api` mode (`/mode api`). Without it (and without `CLAUDE_API_KEY`) the `api` mode is unavailable for `claude`. |
 | `CLAUDE_API_KEY` | No | — | Legacy name for the same variable: used when `ANTHROPIC_API_KEY` is unset. |
 | `CLAUDE_API_MODEL` | No | Auto-selected | Explicit Claude API model name for `api` mode (e.g. `claude-sonnet-5`). When unset, the model is picked from `/v1/models`: the junior family among the senior ones (sonnet) at its highest available version. Retired model ids are automatically replaced with a live model of the same family. |
+| `XAI_API_KEY` | No | — | xAI key for the `grok` CLI in `acp` mode. The bot does not read it; the `grok` process inherits the environment. A completed `grok login` takes precedence. |
+| `GROK_ACP_YOLO` | No | on | Tool approval for Grok tasks. Empty or any value other than `false`, `0`, `no`, `off` passes `--always-approve` and `yoloMode`. Chat stays read-only either way. |
 | `QUESTION_TIMEOUT` | **Yes** | — | Timeout waiting for user response to agent questions (`ask_question` in agy, MCP `ask_user`). Formats: `15m`, `300s`, `1h`, or seconds. When elapsed, the task pauses. |
 | `STEP_TIMEOUT` | No | `30m` | Execution timeout for a single agent step (`--print-timeout`). Formats: `30m`, `1h`, `1800s`, or seconds. When exceeded, the task is paused while preserving the session. |
 | `AUTO_CONTINUE_MAX` | No | `2` | How many times in a row a step is continued automatically when the agent ends its turn without waiting for its own background commands (agy prints `root agent idle; waiting … background task(s)` and the agent never wakes up, and/or `terminating N background task(s) on exit`). The step continues in the same agent session. When the limit is reached, the task is paused with a «Resume» button instead of being reported as completed. `0` disables auto-continue. |
@@ -484,8 +495,8 @@ so the conversation continues. Reset it with `/chat new`.
 |---|---|---|
 | `/model [name\|refresh]` | List all available models with descriptions and aliases, refresh the catalog, or switch active model for future tasks. | `/model`, `/model flash`, `/model refresh` |
 | `/effort [level]` | Show or set the agent reasoning effort: `auto`, `low`, `medium`, `high`, `xhigh`, `max`. Without a level — current value and selection buttons. | `/effort high` |
-| `/agent [name]` | Switch the active agent engine (`agy` or `claude`). | `/agent claude` |
-| `/mode [mcp|api]` | Switch agent execution mode (local agent with the bot's MCP tools, or direct API with workspace file tools). | `/mode mcp` |
+| `/agent [name]` | Switch the active agent engine (`agy`, `claude`, or `grok`). Grok selects `acp`; leaving Grok restores `mcp`. | `/agent grok` |
+| `/mode [mcp|api|acp]` | Switch agent execution mode. `acp` is Grok over `grok agent stdio`. `mcp` and `api` are rejected while Grok is active. | `/mode acp` |
 | `/usage` (or `/limits`) | Check remaining free quotas and paid credit balances for Antigravity. | `/usage` |
 | `/tokens` (or `/stats`) | Token usage stats for the task: Input, Output, Thinking, Cache Read, and Hit Rate. | `/tokens` |
 | `/context [id]` | Visual breakdown of model context window utilization. | `/context` |
@@ -498,10 +509,11 @@ so the conversation continues. Reset it with `/chat new`.
 - The level applies from the next agent run: a running task step or chat answer keeps the level it started with.
 - How the level reaches the agent:
 
-| Agent | `mcp` (default) | `api` |
-|---|---|---|
-| `claude` | `--effort <level>` flag of Claude Code | `output_config.effort` of the Messages API — only when `/v1/models` confirms the model supports this level (for example, `xhigh` requires Opus 4.7+, Haiku 4.5 has no effort at all); otherwise the model default is used and the bot logs it |
-| `agy` | The level is passed as the exact model variant from `agy models`: `/effort low` with `gemini-3.1-pro-high` runs `gemini-3.1-pro-low`, and the bare family name (`claude-opus-5-5`) gets a level suffix (with `auto` — `medium`, or `high` if the family has no `medium`). If the family lacks the requested level, the highest level not above it is used, otherwise the lowest available (`/effort max` → `-high`). Models outside the catalog get `--effort <level>` as is, legacy Claude models (`claude-sonnet-4-6`) get none | Not supported: the Gemini SDK in use cannot configure reasoning, so `/effort` warns and the model default is used |
+| Agent | `mcp` (default) | `api` | `acp` |
+|---|---|---|---|
+| `claude` | `--effort <level>` flag of Claude Code | `output_config.effort` of the Messages API — only when `/v1/models` confirms the model supports this level (for example, `xhigh` requires Opus 4.7+, Haiku 4.5 has no effort at all); otherwise the model default is used and the bot logs it | Not supported |
+| `agy` | The level is passed as the exact model variant from `agy models`: `/effort low` with `gemini-3.1-pro-high` runs `gemini-3.1-pro-low`, and the bare family name (`claude-opus-5-5`) gets a level suffix (with `auto` — `medium`, or `high` if the family has no `medium`). If the family lacks the requested level, the highest level not above it is used, otherwise the lowest available (`/effort max` → `-high`). Models outside the catalog get `--effort <level>` as is, legacy Claude models (`claude-sonnet-4-6`) get none | Not supported: the Gemini SDK in use cannot configure reasoning, so `/effort` warns and the model default is used | Not supported |
+| `grok` | Not supported | Not supported | `--reasoning-effort` and `session/set_config_option` (`reasoning_effort`). `max` is sent as `xhigh`. `auto` sends nothing |
 
 ---
 

@@ -49,8 +49,11 @@ func ErrorText(err error, lang string) string {
 	var unsupportedMode *agents.UnsupportedModeError
 	if errors.As(err, &unsupportedMode) {
 		key := "err.agent_no_mcp"
-		if unsupportedMode.Mode == agents.ModeAPI {
+		switch unsupportedMode.Mode {
+		case agents.ModeAPI:
 			key = "err.agent_no_api"
+		case agents.ModeACP:
+			key = "err.agent_no_acp"
 		}
 		return i18n.Tf(lang, key, unsupportedMode.Agent)
 	}

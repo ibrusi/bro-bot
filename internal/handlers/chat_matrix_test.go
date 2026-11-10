@@ -6,6 +6,7 @@ import (
 
 	"bro-bot/internal/adapters/agy"
 	"bro-bot/internal/adapters/claude"
+	"bro-bot/internal/adapters/grok"
 	"bro-bot/internal/adapters/mock"
 	"bro-bot/internal/config"
 	"bro-bot/internal/domain"
@@ -229,6 +230,13 @@ func TestAgentFrameworkForRespectsExecutionMode(t *testing.T) {
 		t.Fatalf("agy/mcp: %v", err)
 	} else if _, ok := framework.(*agy.AgyMCPAdapter); !ok {
 		t.Errorf("agy/mcp: получили %T, ожидали AgyMCPAdapter", framework)
+	}
+
+	config.ProjectState.SetExecutionMode("acp")
+	if framework, err := agentFrameworkFor("grok"); err != nil {
+		t.Fatalf("grok/acp: %v", err)
+	} else if _, ok := framework.(*grok.Adapter); !ok {
+		t.Errorf("grok/acp: получили %T, ожидали *grok.Adapter", framework)
 	}
 
 	config.ProjectState.SetExecutionMode("api")

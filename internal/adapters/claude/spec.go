@@ -20,11 +20,11 @@ func Spec() agents.Spec {
 		MCPTitle:     "Claude Code (MCP)",
 		APIKeyEnv:    apiKeyEnv,
 		DefaultModel: func() string { return "sonnet" },
-		// Модели Gemini и GPT claude не запускает: при переключении на него
+		// Модели Gemini, GPT и Grok claude не запускает: при переключении на него
 		// такая модель заменяется на модель по умолчанию.
 		RejectsModel: func(model string) bool {
 			m := strings.ToLower(model)
-			return strings.Contains(m, "gemini") || strings.Contains(m, "gpt")
+			return strings.Contains(m, "gemini") || strings.Contains(m, "gpt") || strings.Contains(m, "grok")
 		},
 		ModelAliases: modelAliases,
 		NewAPI:       func() ports.AgentFramework { return NewClaudeAPIAdapter() },

@@ -85,6 +85,9 @@ func rejectsModel(model string) bool {
 	if resolved, ok := modelAliases.Resolve(m); ok {
 		m = resolved
 	}
+	if strings.HasPrefix(m, "grok") {
+		return true
+	}
 	if !isClaudeModel(m) {
 		return false
 	}

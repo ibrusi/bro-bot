@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"html"
 	"log"
 	"strings"
@@ -107,6 +108,9 @@ type AgentSwitch struct {
 	Mode  string
 	// Model заполняется, если текущая модель агенту не подходила и была заменена.
 	Model string
+	// ModeAdjusted — агент не запускается в прежнем режиме, и бот сам перешёл
+	// на режим, который агент поддерживает (для grok это acp).
+	ModeAdjusted bool
 }
 
 // ModelSwitched сообщает, была ли заменена модель.
@@ -114,25 +118,40 @@ func (r AgentSwitch) ModelSwitched() bool {
 	return r.Model != ""
 }
 
-// SwitchActiveAgent переключает активного агента в текущем режиме выполнения
-// и сохраняет выбор в базе данных.
+// SwitchActiveAgent переключает активного агента и сохраняет выбор в базе данных.
+// Если агент не запускается в текущем режиме, берётся режим, который он поддерживает,
+// и он тоже сохраняется. Явная команда /mode этот запасной путь не использует.
 func SwitchActiveAgent(name string) (AgentSwitch, error) {
-	return switchActiveAgent(name, config.ProjectState.GetExecutionMode())
+	return switchActiveAgent(name, config.ProjectState.GetExecutionMode(), true)
 }
 
 // switchActiveAgent собирает адаптер агента для режима и делает его активным.
-// Режим выполнения здесь не меняется: /mode сначала убеждается, что адаптер собирается
-// (в api-режиме — что есть ключ), и только потом переключает режим.
-func switchActiveAgent(name, mode string) (AgentSwitch, error) {
+// allowFallback разрешает сменить режим на PreferredMode, когда сборка не удалась
+// из-за неподдерживаемого режима. /mode передаёт false: опечатка и чужой режим
+// остаются ошибкой, а не молчаливой подменой.
+func switchActiveAgent(name, mode string, allowFallback bool) (AgentSwitch, error) {
 	reg := registry()
-	mode = agents.NormalizeMode(mode)
+	requested := agents.NormalizeMode(mode)
 
 	spec, ok := reg.Lookup(name)
 	if !ok {
 		return AgentSwitch{}, &agents.UnknownAgentError{Name: strings.TrimSpace(name), Known: reg.Names()}
 	}
 
-	adapter, err := reg.Build(spec.Name, mode)
+	chosen := requested
+	adapter, err := reg.Build(spec.Name, chosen)
+	if err != nil && allowFallback {
+		var unsupported *agents.UnsupportedModeError
+		if errors.As(err, &unsupported) {
+			if pref, ok := spec.PreferredMode(); ok && pref != chosen {
+				if next, buildErr := reg.Build(spec.Name, pref); buildErr == nil {
+					adapter = next
+					err = nil
+					chosen = pref
+				}
+			}
+		}
+	}
 	if err != nil {
 		return AgentSwitch{}, err
 	}
@@ -141,8 +160,14 @@ func switchActiveAgent(name, mode string) (AgentSwitch, error) {
 	models.SetAgent(adapter, spec.ModelAliases)
 	config.ProjectState.SetCurrentAgent(spec.Name)
 
-	result := AgentSwitch{Agent: spec.Name, Mode: mode}
+	result := AgentSwitch{Agent: spec.Name, Mode: chosen, ModeAdjusted: chosen != requested}
 	st := domain.GlobalTaskManager.Storage()
+	if result.ModeAdjusted {
+		config.ProjectState.SetExecutionMode(chosen)
+		if st != nil {
+			_ = st.SetSetting(context.Background(), "execution_mode", chosen)
+		}
+	}
 
 	// Модель другого семейства агент не запустит — подменяем на его модель по умолчанию.
 	config.ProjectState.Lock()
@@ -171,6 +196,9 @@ func switchActiveAgent(name, mode string) (AgentSwitch, error) {
 // formatAgentSwitch — сообщение пользователю о переключении агента.
 func formatAgentSwitch(r AgentSwitch, lang string) string {
 	msg := i18n.Tf(lang, "agent.switched", html.EscapeString(r.Agent), html.EscapeString(r.Mode))
+	if r.ModeAdjusted {
+		msg += i18n.Tf(lang, "agent.mode_adjusted", html.EscapeString(r.Mode))
+	}
 	if r.ModelSwitched() {
 		msg += i18n.Tf(lang, "agent.model_switched", html.EscapeString(r.Model))
 	}
@@ -200,9 +228,18 @@ func initActiveAgent(savedAgent string) {
 	mode := config.ProjectState.GetExecutionMode()
 	adapter, err := reg.Build(name, mode)
 	if err != nil {
-		log.Printf("warning: agent %s is unavailable in %s mode (%v), falling back to mcp mode", name, mode, err)
-		config.ProjectState.SetExecutionMode(agents.ModeMCP)
-		if adapter, err = reg.Build(name, agents.ModeMCP); err != nil {
+		pref := agents.ModeMCP
+		if spec, ok := reg.Lookup(name); ok {
+			if p, has := spec.PreferredMode(); has {
+				pref = p
+			}
+		}
+		log.Printf("warning: agent %s is unavailable in %s mode (%v), falling back to %s mode", name, mode, err, pref)
+		config.ProjectState.SetExecutionMode(pref)
+		if st := domain.GlobalTaskManager.Storage(); st != nil {
+			_ = st.SetSetting(context.Background(), "execution_mode", pref)
+		}
+		if adapter, err = reg.Build(name, pref); err != nil {
 			log.Printf("warning: agent %s is unavailable: %v", name, err)
 			return
 		}

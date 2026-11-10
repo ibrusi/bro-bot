@@ -35,6 +35,7 @@ var allowedEnvReaders = map[string]string{
 	"internal/adapters/claude/adapter.go":        "ключ нужен, чтобы решить, спрашивать ли живой список моделей",
 	"internal/adapters/claude/spec.go":           "список переменных с ключом для реестра",
 	"internal/adapters/agy/spec.go":              "список переменных с ключом для реестра",
+	"internal/adapters/grok/permissions.go":      "GROK_ACP_YOLO читается на каждый запуск задачи, чтобы .env подхватывался без перезапуска",
 	"internal/handlers/clone.go":                 "HOME для поиска публичного ключа деплоя",
 	"internal/adapters/transcript/transcript.go": "HOME через os.UserHomeDir",
 	"internal/storage/sqlite.go":                 "HOME через os.UserHomeDir",
