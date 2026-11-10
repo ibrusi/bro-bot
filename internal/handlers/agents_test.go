@@ -1,12 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
+	"bro-bot/internal/domain"
+
 	"bro-bot/internal/adapters/agy"
 	"bro-bot/internal/adapters/claude"
+	"bro-bot/internal/adapters/grok"
 	"bro-bot/internal/adapters/mock"
 	"bro-bot/internal/agents"
 	"bro-bot/internal/config"
@@ -16,6 +20,7 @@ import (
 const (
 	testAgyModelsOutput    = "gemini-3.8-flash-medium Gemini 3.8 Flash (Medium)\ngemini-3.1-pro-high Gemini 3.1 Pro (High)\n"
 	testClaudeModelsOutput = "sonnet Claude Sonnet\nopus Claude Opus\nfable Claude Haiku\n"
+	testGrokModelsOutput   = "grok-4.7 Grok 4.7\n"
 )
 
 // testAgentRegistry собирает тот же набор спецификаций агентов, что и cmd/bot/main.go,
@@ -61,8 +66,19 @@ func testAgentRegistry() *agents.Registry {
 		}
 	}
 
+	grokSpec := grok.Spec()
+	grokSpec.NewACP = func() ports.AgentFramework {
+		return &mock.AgentFramework{
+			Name:         "grok",
+			Mode:         agents.ModeACP,
+			Hang:         true,
+			ModelsOutput: testGrokModelsOutput,
+		}
+	}
+
 	reg.Register(agySpec)
 	reg.Register(claudeSpec)
+	reg.Register(grokSpec)
 	return reg
 }
 
@@ -73,6 +89,7 @@ func realSpecAgentRegistry(t *testing.T) *agents.Registry {
 	reg := agents.NewRegistry()
 	reg.Register(agy.Spec())
 	reg.Register(claude.Spec())
+	reg.Register(grok.Spec())
 	setAgentRegistry(reg)
 	t.Cleanup(func() {
 		setAgentRegistry(testAgentRegistry())
@@ -131,6 +148,64 @@ func TestSwitchActiveAgentReturnsDataWithoutMarkup(t *testing.T) {
 	res, _ = SwitchActiveAgent("agy")
 	if res.ModelSwitched() {
 		t.Errorf("модель не должна меняться без причины: %+v", res)
+	}
+}
+
+func TestSwitchActiveAgentToGrokUsesACP(t *testing.T) {
+	mt := setupTestApp(t)
+
+	config.ProjectState.SetExecutionMode("mcp")
+	config.ProjectState.Lock()
+	config.ProjectState.CurrentModel = "gemini-3.1-pro-high"
+	config.ProjectState.Unlock()
+
+	res, err := SwitchActiveAgent("grok")
+	if err != nil {
+		t.Fatalf("SwitchActiveAgent(grok): %v", err)
+	}
+	if res.Agent != "grok" || res.Mode != "acp" || !res.ModeAdjusted {
+		t.Errorf("ожидали переход в acp, получили %+v", res)
+	}
+	if !res.ModelSwitched() || res.Model != "grok-4.7" {
+		t.Errorf("модель Gemini должна смениться на grok-4.7, получили %+v", res)
+	}
+	if got := config.ProjectState.GetExecutionMode(); got != "acp" {
+		t.Errorf("режим = %q, ожидали acp", got)
+	}
+	if st := domain.GlobalTaskManager.Storage(); st != nil {
+		saved, err := st.GetSetting(context.Background(), "execution_mode")
+		if err != nil || saved != "acp" {
+			t.Errorf("сохранённый режим = %q, %v", saved, err)
+		}
+	}
+
+	handler := mt.commands["mode"]
+	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{"mcp"}})); err != nil {
+		t.Fatalf("/mode mcp: %v", err)
+	}
+	if got := config.ProjectState.GetExecutionMode(); got != "acp" {
+		t.Errorf("явный /mode mcp не должен сменить режим grok, получили %q", got)
+	}
+	if last := mt.LastSent(); last == nil || !strings.Contains(last.Text, "mcp") {
+		t.Errorf("ожидали отказ режима mcp, получили %+v", last)
+	}
+
+	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{"acp"}})); err != nil {
+		t.Fatalf("/mode acp: %v", err)
+	}
+	if got := config.ProjectState.GetExecutionMode(); got != "acp" {
+		t.Errorf("после /mode acp режим = %q", got)
+	}
+
+	back, err := SwitchActiveAgent("agy")
+	if err != nil {
+		t.Fatalf("SwitchActiveAgent(agy): %v", err)
+	}
+	if back.Mode != "mcp" || !back.ModeAdjusted {
+		t.Errorf("возврат с acp на agy должен вернуть mcp, получили %+v", back)
+	}
+	if got := config.ProjectState.GetExecutionMode(); got != "mcp" {
+		t.Errorf("после возврата режим = %q", got)
 	}
 }
 
@@ -229,7 +304,7 @@ func TestAgentHelpListsRegisteredAgents(t *testing.T) {
 func TestHandlersDoNotImportAdapters(t *testing.T) {
 	// Сторож архитектуры: обработчики знают агентов только через реестр.
 	// Импорт адаптеров в тестах допустим — они собирают реестр так же, как main.go.
-	for _, spec := range []agents.Spec{agy.Spec(), claude.Spec()} {
+	for _, spec := range []agents.Spec{agy.Spec(), claude.Spec(), grok.Spec()} {
 		if !registry().Known(spec.Name) {
 			t.Errorf("агент %q из спецификации не зарегистрирован в тестовом реестре", spec.Name)
 		}

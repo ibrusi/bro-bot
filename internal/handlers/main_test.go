@@ -2093,8 +2093,8 @@ func TestStartGreetingAndMenuModeDescription(t *testing.T) {
 	if last == nil {
 		t.Fatalf("expected message from /start")
 	}
-	if !strings.Contains(last.Text, "/mode [mcp|api]") {
-		t.Errorf("expected /start text to contain '/mode [mcp|api]', got:\n%s", last.Text)
+	if !strings.Contains(last.Text, "/mode [mcp|api|acp]") {
+		t.Errorf("expected /start text to contain '/mode [mcp|api|acp]', got:\n%s", last.Text)
 	}
 	if !strings.Contains(last.Text, "/agent") {
 		t.Errorf("expected /start text to contain '/agent', got:\n%s", last.Text)
@@ -2113,8 +2113,8 @@ func TestStartGreetingAndMenuModeDescription(t *testing.T) {
 		if foundModeCmd == nil {
 			t.Fatalf("expected 'mode' command in getDefaultCommands(%s)", lang)
 		}
-		if !strings.Contains(foundModeCmd.Description, "[mcp|api]") {
-			t.Errorf("expected 'mode' command description in %s to mention '[mcp|api]', got %q", lang, foundModeCmd.Description)
+		if !strings.Contains(foundModeCmd.Description, "[mcp|api|acp]") {
+			t.Errorf("expected 'mode' command description in %s to mention '[mcp|api|acp]', got %q", lang, foundModeCmd.Description)
 		}
 	}
 }

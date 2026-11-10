@@ -84,10 +84,13 @@ type ResourcesReport struct {
 	ActiveWorker      *ProcessResourceInfo
 	OtherWorkers      []ProcessResourceInfo
 	ClaudeWorkers     []ProcessResourceInfo
+	GrokWorkers       []ProcessResourceInfo
 	AgyVersion        string
 	AgyInstalled      bool
 	ClaudeVersion     string
 	ClaudeInstalled   bool
+	GrokVersion       string
+	GrokInstalled     bool
 	WhisperProc       *ProcessResourceInfo
 	OtherWhisperProcs []ProcessResourceInfo
 	WhisperURL        string
@@ -532,6 +535,10 @@ func findSystemClaudePids() []int {
 	return findSystemPids("claude")
 }
 
+func findSystemGrokPids() []int {
+	return findSystemPids("grok")
+}
+
 func findSystemWhisperPids() []int {
 	pids := findSystemPids("whisper-server")
 	if len(pids) == 0 {
@@ -658,6 +665,10 @@ func queryAgyInfo() AgentCLIInfo {
 	return queryAgentCLI("agy")
 }
 
+func queryGrokInfo() AgentCLIInfo {
+	return queryAgentCLI("grok")
+}
+
 func collectProcessInfo(pid int, role string, psMap map[int]psMetric, topCpuMap map[int]float64) *ProcessResourceInfo {
 	if pid <= 0 {
 		return nil
@@ -745,9 +756,10 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 
 	allAgyPids := findSystemAgyPids()
 	allClaudePids := findSystemClaudePids()
+	allGrokPids := findSystemGrokPids()
 	allWhisperPids := findSystemWhisperPids()
 
-	// If activeWorkerPid is in allClaudePids or allAgyPids, refine activeWorkerAgent
+	// Если PID воркера совпал с процессом CLI, имя агента берём от процесса.
 	for _, p := range allClaudePids {
 		if p == activeWorkerPid {
 			activeWorkerAgent = "claude"
@@ -757,6 +769,12 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 	for _, p := range allAgyPids {
 		if p == activeWorkerPid {
 			activeWorkerAgent = "agy"
+			break
+		}
+	}
+	for _, p := range allGrokPids {
+		if p == activeWorkerPid {
+			activeWorkerAgent = "grok"
 			break
 		}
 	}
@@ -774,6 +792,9 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 		pidSet[p] = true
 	}
 	for _, p := range allClaudePids {
+		pidSet[p] = true
+	}
+	for _, p := range allGrokPids {
 		pidSet[p] = true
 	}
 	for _, p := range allWhisperPids {
@@ -801,6 +822,8 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 			roleName = "Active Claude Worker"
 		} else if activeWorkerAgent == "agy" {
 			roleName = "Active agy Worker"
+		} else if activeWorkerAgent == "grok" {
+			roleName = "Active Grok Worker"
 		}
 		activeWorkerInfo = collectProcessInfo(activeWorkerPid, roleName, psMetrics, topCpu)
 	}
@@ -822,6 +845,16 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 		}
 		if pInfo := collectProcessInfo(p, "Background claude", psMetrics, topCpu); pInfo != nil {
 			claudeWorkers = append(claudeWorkers, *pInfo)
+		}
+	}
+
+	var grokWorkers []ProcessResourceInfo
+	for _, p := range allGrokPids {
+		if p == activeWorkerPid {
+			continue
+		}
+		if pInfo := collectProcessInfo(p, "Background grok", psMetrics, topCpu); pInfo != nil {
+			grokWorkers = append(grokWorkers, *pInfo)
 		}
 	}
 
@@ -847,6 +880,7 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 
 	agyInfo := queryAgyInfo()
 	claudeInfo := queryClaudeInfo()
+	grokInfo := queryGrokInfo()
 
 	var taskElapsed time.Duration
 	if hasActive && !startedAt.IsZero() {
@@ -864,10 +898,13 @@ func CollectResourceReport(detailedInstantCpu bool) ResourcesReport {
 		ActiveWorker:      activeWorkerInfo,
 		OtherWorkers:      otherWorkers,
 		ClaudeWorkers:     claudeWorkers,
+		GrokWorkers:       grokWorkers,
 		AgyVersion:        agyInfo.Version,
 		AgyInstalled:      agyInfo.Installed,
 		ClaudeVersion:     claudeInfo.Version,
 		ClaudeInstalled:   claudeInfo.Installed,
+		GrokVersion:       grokInfo.Version,
+		GrokInstalled:     grokInfo.Installed,
 		WhisperProc:       whisperInfo,
 		OtherWhisperProcs: otherWhisper,
 		WhisperURL:        whisperURL,
@@ -1049,7 +1086,27 @@ func FormatResourcesMessage(r ResourcesReport, lang string) string {
 		TaskElapsed:  r.TaskElapsed,
 	}, lang)
 
-	// 6. Speech-to-Text Server (whisper-server)
+	// 6. Agent Worker Process (grok)
+	grokWorkerActive := r.HasActiveTask && r.ActiveWorkerAgent == "grok"
+	var grokWorker *ProcessResourceInfo
+	if grokWorkerActive {
+		grokWorker = r.ActiveWorker
+	}
+	formatAgentResourceSection(&sb, agentSectionConfig{
+		AgentName:    "grok",
+		Icon:         "🟠",
+		IsActive:     r.ActiveAgent == "grok",
+		Installed:    r.GrokInstalled,
+		Version:      r.GrokVersion,
+		WorkerActive: grokWorkerActive,
+		Worker:       grokWorker,
+		OtherWorkers: r.GrokWorkers,
+		ProjectName:  r.ProjectName,
+		TaskPrompt:   r.TaskPrompt,
+		TaskElapsed:  r.TaskElapsed,
+	}, lang)
+
+	// 7. Speech-to-Text Server (whisper-server)
 	formatWhisperResourceSection(&sb, r, lang)
 
 	sb.WriteString(i18n.T(lang, "res.tip"))
@@ -1129,7 +1186,18 @@ func FormatCompactResourceSnippet(r ResourcesReport, lang string) string {
 		parts = append(parts, i18n.Tf(lang, "res.compact_idle", "claude"))
 	}
 
-	// 3. whisper-server
+	// 3. grok
+	grokActive := r.HasActiveTask && r.ActiveWorkerAgent == "grok"
+	if grokActive && r.ActiveWorker != nil {
+		parts = append(parts, fmt.Sprintf("grok (PID %d): RAM <b>%s</b>, CPU <b>%.1f%%</b>",
+			r.ActiveWorker.PID, formatBytes(r.ActiveWorker.MemoryBytes), r.ActiveWorker.CPUPercent))
+	} else if grokActive {
+		parts = append(parts, i18n.Tf(lang, "res.compact_starting", "grok"))
+	} else {
+		parts = append(parts, i18n.Tf(lang, "res.compact_idle", "grok"))
+	}
+
+	// 4. whisper-server
 	if r.WhisperProc != nil {
 		parts = append(parts, fmt.Sprintf("whisper-server (PID %d): RAM <b>%s</b>, CPU <b>%.1f%%</b>",
 			r.WhisperProc.PID, formatBytes(r.WhisperProc.MemoryBytes), r.WhisperProc.CPUPercent))

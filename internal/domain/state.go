@@ -59,7 +59,7 @@ func (ps *ProjectState) SetCurrentAgent(agent string) {
 	ps.CurrentAgent = agent
 }
 
-// GetExecutionMode возвращает текущий режим выполнения ("mcp" или "api", по умолчанию "mcp").
+// GetExecutionMode возвращает текущий режим выполнения ("mcp", "api" или "acp", по умолчанию "mcp").
 func (ps *ProjectState) GetExecutionMode() string {
 	ps.RLock()
 	defer ps.RUnlock()
@@ -70,12 +70,15 @@ func (ps *ProjectState) GetExecutionMode() string {
 }
 
 // SetExecutionMode обновляет режим выполнения.
+// Устаревшее имя cli сохраняется как mcp.
 func (ps *ProjectState) SetExecutionMode(mode string) {
 	ps.Lock()
 	defer ps.Unlock()
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "api":
 		ps.ExecutionMode = "api"
+	case "acp":
+		ps.ExecutionMode = "acp"
 	default:
 		ps.ExecutionMode = "mcp"
 	}

@@ -210,8 +210,8 @@ func TestFormatResourcesMessageClaudeActiveTask(t *testing.T) {
 	if !strings.Contains(msg, "2.1.273 (Claude Code)") {
 		t.Fatalf("expected claude version: %s", msg)
 	}
-	if !strings.Contains(msg, "bot|agy|claude") {
-		t.Fatalf("expected claude in console tip: %s", msg)
+	if !strings.Contains(msg, "bot|agy|claude|grok") {
+		t.Fatalf("expected agents in console tip: %s", msg)
 	}
 
 	compact := FormatCompactResourceSnippet(report, "ru")
@@ -278,6 +278,76 @@ func TestFormatResourcesMessageClaudeIdleAndWorkers(t *testing.T) {
 	if !strings.Contains(compact, "claude: 💤 <i>idle</i>") {
 		t.Fatalf("expected claude idle in compact snippet: %s", compact)
 	}
+	if !strings.Contains(compact, "grok: 💤 <i>idle</i>") {
+		t.Fatalf("expected grok idle in compact snippet: %s", compact)
+	}
+}
+
+func TestFormatResourcesMessageGrokActiveTask(t *testing.T) {
+	report := ResourcesReport{
+		Host: HostLoadStats{
+			Load1: 0.4,
+			Cores: 4,
+		},
+		BotProc: &ProcessResourceInfo{
+			PID:         100,
+			CPUPercent:  0.2,
+			MemoryBytes: 20 * 1024 * 1024,
+		},
+		ActiveAgent:       "grok",
+		ActiveWorkerAgent: "grok",
+		ActiveWorker: &ProcessResourceInfo{
+			PID:         444,
+			CPUPercent:  18.0,
+			MemoryBytes: 210 * 1024 * 1024,
+			MemoryPct:   2.5,
+			Elapsed:     "00:30",
+		},
+		GrokInstalled: true,
+		GrokVersion:   "grok 1.0.77",
+		HasActiveTask: true,
+		ProjectName:   "grok-proj",
+		TaskPrompt:    "explain the handler",
+		GrokWorkers: []ProcessResourceInfo{
+			{
+				PID:         555,
+				CPUPercent:  0.4,
+				MemoryBytes: 30 * 1024 * 1024,
+				Elapsed:     "03:00",
+			},
+		},
+	}
+
+	msg := FormatResourcesMessage(report, "ru")
+	if !strings.Contains(msg, "Агент задач (grok) — 🟢 <i>активен</i>") {
+		t.Fatalf("expected grok active header: %s", msg)
+	}
+	if !strings.Contains(msg, "PID: <code>444</code>") {
+		t.Fatalf("expected grok worker PID: %s", msg)
+	}
+	if !strings.Contains(msg, "grok-proj") {
+		t.Fatalf("expected project name: %s", msg)
+	}
+	if !strings.Contains(msg, "explain the handler") {
+		t.Fatalf("expected prompt: %s", msg)
+	}
+	if !strings.Contains(msg, "grok 1.0.77") {
+		t.Fatalf("expected grok version: %s", msg)
+	}
+	if !strings.Contains(msg, "Фоновые процессы grok: <code>1</code> шт.") {
+		t.Fatalf("expected grok background workers: %s", msg)
+	}
+	if !strings.Contains(msg, "555") {
+		t.Fatalf("expected background grok PID: %s", msg)
+	}
+
+	compact := FormatCompactResourceSnippet(report, "ru")
+	if !strings.Contains(compact, "grok (PID 444)") {
+		t.Fatalf("expected grok in compact snippet: %s", compact)
+	}
+	if !strings.Contains(compact, "agy: 💤 <i>idle</i>") || !strings.Contains(compact, "claude: 💤 <i>idle</i>") {
+		t.Fatalf("expected other agents idle: %s", compact)
+	}
 }
 
 func TestFormatResourcesMessageUnifiedAgentSections(t *testing.T) {
@@ -290,6 +360,8 @@ func TestFormatResourcesMessageUnifiedAgentSections(t *testing.T) {
 		AgyVersion:        "agy 1.2.4",
 		ClaudeInstalled:   true,
 		ClaudeVersion:     "2.1.273 (Claude Code)",
+		GrokInstalled:     true,
+		GrokVersion:       "grok 1.0.77",
 		ActiveWorker: &ProcessResourceInfo{
 			PID:         101,
 			CPUPercent:  12.0,
@@ -323,19 +395,25 @@ func TestFormatResourcesMessageUnifiedAgentSections(t *testing.T) {
 	if !strings.Contains(msg1, "• CLI: <code>2.1.273 (Claude Code)</code> (🟢 <i>готов к работе</i>)") {
 		t.Fatalf("expected claude cli line in msg1: %s", msg1)
 	}
+	if !strings.Contains(msg1, "🟠 <b>Агент задач (grok):</b>") {
+		t.Fatalf("expected grok idle header in msg1: %s", msg1)
+	}
+	if !strings.Contains(msg1, "• CLI: <code>grok 1.0.77</code> (🟢 <i>готов к работе</i>)") {
+		t.Fatalf("expected grok cli line in msg1: %s", msg1)
+	}
 
-	// Case 2: Neither CLI found in PATH
+	// Case 2: Ни один CLI не найден в PATH
 	rep2 := ResourcesReport{
 		ActiveAgent:     "agy",
 		AgyInstalled:    false,
 		ClaudeInstalled: false,
+		GrokInstalled:   false,
 	}
 
 	msg2 := FormatResourcesMessage(rep2, "ru")
-	// Check that both have "• CLI: 🔴 <i>не найден в PATH</i>"
 	countNotFound := strings.Count(msg2, "• CLI: 🔴 <i>не найден в PATH</i>")
-	if countNotFound != 2 {
-		t.Fatalf("expected 2 instances of CLI not found, got %d in: %s", countNotFound, msg2)
+	if countNotFound != 3 {
+		t.Fatalf("expected 3 instances of CLI not found, got %d in: %s", countNotFound, msg2)
 	}
 }
 
@@ -404,6 +482,7 @@ func TestFormatCompactResourceSnippetAllComponents(t *testing.T) {
 		"Bot (PID 100): RAM <b>25.0 MB</b>, CPU <b>0.2%</b>",
 		"• agy: 💤 <i>idle</i>",
 		"• claude: 💤 <i>idle</i>",
+		"• grok: 💤 <i>idle</i>",
 		"• whisper-server: 💤 <i>idle</i>",
 	} {
 		if !strings.Contains(compactIdle, want) {
@@ -437,6 +516,7 @@ func TestFormatCompactResourceSnippetAllComponents(t *testing.T) {
 		"Bot (PID 100): RAM <b>25.0 MB</b>, CPU <b>0.2%</b>",
 		"• agy (PID 200): RAM <b>150.0 MB</b>, CPU <b>15.0%</b>",
 		"• claude: 💤 <i>idle</i>",
+		"• grok: 💤 <i>idle</i>",
 		"• whisper-server (PID 300): RAM <b>200.0 MB</b>, CPU <b>1.0%</b>",
 	} {
 		if !strings.Contains(compactAgy, want) {
@@ -470,6 +550,7 @@ func TestFormatCompactResourceSnippetAllComponents(t *testing.T) {
 		"Bot (PID 100): RAM <b>25.0 MB</b>, CPU <b>0.2%</b>",
 		"• agy: 💤 <i>idle</i>",
 		"• claude (PID 400): RAM <b>180.0 MB</b>, CPU <b>20.5%</b>",
+		"• grok: 💤 <i>idle</i>",
 		"• whisper-server (PID 300): RAM <b>190.0 MB</b>, CPU <b>0.5%</b>",
 	} {
 		if !strings.Contains(compactClaude, want) {
@@ -526,7 +607,7 @@ func TestFormatResourcesMessageWithWhisperServer(t *testing.T) {
 		"• Служба: 🟢 <i>установлена (whisper-server.service)</i>",
 		"• Фоновые процессы whisper-server: <code>1</code> шт.",
 		"501",
-		"top -p $(pgrep -d, -f 'bot|agy|claude|whisper')",
+		"top -p $(pgrep -d, -f 'bot|agy|claude|grok|whisper')",
 	} {
 		if !strings.Contains(msgRunning, want) {
 			t.Errorf("expected %q in /top output, got:\n%s", want, msgRunning)

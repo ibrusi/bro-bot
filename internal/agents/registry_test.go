@@ -74,8 +74,10 @@ func TestRegistryTitle(t *testing.T) {
 		{"alpha", "mcp"}:   "alpha MCP",
 		{"alpha", "MCP"}:   "alpha MCP",
 		{"alpha", ""}:      "alpha MCP",
+		{"alpha", "acp"}:   "alpha (ACP)",
 		{"unknown", "api"}: "agent API",
 		{"unknown", "mcp"}: "MCP channel",
+		{"unknown", "acp"}: "ACP channel",
 		{"", "cli"}:        "MCP channel",
 		{"", ""}:           "MCP channel",
 	}
@@ -151,6 +153,42 @@ func TestRegistryBuildUnknownAgent(t *testing.T) {
 	}
 }
 
+func TestParseModeRejectsUnknown(t *testing.T) {
+	if mode, ok := ParseMode("acp"); !ok || mode != ModeACP {
+		t.Errorf("ParseMode(acp) = %q, %v", mode, ok)
+	}
+	if _, ok := ParseMode("что-то"); ok {
+		t.Error("неизвестный режим не должен разбираться")
+	}
+	if mode, ok := ParseMode("cli"); !ok || mode != ModeMCP {
+		t.Errorf("ParseMode(cli) = %q, %v", mode, ok)
+	}
+}
+
+func TestPreferredMode(t *testing.T) {
+	both := testSpec("alpha")
+	if mode, ok := both.PreferredMode(); !ok || mode != ModeMCP {
+		t.Errorf("агент с mcp предпочитает %q", mode)
+	}
+	acpOnly := Spec{Name: "grok", NewACP: func() ports.AgentFramework { return &fakeFramework{kind: "acp"} }}
+	if mode, ok := acpOnly.PreferredMode(); !ok || mode != ModeACP {
+		t.Errorf("агент только с acp предпочитает %q", mode)
+	}
+	fw, err := func() (ports.AgentFramework, error) {
+		reg := NewRegistry()
+		reg.Register(acpOnly)
+		return reg.Build("grok", ModeACP)
+	}()
+	if err != nil || fw.(*fakeFramework).kind != "acp" {
+		t.Fatalf("сборка acp: %v, %v", fw, err)
+	}
+	reg := NewRegistry()
+	reg.Register(both)
+	if _, err := reg.Build("alpha", ModeACP); err == nil {
+		t.Fatal("агент без NewACP не должен собираться в acp")
+	}
+}
+
 func TestNormalizeMode(t *testing.T) {
 	for in, want := range map[string]string{
 		"api":    "api",
@@ -158,6 +196,8 @@ func TestNormalizeMode(t *testing.T) {
 		"cli":    "mcp",
 		"mcp":    "mcp",
 		" MCP ":  "mcp",
+		"acp":    "acp",
+		" ACP ":  "acp",
 		"":       "mcp",
 		"что-то": "mcp",
 	} {

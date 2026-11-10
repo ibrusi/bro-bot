@@ -21,16 +21,32 @@ import (
 const (
 	ModeAPI = "api"
 	ModeMCP = "mcp"
+	// ModeACP — агент по протоколу Agent Client Protocol поверх stdio
+	// (`grok agent stdio`). Сессией, моделью и правами управляет клиент бота.
+	ModeACP = "acp"
 )
 
 // NormalizeMode приводит режим к каноническому виду: по умолчанию используется mcp.
 func NormalizeMode(mode string) string {
-	m := strings.ToLower(strings.TrimSpace(mode))
-	switch m {
-	case ModeAPI:
-		return ModeAPI
-	default:
+	parsed, ok := ParseMode(mode)
+	if !ok {
 		return ModeMCP
+	}
+	return parsed
+}
+
+// ParseMode разбирает режим команды /mode. Неизвестное значение не подменяется mcp:
+// иначе опечатка молча включила бы другой режим.
+func ParseMode(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case ModeAPI:
+		return ModeAPI, true
+	case ModeMCP, "cli":
+		return ModeMCP, true
+	case ModeACP:
+		return ModeACP, true
+	default:
+		return "", false
 	}
 }
 
@@ -38,9 +54,10 @@ func NormalizeMode(mode string) string {
 type Spec struct {
 	// Name — каноническое имя в нижнем регистре, по которому агента выбирают командой /agent.
 	Name string
-	// APITitle и MCPTitle — как называть источник данных в отчётах (/usage) в каждом режиме.
+	// APITitle, MCPTitle и ACPTitle — как называть источник данных в отчётах (/usage).
 	APITitle string
 	MCPTitle string
+	ACPTitle string
 	// APIKeyEnv — переменные окружения, любая из которых даёт ключ для api-режима.
 	APIKeyEnv []string
 	// DefaultModel — модель, на которую переключается бот, если текущая агенту не подходит.
@@ -49,9 +66,41 @@ type Spec struct {
 	RejectsModel func(model string) bool
 	// ModelAliases — псевдонимы моделей агента (/model sonnet), общие для всех режимов.
 	ModelAliases models.Aliases
-	// NewAPI и NewMCP собирают адаптер для соответствующего режима.
+	// NewAPI, NewMCP и NewACP собирают адаптер для соответствующего режима.
+	// Нет фабрики — агент этот режим не поддерживает.
 	NewAPI func() ports.AgentFramework
 	NewMCP func() ports.AgentFramework
+	NewACP func() ports.AgentFramework
+}
+
+// Supports сообщает, есть ли у агента фабрика для режима.
+func (s Spec) Supports(mode string) bool {
+	switch NormalizeMode(mode) {
+	case ModeAPI:
+		return s.NewAPI != nil
+	case ModeACP:
+		return s.NewACP != nil
+	default:
+		return s.NewMCP != nil
+	}
+}
+
+// PreferredMode — режим, в котором агент точно запускается.
+// У grok это acp, у остальных по умолчанию mcp.
+func (s Spec) PreferredMode() (string, bool) {
+	if s.NewACP != nil && s.NewMCP == nil && s.NewAPI == nil {
+		return ModeACP, true
+	}
+	if s.NewMCP != nil {
+		return ModeMCP, true
+	}
+	if s.NewAPI != nil {
+		return ModeAPI, true
+	}
+	if s.NewACP != nil {
+		return ModeACP, true
+	}
+	return "", false
 }
 
 // Title возвращает название источника для режима.
@@ -59,6 +108,11 @@ func (s Spec) Title(mode string) string {
 	switch NormalizeMode(mode) {
 	case ModeAPI:
 		return s.APITitle
+	case ModeACP:
+		if s.ACPTitle != "" {
+			return s.ACPTitle
+		}
+		return s.Name + " (ACP)"
 	default:
 		if s.MCPTitle != "" {
 			return s.MCPTitle
@@ -177,6 +231,8 @@ func (r *Registry) Title(name, mode, lang string) string {
 	switch NormalizeMode(mode) {
 	case ModeAPI:
 		return i18n.T(lang, "agent.source_api")
+	case ModeACP:
+		return i18n.T(lang, "agent.source_acp")
 	default:
 		return i18n.T(lang, "agent.source_mcp")
 	}
@@ -199,6 +255,11 @@ func (r *Registry) Build(name, mode string) (ports.AgentFramework, error) {
 			return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeAPI}
 		}
 		return spec.NewAPI(), nil
+	case ModeACP:
+		if spec.NewACP == nil {
+			return nil, &UnsupportedModeError{Agent: spec.Name, Mode: ModeACP}
+		}
+		return spec.NewACP(), nil
 	default:
 		if spec.NewMCP != nil {
 			return spec.NewMCP(), nil

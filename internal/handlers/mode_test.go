@@ -31,6 +31,16 @@ func TestExecutionModeState(t *testing.T) {
 	if ps.GetExecutionMode() != "mcp" {
 		t.Errorf("expected execution mode to be 'mcp', got: %s", ps.GetExecutionMode())
 	}
+
+	ps.SetExecutionMode("acp")
+	if ps.GetExecutionMode() != "acp" {
+		t.Errorf("expected execution mode to be 'acp', got: %s", ps.GetExecutionMode())
+	}
+
+	ps.SetExecutionMode(" ACP ")
+	if ps.GetExecutionMode() != "acp" {
+		t.Errorf("expected trimmed acp, got: %s", ps.GetExecutionMode())
+	}
 }
 
 func TestModeCommandAndAgentSwitchWithMode(t *testing.T) {
