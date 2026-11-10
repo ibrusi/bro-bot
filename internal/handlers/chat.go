@@ -24,7 +24,8 @@ const (
 	// ограничены 64 байтами, поэтому текст запроса храним в памяти).
 	chatSuggestionTTL = time.Hour
 	// chatAnswerInlineLimit — до какой длины ответ помещается прямо в статусное сообщение.
-	chatAnswerInlineLimit = 3500
+	// Это лимит Telegram минус запас на разметку и эмодзи.
+	chatAnswerInlineLimit = utils.SafeMessageRunes
 	// chatAnswerDocumentLimit — начиная с какой длины ответ отправляется файлом.
 	chatAnswerDocumentLimit = 12000
 	// chatBootstrapTurns / chatBootstrapChars — размер контекста, подмешиваемого новому CLI-агенту.
@@ -258,6 +259,7 @@ type chatResult struct {
 	Duration       float64
 	Status         string
 	Err            error
+	Written        []observedFile
 }
 
 // runChatTurn выполняет один ход диалога: запускает агента, показывает прогресс и отправляет ответ.
@@ -346,6 +348,7 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 	domain.GlobalTokenTracker.RecordChatUsage(model, usage, duration)
 
 	sendChatAnswer(m, chat, statusRef, project, answer, note, lang)
+	deliverRequestedFiles(m, chat, workDir, lang, []string{userText}, res.Written, answer, nil)
 }
 
 // streamChatAnswer запускает агента и разбирает поток событий stream-json.
@@ -366,7 +369,7 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 
 	// Инструменты бота, вызванные агентом через MCP-мост, работают в этом разговоре.
 	defer mcpChannels.bind(agentProcess.PID(), &chatChannel{
-		m: m, chat: chat, lang: lang,
+		m: m, chat: chat, lang: lang, workDir: args.WorkDir,
 		onProgress: func(status string) {
 			mu.Lock()
 			lastAction = status
@@ -403,6 +406,7 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 	}()
 
 	var answer strings.Builder
+	var files writtenFileCollector
 	scanner := bufio.NewScanner(agentProcess.Stdout())
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
@@ -427,11 +431,14 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 
 		if u := evt.StepUpdate; u != nil {
 			switch {
-			case u.StepType == "tool" && u.State == "ACTIVE":
-				desc := domain.FormatToolAction(u.ToolName, u.ToolInfo)
-				mu.Lock()
-				lastAction = desc
-				mu.Unlock()
+			case u.StepType == "tool" && (u.State == "ACTIVE" || u.State == "DONE"):
+				files.Observe(u.ToolName, u.ToolInfo)
+				if u.State == "ACTIVE" {
+					desc := domain.FormatToolAction(u.ToolName, u.ToolInfo)
+					mu.Lock()
+					lastAction = desc
+					mu.Unlock()
+				}
 			case u.StepType == "agent_response" && u.TextDelta != "":
 				answer.WriteString(u.TextDelta)
 			}
@@ -466,6 +473,7 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 	}
 
 	res.Answer = answer.String()
+	res.Written = files.Paths()
 	return res
 }
 

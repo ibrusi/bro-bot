@@ -17,6 +17,8 @@ import (
 // fakeChannel записывает, что агент сделал через инструменты бота.
 type fakeChannel struct {
 	messages  []string
+	files     []string
+	captions  []string
 	progress  []string
 	questions []string
 	options   [][]string
@@ -25,6 +27,12 @@ type fakeChannel struct {
 
 func (f *fakeChannel) SendMessage(text string) error {
 	f.messages = append(f.messages, text)
+	return f.err
+}
+
+func (f *fakeChannel) SendFile(path, caption string) error {
+	f.files = append(f.files, path)
+	f.captions = append(f.captions, caption)
 	return f.err
 }
 
@@ -112,8 +120,18 @@ func TestAgentChannelsTools(t *testing.T) {
 		t.Errorf("progress = %v", ch.progress)
 	}
 
+	fileRes := channels.handle(ctx, 100, call(mcp.ToolSendFile, map[string]interface{}{"path": " notes.txt ", "caption": "список"}))
+	if fileRes.IsError || !strings.Contains(fileRes.Text, "sent") || len(ch.files) != 1 || ch.files[0] != "notes.txt" || ch.captions[0] != "список" {
+		t.Errorf("send file = %+v, files = %v, captions = %v", fileRes, ch.files, ch.captions)
+	}
+	longText := strings.Repeat("я", 4000)
+	if res := channels.handle(ctx, 100, call(mcp.ToolSendMessage, map[string]interface{}{"message": longText})); res.IsError || ch.messages[len(ch.messages)-1] != longText {
+		t.Errorf("a reply under the flood ceiling must not be cut, got %d runes", len([]rune(ch.messages[len(ch.messages)-1])))
+	}
+
 	for _, bad := range []mcp.BridgeCall{
 		call(mcp.ToolSendMessage, map[string]interface{}{"message": "  "}),
+		call(mcp.ToolSendFile, map[string]interface{}{"path": "  "}),
 		call(mcp.ToolAskUser, map[string]interface{}{}),
 		call(mcp.ToolReportProgress, map[string]interface{}{"status": 7}),
 		call("rm_rf", nil),

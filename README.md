@@ -78,7 +78,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
   - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, active `agy`/`claude`/`grok` processes, and the `whisper-server` speech recognition engine.
 - **Execution Modes: MCP, API & ACP (`/mode [mcp|api|acp]`)**:
-  - `mcp` (default for `agy` and `claude`): agents run with the bot's built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`). Its tools (`telegram_send_message`, `ask_user`, `report_progress`) reach the running bot over a local Unix-socket bridge and act on the task that started the agent.
+  - `mcp` (default for `agy` and `claude`): agents run with the bot's built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`). Its tools (`telegram_send_message`, `telegram_send_file`, `ask_user`, `report_progress`) reach the running bot over a local Unix-socket bridge and act on the task that started the agent.
   - `api`: connects directly to provider APIs (Google Gemini API & Anthropic Messages API) with built-in workspace file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`). `grok` does not support this mode.
   - `acp`: Grok only. The bot speaks newline-delimited JSON-RPC to `grok agent stdio`, resumes the ACP session, and translates `session/update` into the same stream the rest of the bot already reads. The project directory is the session `cwd`. The bot MCP server is declared in `mcpServers`.
   - Safe sandboxing: chat mode (`/chat`) provides strictly read-only file access, while file writes and command executions are enabled for pipeline tasks. All paths are validated within the project directory.
@@ -98,6 +98,8 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Safe sanitization against Path Traversal and shell injection, preserving Unicode and Cyrillic filenames.
   - Byte-by-byte deduplication: re-uploading an identical file reuses the existing file without creating duplicates or redundant disk writes.
   - Contextual routing: attached to active tasks (or via Telegram Reply), passed to new tasks, or explored in conversational mode (`/chat`).
+  - Outgoing replies are split just under Telegram's 4096-character limit, with room left for markup.
+  - When you ask an agent to save information into a file, the bot sends that file back. In a task the agent can write it in the project; in chat, which cannot change project files, the bot saves the answer under `uploads/` and attaches it. Ordinary source edits are not attached. Any agent can also send a file explicitly with `telegram_send_file`.
 - **Hot-Rebuild & In-Bot CI/CD**:
   - `/restart` — clean, non-blocking systemd service restart.
   - `/rebuild [branch] [--pull] [--force]` — pulls latest code from Git, compiles a fresh Go binary, atomically replaces the executable, restarts the service, and sends a Telegram notification with the new commit hash upon startup.
@@ -174,6 +176,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
    - The agent spawns `bot mcp-serve` as its own child process, so the server forwards every tool call to the running bot over a Unix socket (`<BOT_DIR>/data/mcp/bridge.sock`, directory mode `0700`): one JSON request, one JSON response. The bot identifies the caller by the kernel-reported PID of the socket peer (`SO_PEERCRED`) and walks up its parent processes to the agent it started, so a call always lands in the right task and cannot impersonate another one.
    - Tools available to the agent:
      - `telegram_send_message`: sends a message to the task's chat (Markdown is supported);
+     - `telegram_send_file`: sends a file from the project directory (the path cannot leave the project, the same 20 MB limit);
      - `ask_user`: asks the user a question with optional answer buttons. The tool does not block: the agent is told to end its turn, the task switches to *waiting for input*, and the answer arrives as the next message of the same agent session (`--resume` / `--conversation`);
      - `report_progress`: shows the current step, optionally with a percentage, in the live task status.
    - If the bot is not running or the agent was not started by the bot, the tools return an error to the agent instead of pretending the action succeeded.

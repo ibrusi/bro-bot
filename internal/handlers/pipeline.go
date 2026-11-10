@@ -378,7 +378,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			finalReport = strings.TrimSpace(utils.SanitizePlanText(finalReport))
 			if finalReport != "" {
 				reportRunes := []rune(finalReport)
-				if len(reportRunes) > 1500 {
+				if len(reportRunes) > utils.SafeMessageRunes {
 					summary := utils.ExtractPlanSummary(finalReport, 1200)
 					summaryHTML := utils.MarkdownToTelegramHTML(summary)
 					_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.report_summary", taskID, summaryHTML, len(reportRunes)), ports.Rich())
@@ -739,7 +739,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 
 	// Инструменты бота, которые агент вызывает через MCP-мост, работают в контексте
 	// этой задачи: сообщения идут в её чат, прогресс — в её лог, вопрос — в её шаг.
-	mcpChannel := newTaskChannel(m, chat, task, lang)
+	mcpChannel := newTaskChannel(m, chat, task, lang, workDir)
 	defer mcpChannels.bind(agentProcess.PID(), mcpChannel)()
 
 	scanner := bufio.NewScanner(agentProcess.Stdout())
@@ -813,6 +813,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	var hasAskQuestionToolCall bool
 	var pendingQuestionText string
 	var pendingQuestionOptions []string
+	var files writtenFileCollector
 
 	go func() {
 		for scanner.Scan() {
@@ -845,6 +846,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 					}
 					if u.Usage != nil {
 						domain.GlobalTokenTracker.RecordStepUsage(u.StepIndex, *u.Usage)
+					}
+					if u.StepType == "tool" && (u.State == "ACTIVE" || u.State == "DONE") {
+						files.Observe(u.ToolName, u.ToolInfo)
 					}
 					if u.StepType == "tool" && u.State == "ACTIVE" {
 						domain.GlobalTokenTracker.RecordToolCall()
@@ -940,11 +944,24 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	fullResp := strings.TrimSpace(view6.Output)
 	syncLegacySession(task)
 
+	deliverStepFile := func() {
+		if isPlanning {
+			return
+		}
+		initial := task.Snapshot().InitialPrompt
+		deliverRequestedFiles(m, chat, workDir, lang, []string{prompt, initial}, files.Paths(), fullResp, func(ref ports.MessageRef) {
+			if ref.ID != "" {
+				domain.GlobalTaskManager.RegisterMessageTask(ref, taskID)
+			}
+		})
+	}
+
 	if isCancelled {
 		return StepResult{Outcome: StepOutcomeCancelled, PRURL: lastPR}
 	}
 	// Если PR уже успешно создан в git и получен URL, шаг считается успешно завершённым
 	if lastPR != "" {
+		deliverStepFile()
 		return StepResult{Outcome: StepOutcomeSuccess, PRURL: lastPR, HasResult: hasResult, ResultStatus: resultStatus}
 	}
 	if stepTimedOut || stepCtx.Err() == context.DeadlineExceeded {
@@ -1010,6 +1027,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		}
 	}
 
+	if outcome == StepOutcomeSuccess {
+		deliverStepFile()
+	}
 	return StepResult{
 		Outcome:      outcome,
 		HasResult:    hasResult,

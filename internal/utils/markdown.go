@@ -682,7 +682,7 @@ func SplitMarkdown(text string, maxChunkLen int) []string {
 		return nil
 	}
 	if maxChunkLen <= 0 {
-		maxChunkLen = 3500
+		maxChunkLen = SafeMessageRunes
 	}
 
 	runes := []rune(text)

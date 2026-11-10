@@ -7,9 +7,9 @@ import (
 )
 
 // maxChunkRunes — безопасный размер одного чанка при разбиении длинных сообщений.
-// Меньше официального лимита Telegram в 4096 символов, чтобы оставить запас на
-// закрывающие HTML-теги, которые может добавить SplitTelegramHTML на границе чанка.
-const maxChunkRunes = 3800
+// Меньше официального лимита Telegram в 4096 символов: запас на закрывающие
+// HTML-теги и на эмодзи, которые Telegram считает двумя единицами UTF-16.
+const maxChunkRunes = utils.SafeMessageRunes
 
 // sendParams — telegram-specific параметры одной отправки/редактирования,
 // извлечённые из ports.SendOptions.

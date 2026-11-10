@@ -12,13 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `/agent grok` in the agent menu. Grok speaks Agent Client Protocol on `grok agent stdio` (`/mode acp`).
   - Sessions resume with `session/resume`. A failed resume opens `session/new` and continues from the current message.
   - Tasks run with `--always-approve` and `yoloMode` unless `GROK_ACP_YOLO` is `false`, `0`, `no`, or `off`. Chat stays read-only: edit, execute, delete, and move permissions are rejected.
-  - The bot MCP server `bro_bot` is passed into the Grok session, so `ask_user`, `telegram_send_message`, and `report_progress` reach the running bot.
+  - The bot MCP server `bro_bot` is passed into the Grok session, so `ask_user`, `telegram_send_message`, `telegram_send_file`, and `report_progress` reach the running bot.
   - Model and reasoning effort are applied with `session/set_config_option` (`/effort max` maps to Grok's `xhigh`). Project rules from `AGENTS.md` go into session `_meta.rules` on a new session.
   - Switching to Grok from `mcp` or `api` stores `acp`. Switching back to `agy` or `claude` restores `mcp`. An explicit `/mode mcp` or `/mode api` while Grok is active is rejected.
   - `/top` reports the `grok` CLI the same way as `agy` and `claude`: version, the active worker, background processes, and the compact status line.
 - **Queue and sessions**:
   - `/queue`, `/clearqueue`, `/flush`, and `/btw` manage the chat queue and the current project's task additions without stopping the running answer. The same commands work for `agy`, `claude`, and `grok`.
   - `/sessions` lists chat sessions and tasks the bot stored for the current project. It does not scan agent files on disk.
+- **Longer replies and file delivery**:
+  - Outgoing messages are split just under Telegram's 4096-character limit, leaving a buffer for markup.
+  - Any agent can attach a project file with the MCP tool `telegram_send_file` (path stays inside the project, 20 MB limit).
+  - When the user asks to save information into a file, the bot sends the file the agent wrote. In chat, which cannot change project files, the bot saves the answer under `uploads/` and attaches that document. Ordinary source edits are not attached.
 
 ## [1.0.0] - 2026-10-13
 
