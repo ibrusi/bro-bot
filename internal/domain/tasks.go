@@ -1140,6 +1140,41 @@ func (tm *TaskManager) AddFollowup(id int, text string) (*TaskSession, int, bool
 	return task, queueLen, false, nil
 }
 
+// PrependFollowup ставит дополнение в начало очереди задачи.
+// Завершённую или отменённую задачу не меняет: её очередь уже некому читать.
+func (tm *TaskManager) PrependFollowup(id int, text string) (int, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0, fmt.Errorf("tasks: empty followup")
+	}
+
+	tm.RLock()
+	task, ok := tm.tasks[id]
+	tm.RUnlock()
+	if !ok {
+		return 0, &TaskNotFoundError{ID: id}
+	}
+
+	task.mu.Lock()
+	if task.Status == TaskStatusCompleted || task.Status == TaskStatusCancelled {
+		status := task.Status
+		task.mu.Unlock()
+		return 0, &TaskAlreadyFinishedError{ID: id, Status: status}
+	}
+	task.PendingFollowups = append([]string{text}, task.PendingFollowups...)
+	followups := append([]string(nil), task.PendingFollowups...)
+	s := task.storage
+	task.mu.Unlock()
+
+	if s != nil {
+		_ = s.ClearFollowups(context.Background(), id)
+		for i, item := range followups {
+			_ = s.AddFollowup(context.Background(), id, item, i)
+		}
+	}
+	return len(followups), nil
+}
+
 // RegisterMessageTask связывает отправленное сообщение с ID задачи.
 func (tm *TaskManager) RegisterMessageTask(ref ports.MessageRef, taskID int) {
 	if ref.ID == "" {

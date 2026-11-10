@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Model and reasoning effort are applied with `session/set_config_option` (`/effort max` maps to Grok's `xhigh`). Project rules from `AGENTS.md` go into session `_meta.rules` on a new session.
   - Switching to Grok from `mcp` or `api` stores `acp`. Switching back to `agy` or `claude` restores `mcp`. An explicit `/mode mcp` or `/mode api` while Grok is active is rejected.
   - `/top` reports the `grok` CLI the same way as `agy` and `claude`: version, the active worker, background processes, and the compact status line.
+- **Queue and sessions**:
+  - `/queue`, `/clearqueue`, `/flush`, and `/btw` manage the chat queue and the current project's task additions without stopping the running answer. The same commands work for `agy`, `claude`, and `grok`.
+  - `/sessions` lists chat sessions and tasks the bot stored for the current project. It does not scan agent files on disk.
 
 ## [1.0.0] - 2026-10-13
 

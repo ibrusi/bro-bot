@@ -164,6 +164,12 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	onCmd("planmode", handlePlanMode)
 	onCmd("chat", handleChat)
 	onCmd("chatmode", handleChatMode)
+	onCmd("queue", handleQueue)
+	onCmd("clearqueue", handleClearQueue)
+	onCmd("flush", handleFlush)
+	onCmd("btw", handleBtw)
+	onCmd("sessions", handleSessions)
+	t.OnCallback("chat_new", onChatNew)
 	t.OnCallback("chat_mode_toggle", onChatModeToggle)
 	onCmd("language", handleLanguage)
 	t.OnCallback("lang_sel", onLanguageSel)
@@ -279,7 +285,8 @@ func getDefaultCommands(lang string) []ports.BotCommand {
 
 	names := []string{
 		"status", "tasks", "task", "plan", "planmode", "approve", "planfile", "history",
-		"add", "chat", "chatmode", "new", "resume", "retry", "pause", "cancel",
+		"add", "chat", "chatmode", "queue", "clearqueue", "flush", "btw", "sessions",
+		"new", "resume", "retry", "pause", "cancel",
 		"tokens", "context", "top", "usage", "model", "effort", "agent", "mode",
 		"project", "clone", "script", "language", "restart", "rebuild", "start",
 	}
