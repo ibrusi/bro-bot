@@ -15,7 +15,27 @@ var claudeFamilies = []string{"claude-opus-5-5", "claude-sonnet-5-5"}
 // Базовые имена семейств Claude перечислены явно: в каталоге agy есть только их
 // варианты по уровню.
 var modelAliases = models.NewAliases(map[string]string{
-	"default": "gemini-3.1-pro-high",
+	"default": "gemini-pro-orchestrator-g1-pro",
+
+	// Orchestrator
+	"orchestrator":                   "gemini-pro-orchestrator-g1-pro",
+	"g1-pro":                         "gemini-pro-orchestrator-g1-pro",
+	"gemini-pro-orchestrator-g1-pro": "gemini-pro-orchestrator-g1-pro",
+
+	// Gemini 4 Argon
+	"argon":          "gemini-4-argon-medium",
+	"4-argon":        "gemini-4-argon-medium",
+	"gemini-4-argon": "gemini-4-argon-medium",
+	"argon-high":     "gemini-4-argon-high",
+	"argon-low":      "gemini-4-argon-low",
+
+	// Gemini 4 Hydrogen
+	"hydrogen":          "gemini-4-hydrogen-medium",
+	"4-hydrogen":        "gemini-4-hydrogen-medium",
+	"gemini-4-hydrogen": "gemini-4-hydrogen-medium",
+	"hydrogen-high":     "gemini-4-hydrogen-high",
+	"hydrogen-xhigh":    "gemini-4-hydrogen-xhigh",
+	"hydrogen-low":      "gemini-4-hydrogen-low",
 
 	// Flash 3.8
 	"flash":            "gemini-3.8-flash-medium",
@@ -50,18 +70,20 @@ var modelAliases = models.NewAliases(map[string]string{
 	"3.1-low":        "gemini-3.1-pro-low",
 
 	// Claude Sonnet 5.5: уровень рассуждений задаёт /effort
-	"sonnet":            "claude-sonnet-5-5",
-	"claude-sonnet":     "claude-sonnet-5-5",
-	"sonnet-5.5":        "claude-sonnet-5-5",
-	"claude-sonnet-5.5": "claude-sonnet-5-5",
-	"claude-sonnet-5-5": "claude-sonnet-5-5",
+	"sonnet":                   "claude-sonnet-5-5-medium",
+	"claude-sonnet":            "claude-sonnet-5-5-medium",
+	"sonnet-5.5":               "claude-sonnet-5-5-medium",
+	"claude-sonnet-5.5":        "claude-sonnet-5-5-medium",
+	"claude-sonnet-5-5":        "claude-sonnet-5-5-medium",
+	"claude-sonnet-5-5-medium": "claude-sonnet-5-5-medium",
 
 	// Claude Opus 5.5
-	"opus":            "claude-opus-5-5",
-	"claude-opus":     "claude-opus-5-5",
-	"opus-5.5":        "claude-opus-5-5",
-	"claude-opus-5.5": "claude-opus-5-5",
-	"claude-opus-5-5": "claude-opus-5-5",
+	"opus":                   "claude-opus-5-5-medium",
+	"claude-opus":            "claude-opus-5-5-medium",
+	"opus-5.5":               "claude-opus-5-5-medium",
+	"claude-opus-5.5":        "claude-opus-5-5-medium",
+	"claude-opus-5-5":        "claude-opus-5-5-medium",
+	"claude-opus-5-5-medium": "claude-opus-5-5-medium",
 
 	// GPT-OSS
 	"oss":                 "gpt-oss-120b-medium",
@@ -70,6 +92,9 @@ var modelAliases = models.NewAliases(map[string]string{
 	"gpt-oss-120b":        "gpt-oss-120b-medium",
 	"gpt-oss-120b-medium": "gpt-oss-120b-medium",
 },
+	models.AliasHint{Alias: "orchestrator", Title: "Orchestrator (Argon)"},
+	models.AliasHint{Alias: "argon", Title: "Gemini 4 Argon"},
+	models.AliasHint{Alias: "hydrogen", Title: "Gemini 4 Hydrogen"},
 	models.AliasHint{Alias: "flash", Title: "Gemini 3.8 Flash"},
 	models.AliasHint{Alias: "pro", Title: "Gemini 3.1 Pro"},
 	models.AliasHint{Alias: "sonnet", Title: "Claude Sonnet 5.5"},

@@ -8,6 +8,9 @@ import (
 
 // agyCatalog — вывод `agy models` версии 1.3.3.
 var agyCatalog = []string{
+	"gemini-pro-orchestrator-g1-pro",
+	"gemini-4-argon-high", "gemini-4-argon-medium", "gemini-4-argon-low",
+	"gemini-4-hydrogen-xhigh", "gemini-4-hydrogen-high", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-low",
 	"gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
 	"gemini-3.1-pro-high", "gemini-3.1-pro-low",
 	"claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-opus-5-5-high",
@@ -32,6 +35,11 @@ func TestBuildAgyModelArgs(t *testing.T) {
 		// Вариант с уровнем в имени: при auto остаётся как есть.
 		{"variant auto", "claude-opus-5-5-high", effort.Auto, []string{"--model", "claude-opus-5-5-high"}},
 		{"single variant auto", "gpt-oss-120b-medium", effort.Auto, []string{"--model", "gpt-oss-120b-medium"}},
+
+		// Одиночные модели из каталога без суффикса уровня не принимают --effort.
+		{"standalone catalog auto", "gemini-pro-orchestrator-g1-pro", effort.Auto, []string{"--model", "gemini-pro-orchestrator-g1-pro"}},
+		{"standalone catalog medium", "gemini-pro-orchestrator-g1-pro", effort.Medium, []string{"--model", "gemini-pro-orchestrator-g1-pro"}},
+		{"standalone catalog high", "gemini-pro-orchestrator-g1-pro", effort.High, []string{"--model", "gemini-pro-orchestrator-g1-pro"}},
 
 		// Явный уровень выбирает другой вариант, а не конфликтующий --effort.
 		{"variant override", "gemini-3.1-pro-high", effort.Low, []string{"--model", "gemini-3.1-pro-low"}},
@@ -67,6 +75,14 @@ func TestBuildAgyModelArgsEmptyCatalog(t *testing.T) {
 	expected := []string{"--model", "gemini-3.1-pro", "--effort", "high"}
 	if !reflect.DeepEqual(actual, expected) {
 		t.Errorf("BuildAgyModelArgs без каталога = %v, expected %v", actual, expected)
+	}
+
+	for _, lvl := range []effort.Level{effort.Auto, effort.Medium} {
+		got := BuildAgyModelArgs("gemini-pro-orchestrator-g1-pro", lvl, nil)
+		want := []string{"--model", "gemini-pro-orchestrator-g1-pro"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("BuildAgyModelArgs(orchestrator, %q, nil) = %v, expected %v", lvl, got, want)
+		}
 	}
 }
 

@@ -8,14 +8,19 @@ func TestModelAliases(t *testing.T) {
 		expected string
 		found    bool
 	}{
-		{"default", "gemini-3.1-pro-high", true},
+		{"default", "gemini-pro-orchestrator-g1-pro", true},
+		{"orchestrator", "gemini-pro-orchestrator-g1-pro", true},
+		{"argon", "gemini-4-argon-medium", true},
+		{"argon-high", "gemini-4-argon-high", true},
+		{"hydrogen", "gemini-4-hydrogen-medium", true},
+		{"hydrogen-xhigh", "gemini-4-hydrogen-xhigh", true},
 		{"flash", "gemini-3.8-flash-medium", true},
 		{"pro-low", "gemini-3.1-pro-low", true},
-		{"sonnet", "claude-sonnet-5-5", true},
-		{"claude-sonnet-5.5", "claude-sonnet-5-5", true},
-		{"opus", "claude-opus-5-5", true},
-		{"Claude-Opus", "claude-opus-5-5", true},
-		{"claude-opus-5-5", "claude-opus-5-5", true},
+		{"sonnet", "claude-sonnet-5-5-medium", true},
+		{"claude-sonnet-5.5", "claude-sonnet-5-5-medium", true},
+		{"opus", "claude-opus-5-5-medium", true},
+		{"Claude-Opus", "claude-opus-5-5-medium", true},
+		{"claude-opus-5-5", "claude-opus-5-5-medium", true},
 		{"oss", "gpt-oss-120b-medium", true},
 		// Haiku в каталоге agy нет: псевдоним принадлежит только claude.
 		{"haiku", "", false},
@@ -35,6 +40,9 @@ func TestRejectsModel(t *testing.T) {
 		model    string
 		rejected bool
 	}{
+		{"gemini-pro-orchestrator-g1-pro", false},
+		{"argon", false},
+		{"hydrogen", false},
 		{"gemini-3.1-pro-high", false},
 		{"gpt-oss-120b-medium", false},
 		{"claude-opus-5-5", false},
