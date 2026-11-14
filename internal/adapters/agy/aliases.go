@@ -6,14 +6,9 @@ import (
 	"bro-bot/internal/models"
 )
 
-// claudeFamilies — модели Claude из каталога agy (`agy models` 1.3.3). Каждая доступна
-// вариантами по уровню рассуждений (claude-opus-5-5-high), базовое имя agy дополняет
-// уровнем сам (models.BuildAgyModelArgs). Haiku в каталоге agy нет.
-var claudeFamilies = []string{"claude-opus-5-5", "claude-sonnet-5-5"}
-
 // modelAliases — псевдонимы моделей agy. Действуют во всех режимах: cli, mcp и api.
 // Базовые имена семейств Claude перечислены явно: в каталоге agy есть только их
-// варианты по уровню.
+// варианты по уровню, при уже активном agy их можно выбрать через /model.
 var modelAliases = models.NewAliases(map[string]string{
 	"default": "gemini-pro-orchestrator-g1-pro",
 
@@ -102,26 +97,18 @@ var modelAliases = models.NewAliases(map[string]string{
 	models.AliasHint{Alias: "oss", Title: "GPT-OSS 120B"},
 )
 
-// rejectsModel сообщает, что модель agy не запустит: это модель Claude, которой нет
-// в каталоге agy (например, claude-haiku-5-5 или claude-sonnet-5). Псевдоним сначала
-// разрешается в наборе agy, поэтому sonnet и opus допустимы, а haiku — нет.
-func rejectsModel(model string) bool {
-	m := strings.ToLower(strings.TrimSpace(model))
-	if resolved, ok := modelAliases.Resolve(m); ok {
-		m = resolved
+// rejectsModel сообщает, что модель нельзя оставлять при переключении активного агента
+// на agy. Все модели Claude и Grok отклоняются, чтобы при переключении на agy
+// выбиралась его модель по умолчанию (orchestrator).
+func rejectsModel(modelName string) bool {
+	m := strings.ToLower(strings.TrimSpace(modelName))
+	if m == "" {
+		return false
 	}
 	if strings.HasPrefix(m, "grok") {
 		return true
 	}
-	if !isClaudeModel(m) {
-		return false
-	}
-	for _, family := range claudeFamilies {
-		if m == family || strings.HasPrefix(m, family+"-") {
-			return false
-		}
-	}
-	return true
+	return isClaudeModel(m)
 }
 
 func isClaudeModel(m string) bool {

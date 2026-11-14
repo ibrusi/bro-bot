@@ -258,10 +258,14 @@ func initDefaultProject(root, defaultProject string) {
 // DEFAULT_MODEL — модель агента по умолчанию (первого в реестре), поэтому псевдоним
 // разрешается в его наборе: активный агент на этом этапе ещё не восстановлен.
 func initDefaultModel(defaultModel string) {
-	if models.GlobalModelRegistry != nil {
+	if defaultModel != "" {
 		aliases := modelAliasesOf(registry().Default())
-		if resolved, ok := models.GlobalModelRegistry.ResolveModelWith(aliases, defaultModel); ok {
+		if resolved, ok := aliases.Resolve(defaultModel); ok {
 			defaultModel = resolved
+		} else if models.GlobalModelRegistry != nil {
+			if resolved, ok := models.GlobalModelRegistry.ResolveModelWith(aliases, defaultModel); ok {
+				defaultModel = resolved
+			}
 		}
 	}
 	config.DefaultModel = defaultModel
