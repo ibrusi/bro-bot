@@ -14,7 +14,7 @@ var apiKeyEnv = []string{"GEMINI_API_KEY"}
 
 // fallbackDefaultModel — на случай, если модель по умолчанию ещё не разрешена
 // (например, адаптер собрали в тесте без запуска Start).
-const fallbackDefaultModel = "gemini-3.1-pro-high"
+const fallbackDefaultModel = "gemini-pro-orchestrator-g1-pro"
 
 // Spec описывает агента agy для реестра: Gemini API либо режим Google Antigravity (MCP).
 func Spec() agents.Spec {

@@ -39,10 +39,15 @@ type familyMatch struct {
 // Модели вне каталога обрабатываются по прежним эвристикам (legacyAgyModelArgs).
 func BuildAgyModelArgs(modelName string, level effort.Level, knownModels []string) []string {
 	family, ok := matchEffortFamily(modelName, groupEffortFamilies(knownModels))
-	if !ok {
-		return legacyAgyModelArgs(modelName, level)
+	if ok {
+		return []string{"--model", family.variant(family.pickLevel(level))}
 	}
-	return []string{"--model", family.variant(family.pickLevel(level))}
+	// Одиночная модель из каталога agy без вариантов по уровню рассуждений
+	// (например, gemini-pro-orchestrator-g1-pro) флаг --effort не принимает.
+	if slices.Contains(knownModels, modelName) {
+		return []string{"--model", modelName}
+	}
+	return legacyAgyModelArgs(modelName, level)
 }
 
 // KnownModelIDs возвращает ID моделей из каталога активного агента, а пока
@@ -162,8 +167,8 @@ func legacyAgyModelArgs(modelName string, level effort.Level) []string {
 		return args
 	}
 
-	// Прежние модели Claude (claude-sonnet-4-6) флаг --effort не принимают.
-	if strings.Contains(modelName, "claude") {
+	// Прежние модели Claude (claude-sonnet-4-6) и модели orchestrator флаг --effort не принимают.
+	if strings.Contains(modelName, "claude") || strings.Contains(modelName, "orchestrator") {
 		return args
 	}
 
