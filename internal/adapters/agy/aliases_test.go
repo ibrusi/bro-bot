@@ -40,21 +40,22 @@ func TestRejectsModel(t *testing.T) {
 		model    string
 		rejected bool
 	}{
+		{"", false},
 		{"gemini-pro-orchestrator-g1-pro", false},
 		{"argon", false},
 		{"hydrogen", false},
 		{"gemini-3.1-pro-high", false},
 		{"gpt-oss-120b-medium", false},
-		{"claude-opus-5-5", false},
-		{"claude-opus-5-5-high", false},
-		{"claude-sonnet-5-5-low", false},
-		{"sonnet", false}, // псевдоним agy
-		{"opus", false},
+		{"claude-opus-5-5", true},
+		{"claude-opus-5-5-high", true},
+		{"claude-sonnet-5-5-low", true},
+		{"sonnet", true},
+		{"opus", true},
 		{"grok-4.7", true},
 		{"haiku", true},
 		{"claude-haiku-5-5", true},
 		{"claude-sonnet-5", true},
-		{"claude-opus-5", true}, // не путать с семейством claude-opus-5-5
+		{"claude-opus-5", true},
 	}
 	for _, tc := range tests {
 		if got := rejectsModel(tc.model); got != tc.rejected {

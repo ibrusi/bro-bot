@@ -277,20 +277,29 @@ func TestAgyAPIAdapter_GetModels_WhitespaceKey(t *testing.T) {
 	}
 }
 
-// TestDefaultModelUsesConfigSnapshot — модель по умолчанию берётся из снимка
-// конфигурации, уже разрешённого через реестр моделей, а не из окружения.
-func TestDefaultModelUsesConfigSnapshot(t *testing.T) {
+// TestSpecDefaultModelIsOrchestrator — при переключении на агента agy его модель по умолчанию
+// всегда orchestrator (gemini-pro-orchestrator-g1-pro), независимо от config.DefaultModel.
+func TestSpecDefaultModelIsOrchestrator(t *testing.T) {
 	prev := config.DefaultModel
 	t.Cleanup(func() { config.DefaultModel = prev })
 
-	config.DefaultModel = "gemini-3.8-flash-medium"
-	if got := defaultModel(); got != "gemini-3.8-flash-medium" {
-		t.Errorf("defaultModel() = %q, ожидалось значение из снимка", got)
+	spec := Spec()
+	for _, cfgModel := range []string{"gemini-3.8-flash-medium", "gemini-3.1-pro-high", ""} {
+		config.DefaultModel = cfgModel
+		if got := spec.DefaultModel(); got != defaultModel {
+			t.Errorf("Spec().DefaultModel() при config.DefaultModel=%q = %q, ожидалось %q", cfgModel, got, defaultModel)
+		}
 	}
+}
 
-	config.DefaultModel = ""
-	if got := defaultModel(); got != fallbackDefaultModel {
-		t.Errorf("defaultModel() без снимка = %q, ожидалось %q", got, fallbackDefaultModel)
+func TestBuildAgyArgs_ResolvesOrchestratorAlias(t *testing.T) {
+	args := buildAgyArgs(ports.ExecuteArgs{
+		ModelName: "orchestrator",
+		Prompt:    "check",
+	})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--model gemini-pro-orchestrator-g1-pro") {
+		t.Errorf("ожидали --model gemini-pro-orchestrator-g1-pro для алиаса orchestrator, получили: %s", joined)
 	}
 }
 

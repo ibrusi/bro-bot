@@ -101,6 +101,21 @@ func TestInitDefaultModel(t *testing.T) {
 	if cur != "gemini-3.1-pro-high" {
 		t.Errorf("expected gemini-3.1-pro-high, got %s", cur)
 	}
+
+	// Case 3: псевдоним orchestrator разрешается при холодном старте (до создания GlobalModelRegistry)
+	prevReg := models.GlobalModelRegistry
+	models.GlobalModelRegistry = nil
+	t.Cleanup(func() { models.GlobalModelRegistry = prevReg })
+
+	initDefaultModel("orchestrator")
+
+	config.ProjectState.RLock()
+	cur = config.ProjectState.CurrentModel
+	config.ProjectState.RUnlock()
+
+	if cur != "gemini-pro-orchestrator-g1-pro" {
+		t.Errorf("expected gemini-pro-orchestrator-g1-pro for alias 'orchestrator' without GlobalModelRegistry, got %s", cur)
+	}
 }
 
 func TestIsConfirmationText(t *testing.T) {
@@ -1435,12 +1450,21 @@ func TestSwitchActiveAgent(t *testing.T) {
 	}
 
 	// Switch to agy
-	_, err = SwitchActiveAgent("agy")
+	res, err = SwitchActiveAgent("agy")
 	if err != nil {
 		t.Fatalf("unexpected error switching to agy: %v", err)
 	}
 	if ActiveAgentName() != "agy" {
 		t.Fatalf("expected ActiveAgentName to be agy, got %s", ActiveAgentName())
+	}
+	if res.Model != "gemini-pro-orchestrator-g1-pro" {
+		t.Errorf("expected switched model to be gemini-pro-orchestrator-g1-pro, got %s", res.Model)
+	}
+	config.ProjectState.RLock()
+	curModel = config.ProjectState.CurrentModel
+	config.ProjectState.RUnlock()
+	if curModel != "gemini-pro-orchestrator-g1-pro" {
+		t.Errorf("expected CurrentModel to switch to gemini-pro-orchestrator-g1-pro for agy, got %s", curModel)
 	}
 	savedAgent, _ = st.GetSetting(context.Background(), "current_agent")
 	if savedAgent != "agy" {
@@ -1547,7 +1571,7 @@ func setupTestApp(t *testing.T) *mockTransport {
 	t.Setenv("BOT_SERVICE_NAME", "bro-bot.service")
 	t.Setenv("BOT_DIR", tmpDir)
 	t.Setenv("SQLITE_DB_PATH", filepath.Join(tmpDir, "bot.db"))
-	t.Setenv("DEFAULT_MODEL", "gemini-3.1-pro-high")
+	t.Setenv("DEFAULT_MODEL", "gemini-pro-orchestrator-g1-pro")
 
 	cfg, err := config.Load()
 	if err != nil {
