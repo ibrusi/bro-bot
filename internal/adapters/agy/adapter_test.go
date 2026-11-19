@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"bro-bot/internal/config"
 	"bro-bot/internal/effort"
 	"bro-bot/internal/ports"
 )
@@ -156,5 +157,39 @@ func TestBuildAgyArgs_Effort(t *testing.T) {
 	joined = strings.Join(buildAgyArgs(args), " ")
 	if !strings.Contains(joined, "--model gemini-3.1-pro-low") || strings.Contains(joined, "--effort") {
 		t.Errorf("ожидали вариант gemini-3.1-pro-low без --effort: %s", joined)
+	}
+}
+
+func TestBuildAgyArgs_PrintTimeout(t *testing.T) {
+	cases := []struct {
+		name    string
+		timeout time.Duration
+		want    string
+	}{
+		{"zero uses DefaultStepTimeout", 0, config.DefaultStepTimeout.String()},
+		{"negative uses DefaultStepTimeout", -5 * time.Second, config.DefaultStepTimeout.String()},
+		{"45m", 45 * time.Minute, "45m0s"},
+		{"2h", 2 * time.Hour, "2h0m0s"},
+		{"90s", 90 * time.Second, "1m30s"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmdArgs := buildAgyArgs(ports.ExecuteArgs{
+				ModelName: "gemini-3.8-flash-high",
+				Prompt:    "test",
+				Timeout:   tc.timeout,
+			})
+			got := ""
+			for i := 0; i < len(cmdArgs)-1; i++ {
+				if cmdArgs[i] == "--print-timeout" {
+					got = cmdArgs[i+1]
+					break
+				}
+			}
+			if got != tc.want {
+				t.Errorf("--print-timeout = %q, want %q (args: %v)", got, tc.want, cmdArgs)
+			}
+		})
 	}
 }

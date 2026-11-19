@@ -257,6 +257,7 @@ type chatResult struct {
 	Usage          *domain.UsageStats
 	Duration       float64
 	Status         string
+	TimedOut       bool
 	Err            error
 }
 
@@ -293,6 +294,7 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 		History:        chatHistoryForAgent(session, mode),
 		ReadOnly:       true,
 		Effort:         setup.Effort,
+		Timeout:        chatTimeout(),
 	}
 	if strings.EqualFold(mode, "api") {
 		args.SystemPrompt = chatSystemPreamble(lang)
@@ -310,14 +312,14 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 		session.SetConversationID(agent, mode, res.ConversationID)
 	}
 
-	if res.Err != nil || res.Status == "ERROR" {
+	if res.TimedOut || res.Err != nil || res.Status == "ERROR" {
 		message := i18n.T(lang, "chat.answer_failed")
 		if ctx.Err() == context.Canceled {
 			// Пользователь сам остановил ответ командой /chat stop.
 			editOrSend(m, chat, statusRef, i18n.T(lang, "chat.answer_stopped"))
 			return
 		}
-		if ctx.Err() == context.DeadlineExceeded {
+		if res.TimedOut || ctx.Err() == context.DeadlineExceeded {
 			message = i18n.Tf(lang, "chat.answer_timeout", domain.FormatDuration(chatTimeout(), lang))
 		} else if res.Err != nil {
 			message = i18n.Tf(lang, "chat.answer_failed_reason", html.EscapeString(ErrorText(res.Err, lang)))
@@ -414,6 +416,9 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 
 		evt, parseErr := domain.ParseStreamEvent(line)
 		if parseErr != nil || evt == nil {
+			if isAgyPrintTimeoutLine(line) {
+				res.TimedOut = true
+			}
 			// Не-JSON строки терминала показываем как прогресс, но в ответ не включаем.
 			mu.Lock()
 			lastAction = line
@@ -534,7 +539,7 @@ func chatTimeout() time.Duration {
 	if config.ChatTimeout > 0 {
 		return config.ChatTimeout
 	}
-	return 5 * time.Minute
+	return config.DefaultChatTimeout
 }
 
 // workSuggestion — запомненный запрос на изменение кода, ожидающий выбора пользователя.

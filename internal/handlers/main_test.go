@@ -567,6 +567,10 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	})
 	tm.SaveTask(task)
 
+	prevStepTimeout := config.StepTimeout
+	config.StepTimeout = 0
+	t.Cleanup(func() { config.StepTimeout = prevStepTimeout })
+
 	// 1. Проверяем перевод задачи в статус paused при таймауте
 	handleTaskStepTimeout(nil, testChatID, task, "proj-timeout", config.ProjectsRoot, task.Snapshot().ID, false, "ru")
 
@@ -577,8 +581,8 @@ func TestTaskStepTimeoutAndErrorHandlers(t *testing.T) {
 	if st != domain.TaskStatusPaused {
 		t.Errorf("expected task to be paused after timeout, got: %s", st)
 	}
-	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "Превышен таймаут") {
-		t.Errorf("expected timeout message in logs, got: %+v", logs)
+	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "Превышен таймаут") || !strings.Contains(logs[len(logs)-1], "1h0m0s") {
+		t.Errorf("expected timeout message with 1h0m0s in logs, got: %+v", logs)
 	}
 
 	// 2. Проверяем перевод задачи в статус failed при ошибке

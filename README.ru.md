@@ -165,7 +165,7 @@
 
 1. **Режим MCP (`mcp`, по умолчанию)**:
    - Локальные агенты (`claude`, `agy`) запускаются внутри изолированных псевдотерминалов (PTY) с потоковым выводом `stream-json` и дополнительно подключаются к встроенному серверу Model Context Protocol (MCP) бота — подкоманде `bot mcp-serve`, работающей по JSON-RPC 2.0 через stdio:
-     - `agy --dangerously-skip-permissions --print-timeout 30m --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
+     - `agy --dangerously-skip-permissions --print-timeout 1h --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
      - `claude --dangerously-skip-permissions --print --output-format stream-json [--resume <id>] --model <model> -p <prompt>`
    - `claude` подключается через флаг `--mcp-config` с временным конфигурационным файлом, который удаляется после завершения процесса.
    - `agy` подключается через `~/.gemini/config/mcp_config.json`. Бот меняет только свою запись `bro_bot` и сохраняет все остальные серверы и настройки файла; повреждённый файл не перезаписывается.
@@ -318,9 +318,9 @@ nano .env
 | `XAI_API_KEY` | Нет | — | Ключ xAI для CLI `grok` в режиме `acp`. Бот его не читает: процесс `grok` наследует окружение. Выполненный `grok login` важнее ключа. |
 | `GROK_ACP_YOLO` | Нет | включено | Одобрение инструментов Grok в задачах. Пустое значение и любое кроме `false`, `0`, `no`, `off` передаёт `--always-approve` и `yoloMode`. Диалог в любом случае остаётся только на чтение. |
 | `QUESTION_TIMEOUT` | **Да** | — | Таймаут ожидания ответа на вопрос агента (`ask_question` у agy, MCP-инструмент `ask_user`). Поддерживает форматы `15m`, `300s`, `1h` или число секунд. По истечении задача ставится на паузу. |
-| `STEP_TIMEOUT` | Нет | `30m` | Таймаут выполнения одного шага агента `agy` (`--print-timeout`). Поддерживает форматы `30m`, `1h`, `1800s` или секунды. При превышении задача ставится на паузу с сохранением сессии `agy`. |
+| `STEP_TIMEOUT` | Нет | `1h` | Таймаут выполнения одного шага агента в режиме задачи (для `agy` — флаг `--print-timeout`). Поддерживает форматы `1h`, `30m`, `3600s` или секунды. При превышении задача ставится на паузу с сохранением сессии. |
 | `AUTO_CONTINUE_MAX` | Нет | `2` | Сколько раз подряд автоматически продолжать шаг, если агент завершил ход, не дождавшись своих фоновых команд (agy пишет `root agent idle; waiting … background task(s)`, после чего агент не просыпается, и/или `terminating N background task(s) on exit`). Продолжение идёт в той же сессии агента. Когда лимит исчерпан, задача ставится на паузу с кнопкой «Продолжить», а не объявляется завершённой. `0` отключает автопродолжение. |
-| `CHAT_TIMEOUT` | Нет | `5m` | Таймаут одного ответа в разговорном режиме (`/chat`). Поддерживает форматы `5m`, `300s` или число секунд. |
+| `CHAT_TIMEOUT` | Нет | `1h` | Таймаут одного ответа в разговорном режиме (`/chat`). Поддерживает форматы `1h`, `30m`, `3600s` или число секунд. |
 | `BOT_DIR` | Нет | Каталог исполняемого файла | Путь к исходному коду бота для выполнения команд `/rebuild` и сохранения маркера перезапуска. Если не задан, берётся каталог исполняемого файла — но только если рядом с ним лежит `go.mod`. Иначе бот не стартует и сообщает об этом. |
 | `BOT_SERVICE_NAME` | **Да** | — | Имя службы systemd для перезапуска через команды `/restart` и `/rebuild`. |
 | `SQLITE_DB_PATH` | Нет | `data/bot.db` в `BOT_DIR` | Путь к файлу базы данных SQLite для персистентного хранения задач, архитектурных планов, логов, метрик и настроек бота. |
@@ -343,9 +343,9 @@ PROJECTS_ROOT=/home/deploy/projects
 DEFAULT_PROJECT=bro-bot
 DEFAULT_MODEL=gemini-pro-orchestrator-neon
 QUESTION_TIMEOUT=15m
-STEP_TIMEOUT=30m
+STEP_TIMEOUT=1h
 AUTO_CONTINUE_MAX=2
-CHAT_TIMEOUT=5m
+CHAT_TIMEOUT=1h
 BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db

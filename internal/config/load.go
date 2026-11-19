@@ -44,8 +44,8 @@ const (
 // Значения по умолчанию для необязательных параметров.
 const (
 	defaultMessenger          = "telegram"
-	defaultStepTimeout        = 30 * time.Minute
-	defaultChatTimeout        = 5 * time.Minute
+	DefaultStepTimeout        = time.Hour
+	DefaultChatTimeout        = time.Hour
 	defaultAutoContinueMax    = 2
 	defaultWhisperTimeout     = 60 * time.Second
 	defaultWhisperModel       = "base-q5_1"
@@ -153,8 +153,8 @@ func Load() (Config, error) {
 		}
 	}
 
-	cfg.StepTimeout = durationOrDefault(envStepTimeout, defaultStepTimeout)
-	cfg.ChatTimeout = durationOrDefault(envChatTimeout, defaultChatTimeout)
+	cfg.StepTimeout = durationOrDefault(envStepTimeout, DefaultStepTimeout)
+	cfg.ChatTimeout = durationOrDefault(envChatTimeout, DefaultChatTimeout)
 	cfg.AutoContinueMax = nonNegativeIntOrDefault(envAutoContinueMax, defaultAutoContinueMax)
 
 	botDir, err := resolveBotDir()

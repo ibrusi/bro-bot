@@ -2,6 +2,7 @@ package agy
 
 import (
 	"bro-bot/internal/adapters/cliproc"
+	"bro-bot/internal/config"
 	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/creack/pty"
 )
@@ -25,11 +27,19 @@ func (a *AgyAdapter) ExecutionMode() string {
 	return "mcp"
 }
 
+// printTimeoutArg форматирует ограничение времени для флага --print-timeout CLI agy.
+func printTimeoutArg(d time.Duration) string {
+	if d <= 0 {
+		d = config.DefaultStepTimeout
+	}
+	return d.String()
+}
+
 // buildAgyArgs собирает аргументы CLI agy для режима mcp.
 func buildAgyArgs(args ports.ExecuteArgs) []string {
 	cmdArgs := []string{
 		"--dangerously-skip-permissions",
-		"--print-timeout", "30m", // Hardcoded fallback or we can pass it
+		"--print-timeout", printTimeoutArg(args.Timeout),
 		"--output-format", "stream-json",
 	}
 	if args.ConversationID != "" {
