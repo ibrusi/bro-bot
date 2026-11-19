@@ -578,6 +578,18 @@ func TestChatConversationsPerAgentAndMode(t *testing.T) {
 	if len(rec.Conversations) != 4 {
 		t.Errorf("ожидали 4 пары агент/режим, получили %d", len(rec.Conversations))
 	}
+
+	// Пустой идентификатор удаляет привязку конкретной пары, не трогая остальные.
+	if err := s.SetChatConversationID(ctx, id, "agy", "cli", ""); err != nil {
+		t.Fatalf("очистка привязки: %v", err)
+	}
+	rec, _ = s.GetActiveChatSession(ctx, "proj")
+	if _, exists := rec.Conversations["agy/cli"]; exists {
+		t.Errorf("ожидали удаление привязки agy/cli, получили %q", rec.Conversations["agy/cli"])
+	}
+	if len(rec.Conversations) != 3 {
+		t.Errorf("ожидали 3 пары агент/режим после удаления, получили %d", len(rec.Conversations))
+	}
 }
 
 func TestChatMessagesAppendAndTrim(t *testing.T) {

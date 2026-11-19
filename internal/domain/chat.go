@@ -102,6 +102,30 @@ func (cs *ChatSession) SetConversationID(agent, mode, conversationID string) {
 	}
 }
 
+// ClearConversationID сбрасывает идентификатор сессии агента для пары «агент/режим»,
+// сохраняя историю разговора. Следующий ход начнёт новую сессию агента и подмешает
+// контекст прошлых реплик (NeedsContextBootstrap).
+func (cs *ChatSession) ClearConversationID(agent, mode string) {
+	key := ChatConversationKey(agent, mode)
+
+	cs.Lock()
+	if _, exists := cs.conversations[key]; !exists {
+		cs.Unlock()
+		return
+	}
+	delete(cs.conversations, key)
+	st := cs.storage
+	sessionID := cs.ID
+	cs.Unlock()
+
+	if st != nil && sessionID > 0 {
+		parts := strings.SplitN(key, "/", 2)
+		if err := st.SetChatConversationID(context.Background(), sessionID, parts[0], parts[1], ""); err != nil {
+			log.Printf("warning: cannot clear the conversation session %s: %v", key, err)
+		}
+	}
+}
+
 // NeedsContextBootstrap сообщает, нужно ли подмешать в промпт краткий контекст прошлых реплик.
 // Это требуется, когда агент в mcp-режиме ещё не имеет своей сессии (например, пользователь
 // переключил агента или режим посреди разговора), а история у нас уже есть:

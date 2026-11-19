@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strconv"
@@ -429,12 +430,12 @@ type mockPTYProcess struct {
 	waitErr error
 }
 
-func (p *mockPTYProcess) Stdout() io.Reader         { return p.reader }
-func (p *mockPTYProcess) Stdin() io.WriteCloser     { return nopPTYWriteCloser{} }
-func (p *mockPTYProcess) Wait() error               { return p.waitErr }
-func (p *mockPTYProcess) Kill() error               { return nil }
-func (p *mockPTYProcess) Close() error              { return nil }
-func (p *mockPTYProcess) PID() int                  { return 12345 }
+func (p *mockPTYProcess) Stdout() io.Reader     { return p.reader }
+func (p *mockPTYProcess) Stdin() io.WriteCloser { return nopPTYWriteCloser{} }
+func (p *mockPTYProcess) Wait() error           { return p.waitErr }
+func (p *mockPTYProcess) Kill() error           { return nil }
+func (p *mockPTYProcess) Close() error          { return nil }
+func (p *mockPTYProcess) PID() int              { return 12345 }
 
 type nopPTYWriteCloser struct{}
 
@@ -455,7 +456,9 @@ func (f *mockPTYAgentFramework) GetQuota(_ context.Context, _ string) ([]byte, e
 func (f *mockPTYAgentFramework) GetQuotaText(_ context.Context, _ string) ([]byte, error) {
 	return []byte("quota"), nil
 }
-func (f *mockPTYAgentFramework) GetCredits(_ context.Context) ([]byte, error) { return []byte(`{}`), nil }
+func (f *mockPTYAgentFramework) GetCredits(_ context.Context) ([]byte, error) {
+	return []byte(`{}`), nil
+}
 
 type trailingErrStreamReader struct {
 	data string
@@ -572,4 +575,170 @@ func TestChatPTYEIOHandledGracefully(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestChatClearsPoisonedConversationOnAgentError(t *testing.T) {
+	mt := setupTestApp(t)
+
+	// Сессия уже имела историю и сохранённый ConversationID, после чего ход упал с квотой.
+	session := domain.GlobalChatManager.GetOrCreate("testproj", "gemini-4-argon-medium")
+	session.AppendTurn(domain.ChatRoleUser, "предыдущий вопрос")
+	session.AppendTurn(domain.ChatRoleAssistant, "предыдущий ответ")
+	session.SetConversationID("agy", "mcp", "conv-old")
+
+	streamEvents := `{"event":"init","conversation_id":"conv-old"}` + "\n" +
+		`{"event":"step_update","step_update":{"conversation_id":"conv-old","step_index":2,"state":"DONE","step_type":"user_input"}}` + "\n" +
+		`{"event":"step_update","step_update":{"conversation_id":"conv-old","step_index":3,"state":"DONE","step_type":"error_message"}}` + "\n" +
+		`error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 146h10m51s.` + "\n" +
+		`AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached."}` + "\n" +
+		`{"event":"result","result":{"conversation_id":"conv-old","status":"ERROR","response":"","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 146h10m51s."}}` + "\n"
+
+	proc := &mockPTYProcess{
+		reader:  strings.NewReader(streamEvents),
+		waitErr: errors.New("exit status 3"),
+	}
+	fw := &mockPTYAgentFramework{proc: proc}
+
+	setup := chatTurnSetup{
+		Project:   "testproj",
+		Agent:     "agy",
+		Mode:      "mcp",
+		Model:     "gemini-4-argon-medium",
+		Framework: fw,
+	}
+
+	runChatTurn(context.Background(), mt.Messenger, testChatID, session, setup, "новый вопрос", "")
+
+	// Ошибка должна быть показана пользователю.
+	foundErr := false
+	for _, text := range mt.AllTexts() {
+		if strings.Contains(text, "Individual quota reached") {
+			foundErr = true
+			break
+		}
+	}
+	if !foundErr {
+		t.Fatalf("ожидали сообщение об ошибке квоты, получили %v", mt.AllTexts())
+	}
+
+	// Отравленный ConversationID должен быть сброшен, а история сохранена для бутстрапа.
+	if got := session.ConversationIDFor("agy", "mcp"); got != "" {
+		t.Errorf("ConversationIDFor(agy, mcp) = %q, ожидали пустую строку после ошибки", got)
+	}
+	if session.TurnsCount() != 2 {
+		t.Errorf("TurnsCount() = %d, ожидали сохранение 2 прошлых реплик", session.TurnsCount())
+	}
+	if !session.NeedsContextBootstrap("agy", "mcp") {
+		t.Error("после сброса ConversationID следующий ход должен подмешать историю разговора")
+	}
+}
+
+func TestChatIgnoresStaleAgyErrorOnResumedConversation(t *testing.T) {
+	mt := setupTestApp(t)
+
+	// Моделируем уже отравленную сессию, восстановленную из SQLite после перезапуска.
+	session := domain.GlobalChatManager.GetOrCreate("testproj", "gemini-4-neon-medium")
+	session.AppendTurn(domain.ChatRoleUser, "старый вопрос")
+	session.AppendTurn(domain.ChatRoleAssistant, "старый ответ")
+	session.SetConversationID("agy", "mcp", "conv-poisoned")
+
+	// CLI agy при продолжении отравленной сессии успешно отвечает новой моделью (exit 0,
+	// agent_response без error_message и AGY_ERROR), но в result всё равно шлёт старую ошибку.
+	streamEvents := `{"event":"init","conversation_id":"conv-poisoned"}` + "\n" +
+		`{"event":"step_update","step_update":{"conversation_id":"conv-poisoned","step_index":2,"state":"DONE","step_type":"user_input"}}` + "\n" +
+		`{"event":"step_update","step_update":{"conversation_id":"conv-poisoned","step_index":3,"state":"ACTIVE","step_type":"agent_response","text_delta":"Живой ответ от Neon"}}` + "\n" +
+		`{"event":"step_update","step_update":{"conversation_id":"conv-poisoned","step_index":3,"state":"DONE","step_type":"agent_response","text_delta":"\n"}}` + "\n" +
+		`{"event":"result","result":{"conversation_id":"conv-poisoned","status":"ERROR","response":"Живой ответ от Neon\n","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 146h10m51s."}}` + "\n"
+
+	proc := &mockPTYProcess{
+		reader: strings.NewReader(streamEvents),
+	}
+	fw := &mockPTYAgentFramework{proc: proc}
+
+	setup := chatTurnSetup{
+		Project:   "testproj",
+		Agent:     "agy",
+		Mode:      "mcp",
+		Model:     "gemini-4-neon-medium",
+		Framework: fw,
+	}
+
+	runChatTurn(context.Background(), mt.Messenger, testChatID, session, setup, "привет", "")
+
+	foundAnswer := false
+	for _, text := range mt.AllTexts() {
+		if strings.Contains(text, "Живой ответ от Neon") {
+			foundAnswer = true
+		}
+		if strings.Contains(text, "Individual quota reached") {
+			t.Errorf("застарелая ошибка не должна попадать пользователю: %s", text)
+		}
+	}
+	if !foundAnswer {
+		t.Fatalf("ожидали ответ 'Живой ответ от Neon', получили %v", mt.AllTexts())
+	}
+
+	// Новый ход добавлен в историю, а отравленный ConversationID сброшен для следующего хода.
+	if session.TurnsCount() != 4 {
+		t.Errorf("TurnsCount() = %d, ожидали 4", session.TurnsCount())
+	}
+	if got := session.ConversationIDFor("agy", "mcp"); got != "" {
+		t.Errorf("ConversationIDFor(agy, mcp) = %q, ожидали сброс отравленной сессии", got)
+	}
+}
+
+func TestIsStaleAgyResumedError(t *testing.T) {
+	base := agyResumedErrorCheck{
+		Agent:           "agy",
+		Mode:            "mcp",
+		ResumedConvID:   "conv-1",
+		WaitErr:         nil,
+		SawErrorStep:    false,
+		SawAgyErrorLine: false,
+		HasTurnOutput:   true,
+	}
+
+	cases := []struct {
+		name string
+		mut  func(*agyResumedErrorCheck)
+		want bool
+	}{
+		{"stale agy mcp resumed error", func(c *agyResumedErrorCheck) {}, true},
+		{"claude agent", func(c *agyResumedErrorCheck) { c.Agent = "claude" }, false},
+		{"grok agent", func(c *agyResumedErrorCheck) { c.Agent = "grok" }, false},
+		{"agy api mode", func(c *agyResumedErrorCheck) { c.Mode = "api" }, false},
+		{"new conversation", func(c *agyResumedErrorCheck) { c.ResumedConvID = "" }, false},
+		{"non-zero exit", func(c *agyResumedErrorCheck) { c.WaitErr = errors.New("exit status 3") }, false},
+		{"error_message step in turn", func(c *agyResumedErrorCheck) { c.SawErrorStep = true }, false},
+		{"AGY_ERROR line in turn", func(c *agyResumedErrorCheck) { c.SawAgyErrorLine = true }, false},
+		{"empty turn output", func(c *agyResumedErrorCheck) { c.HasTurnOutput = false }, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := base
+			tc.mut(&check)
+			if got := isStaleAgyResumedError(check); got != tc.want {
+				t.Errorf("isStaleAgyResumedError(%+v) = %v, want %v", check, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsAgyErrorLine(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{`AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED"}`, true},
+		{`error: Individual quota reached.`, true},
+		{`{"event":"result","result":{"error":"Individual quota reached."}}`, false},
+		{`обычная строка вывода`, false},
+		{``, false},
+	}
+	for _, tc := range cases {
+		if got := isAgyErrorLine(tc.line); got != tc.want {
+			t.Errorf("isAgyErrorLine(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
 }
