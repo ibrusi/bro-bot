@@ -209,11 +209,17 @@ func TestLoadFillsDefaults(t *testing.T) {
 	if cfg.Messenger != defaultMessenger {
 		t.Errorf("Messenger = %q, ожидалось %q", cfg.Messenger, defaultMessenger)
 	}
-	if cfg.StepTimeout != defaultStepTimeout {
-		t.Errorf("StepTimeout = %v, ожидалось %v", cfg.StepTimeout, defaultStepTimeout)
+	if DefaultStepTimeout != time.Hour {
+		t.Errorf("DefaultStepTimeout = %v, ожидалось %v", DefaultStepTimeout, time.Hour)
 	}
-	if cfg.ChatTimeout != defaultChatTimeout {
-		t.Errorf("ChatTimeout = %v, ожидалось %v", cfg.ChatTimeout, defaultChatTimeout)
+	if cfg.StepTimeout != DefaultStepTimeout {
+		t.Errorf("StepTimeout = %v, ожидалось %v", cfg.StepTimeout, DefaultStepTimeout)
+	}
+	if DefaultChatTimeout != time.Hour {
+		t.Errorf("DefaultChatTimeout = %v, ожидалось %v", DefaultChatTimeout, time.Hour)
+	}
+	if cfg.ChatTimeout != DefaultChatTimeout {
+		t.Errorf("ChatTimeout = %v, ожидалось %v", cfg.ChatTimeout, DefaultChatTimeout)
 	}
 	if cfg.AutoContinueMax != defaultAutoContinueMax {
 		t.Errorf("AutoContinueMax = %d, ожидалось %d", cfg.AutoContinueMax, defaultAutoContinueMax)
@@ -391,8 +397,8 @@ func TestLoadWarnsAboutBrokenOptionalTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("испорченный необязательный таймаут не должен быть ошибкой: %v", err)
 	}
-	if cfg.StepTimeout != defaultStepTimeout {
-		t.Errorf("StepTimeout = %v, ожидалось значение по умолчанию %v", cfg.StepTimeout, defaultStepTimeout)
+	if cfg.StepTimeout != DefaultStepTimeout {
+		t.Errorf("StepTimeout = %v, ожидалось значение по умолчанию %v", cfg.StepTimeout, DefaultStepTimeout)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "%s") {
 		t.Errorf("ожидалось одно предупреждение про STEP_TIMEOUT, получено %v", warnings)

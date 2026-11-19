@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"io"
+	"time"
 
 	"bro-bot/internal/effort"
 )
@@ -59,6 +60,10 @@ type ExecuteArgs struct {
 	// Effort — уровень усилия рассуждений (команда /effort). Нулевое значение
 	// effort.Auto означает, что уровень агенту не передаётся.
 	Effort effort.Level
+	// Timeout — ограничение времени на один ход диалога или шаг задачи.
+	// Адаптеры CLI с собственным флагом таймаута (например, agy --print-timeout)
+	// передают его процессу; при значении <= 0 адаптер использует значение по умолчанию.
+	Timeout time.Duration
 }
 
 // AgentProcess инкапсулирует запущенный процесс агента.

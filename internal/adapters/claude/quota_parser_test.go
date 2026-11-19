@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 )
@@ -207,6 +208,9 @@ func TestParseClaudeResetTimeFormats(t *testing.T) {
 }
 
 func TestLiveClaudeAdapterGetQuota(t *testing.T) {
+	if os.Getenv("RUN_LIVE_CLAUDE_TESTS") != "1" {
+		t.Skip("live claude CLI test; set RUN_LIVE_CLAUDE_TESTS=1 to run")
+	}
 	adapter := NewClaudeAdapter()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -236,6 +240,9 @@ func TestLiveClaudeAdapterGetQuota(t *testing.T) {
 		t.Fatalf("unmarshal error: %v, raw output: %s", err, string(out))
 	}
 
+	if resp.Status == "" && len(resp.Command.Data.Groups) == 0 {
+		t.Skipf("claude CLI /usage did not return subscription quota buckets: %s", string(out))
+	}
 	if resp.Status != "SUCCESS" {
 		t.Errorf("status = %q, want SUCCESS", resp.Status)
 	}

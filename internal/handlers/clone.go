@@ -132,7 +132,11 @@ func getSSHPublicKey() string {
 }
 
 // cloneRepository executes git clone in a child process with non-interactive flags.
-func cloneRepository(ctx context.Context, repoURL, targetPath string) ([]byte, error) {
+// Объявляется переменной пакета, чтобы тесты подменяли её без сетевых вызовов
+// и гонок фонового процесса с очисткой t.TempDir().
+var cloneRepository = runGitClone
+
+func runGitClone(ctx context.Context, repoURL, targetPath string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", "clone", "--", repoURL, targetPath)
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
@@ -202,11 +206,12 @@ func handleCloneCommand(s ports.Session) error {
 		return err
 	}
 
+	cloneFn := cloneRepository
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
-		out, cloneErr := cloneRepository(ctx, cleanURL, targetPath)
+		out, cloneErr := cloneFn(ctx, cleanURL, targetPath)
 		if cloneErr != nil {
 			_ = os.RemoveAll(targetPath)
 

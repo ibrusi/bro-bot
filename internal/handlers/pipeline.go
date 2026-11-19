@@ -684,12 +684,15 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		return StepResult{Outcome: StepOutcomeError, Error: err}
 	}
 
+	timeout := stepTimeout()
+
 	args := ports.ExecuteArgs{
 		ConversationID: convID,
 		ModelName:      modelName,
 		Prompt:         prompt,
 		WorkDir:        workDir,
 		Effort:         stepEffort,
+		Timeout:        timeout,
 	}
 
 	// Передаём правила проекта AGENTS.md как системный промпт ТОЛЬКО для новой сессии (convID == "").
@@ -701,11 +704,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		}
 	}
 
-	stepTimeout := config.StepTimeout
-	if stepTimeout <= 0 {
-		stepTimeout = 30 * time.Minute
-	}
-	stepCtx, stepCancel := context.WithTimeout(context.Background(), stepTimeout+2*time.Minute)
+	stepCtx, stepCancel := context.WithTimeout(context.Background(), timeout+2*time.Minute)
 	defer stepCancel()
 
 	framework, frameworkErr := agentFrameworkFor(taskAgent)
@@ -1091,23 +1090,28 @@ func handleTaskStepIncomplete(m ports.Messenger, chat ports.ChatID, task *domain
 	checkAndStartQueuedTask(m, projectName, projectsRoot)
 }
 
+// stepTimeout возвращает таймаут одного шага задачи.
+func stepTimeout() time.Duration {
+	if config.StepTimeout > 0 {
+		return config.StepTimeout
+	}
+	return config.DefaultStepTimeout
+}
+
 func handleTaskStepTimeout(m ports.Messenger, chat ports.ChatID, task *domain.TaskSession, projectName, projectsRoot string, taskID int, isPlanning bool, lang string) {
 	convID, tAgent := pauseTaskForResume(task)
 
-	stepTimeout := config.StepTimeout
-	if stepTimeout <= 0 {
-		stepTimeout = 30 * time.Minute
-	}
+	timeout := stepTimeout()
 
 	phaseName := i18n.T(lang, "pipeline.phase_running")
 	if isPlanning {
 		phaseName = i18n.T(lang, "pipeline.phase_planning")
 	}
 
-	task.AppendLog(i18n.Tf(lang, "pipeline.timeout_log", phaseName, stepTimeout, convID))
+	task.AppendLog(i18n.Tf(lang, "pipeline.timeout_log", phaseName, timeout, convID))
 
 	sendResumeNotice(m, chat, taskID, i18n.Tf(lang, "pipeline.timeout_message",
-		taskID, html.EscapeString(projectName), phaseName, stepTimeout,
+		taskID, html.EscapeString(projectName), phaseName, timeout,
 		html.EscapeString(tAgent), html.EscapeString(convID), i18n.T(lang, "btn.resume"), taskID,
 	), lang)
 
