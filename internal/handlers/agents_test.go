@@ -125,8 +125,8 @@ func TestSwitchActiveAgentReturnsDataWithoutMarkup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SwitchActiveAgent(agy): %v", err)
 	}
-	if !res.ModelSwitched() || res.Model != "gemini-pro-orchestrator-g1-pro" {
-		t.Errorf("при переключении с claude на agy ожидали orchestrator (gemini-pro-orchestrator-g1-pro), получили %+v", res)
+	if !res.ModelSwitched() || res.Model != "gemini-pro-orchestrator-neon" {
+		t.Errorf("при переключении с claude на agy ожидали orchestrator (gemini-pro-orchestrator-neon), получили %+v", res)
 	}
 
 	// Haiku и opus также при переключении на agy сменяются на orchestrator.
@@ -140,8 +140,8 @@ func TestSwitchActiveAgentReturnsDataWithoutMarkup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SwitchActiveAgent(agy): %v", err)
 	}
-	if !res.ModelSwitched() || res.Model != "gemini-pro-orchestrator-g1-pro" {
-		t.Errorf("модель haiku должна смениться на orchestrator (gemini-pro-orchestrator-g1-pro), получили %+v", res)
+	if !res.ModelSwitched() || res.Model != "gemini-pro-orchestrator-neon" {
+		t.Errorf("модель haiku должна смениться на orchestrator (gemini-pro-orchestrator-neon), получили %+v", res)
 	}
 
 	// Повторное переключение на того же агента модель не трогает.
@@ -204,8 +204,8 @@ func TestSwitchActiveAgentToGrokUsesACP(t *testing.T) {
 	if back.Mode != "mcp" || !back.ModeAdjusted {
 		t.Errorf("возврат с acp на agy должен вернуть mcp, получили %+v", back)
 	}
-	if !back.ModelSwitched() || back.Model != "gemini-pro-orchestrator-g1-pro" {
-		t.Errorf("возврат с grok на agy должен выставить orchestrator (gemini-pro-orchestrator-g1-pro), получили %+v", back)
+	if !back.ModelSwitched() || back.Model != "gemini-pro-orchestrator-neon" {
+		t.Errorf("возврат с grok на agy должен выставить orchestrator (gemini-pro-orchestrator-neon), получили %+v", back)
 	}
 	if got := config.ProjectState.GetExecutionMode(); got != "mcp" {
 		t.Errorf("после возврата режим = %q", got)

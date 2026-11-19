@@ -40,7 +40,9 @@ func TestModelCommandResolvesAliasForActiveAgent(t *testing.T) {
 		alias    string
 		expected string
 	}{
-		{"agy", "orchestrator", "gemini-pro-orchestrator-g1-pro"},
+		{"agy", "default", "gemini-pro-orchestrator-neon"},
+		{"agy", "orchestrator", "gemini-pro-orchestrator-neon"},
+		{"agy", "orchestrator-argon", "gemini-pro-orchestrator-g1-pro"},
 		{"agy", "neon", "gemini-4-neon-medium"},
 		{"agy", "argon", "gemini-4-argon-medium"},
 		{"agy", "hydrogen", "gemini-4-hydrogen-medium"},
@@ -114,6 +116,12 @@ func TestModelCommandWithoutArgsListsModels(t *testing.T) {
 	}
 	if !strings.Contains(msg.Text, "/model flash") {
 		t.Errorf("/model без аргументов должен выводить короткие алиасы, ответ: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "<code>/model orchestrator</code> — Orchestrator (Neon)") {
+		t.Errorf("/model без аргументов должен выводить алиас orchestrator (Neon), ответ: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "<code>/model orchestrator-argon</code> — Orchestrator (Argon)") {
+		t.Errorf("/model без аргументов должен выводить алиас orchestrator-argon (Argon), ответ: %s", msg.Text)
 	}
 	if !strings.Contains(msg.Text, "/model refresh") {
 		t.Errorf("/model без аргументов должен содержать подсказку /model refresh, ответ: %s", msg.Text)
