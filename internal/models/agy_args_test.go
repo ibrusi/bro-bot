@@ -8,6 +8,7 @@ import (
 
 // agyCatalog — вывод `agy models` версии 1.3.3.
 var agyCatalog = []string{
+	"gemini-pro-orchestrator-neon",
 	"gemini-pro-orchestrator-g1-pro",
 	"gemini-4-neon-xhigh", "gemini-4-neon-high", "gemini-4-neon-medium", "gemini-4-neon-low",
 	"gemini-4-argon-high", "gemini-4-argon-medium", "gemini-4-argon-low",
@@ -38,6 +39,9 @@ func TestBuildAgyModelArgs(t *testing.T) {
 		{"single variant auto", "gpt-oss-120b-medium", effort.Auto, []string{"--model", "gpt-oss-120b-medium"}},
 
 		// Одиночные модели из каталога без суффикса уровня не принимают --effort.
+		{"standalone neon auto", "gemini-pro-orchestrator-neon", effort.Auto, []string{"--model", "gemini-pro-orchestrator-neon"}},
+		{"standalone neon medium", "gemini-pro-orchestrator-neon", effort.Medium, []string{"--model", "gemini-pro-orchestrator-neon"}},
+		{"standalone neon high", "gemini-pro-orchestrator-neon", effort.High, []string{"--model", "gemini-pro-orchestrator-neon"}},
 		{"standalone catalog auto", "gemini-pro-orchestrator-g1-pro", effort.Auto, []string{"--model", "gemini-pro-orchestrator-g1-pro"}},
 		{"standalone catalog medium", "gemini-pro-orchestrator-g1-pro", effort.Medium, []string{"--model", "gemini-pro-orchestrator-g1-pro"}},
 		{"standalone catalog high", "gemini-pro-orchestrator-g1-pro", effort.High, []string{"--model", "gemini-pro-orchestrator-g1-pro"}},
@@ -78,11 +82,13 @@ func TestBuildAgyModelArgsEmptyCatalog(t *testing.T) {
 		t.Errorf("BuildAgyModelArgs без каталога = %v, expected %v", actual, expected)
 	}
 
-	for _, lvl := range []effort.Level{effort.Auto, effort.Medium} {
-		got := BuildAgyModelArgs("gemini-pro-orchestrator-g1-pro", lvl, nil)
-		want := []string{"--model", "gemini-pro-orchestrator-g1-pro"}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("BuildAgyModelArgs(orchestrator, %q, nil) = %v, expected %v", lvl, got, want)
+	for _, model := range []string{"gemini-pro-orchestrator-neon", "gemini-pro-orchestrator-g1-pro"} {
+		for _, lvl := range []effort.Level{effort.Auto, effort.Medium} {
+			got := BuildAgyModelArgs(model, lvl, nil)
+			want := []string{"--model", model}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("BuildAgyModelArgs(%s, %q, nil) = %v, expected %v", model, lvl, got, want)
+			}
 		}
 	}
 }

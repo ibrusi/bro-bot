@@ -278,7 +278,7 @@ func TestAgyAPIAdapter_GetModels_WhitespaceKey(t *testing.T) {
 }
 
 // TestSpecDefaultModelIsOrchestrator — при переключении на агента agy его модель по умолчанию
-// всегда orchestrator (gemini-pro-orchestrator-g1-pro), независимо от config.DefaultModel.
+// всегда orchestrator (gemini-pro-orchestrator-neon), независимо от config.DefaultModel.
 func TestSpecDefaultModelIsOrchestrator(t *testing.T) {
 	prev := config.DefaultModel
 	t.Cleanup(func() { config.DefaultModel = prev })
@@ -293,13 +293,25 @@ func TestSpecDefaultModelIsOrchestrator(t *testing.T) {
 }
 
 func TestBuildAgyArgs_ResolvesOrchestratorAlias(t *testing.T) {
-	args := buildAgyArgs(ports.ExecuteArgs{
-		ModelName: "orchestrator",
-		Prompt:    "check",
-	})
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--model gemini-pro-orchestrator-g1-pro") {
-		t.Errorf("ожидали --model gemini-pro-orchestrator-g1-pro для алиаса orchestrator, получили: %s", joined)
+	tests := []struct {
+		alias    string
+		expected string
+	}{
+		{"orchestrator", "gemini-pro-orchestrator-neon"},
+		{"orchestrator-argon", "gemini-pro-orchestrator-g1-pro"},
+	}
+	for _, tc := range tests {
+		args := buildAgyArgs(ports.ExecuteArgs{
+			ModelName: tc.alias,
+			Prompt:    "check",
+		})
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "--model "+tc.expected) {
+			t.Errorf("ожидали --model %s для алиаса %s, получили: %s", tc.expected, tc.alias, joined)
+		}
+		if strings.Contains(joined, "--effort") {
+			t.Errorf("не ожидали --effort для алиаса %s, получили: %s", tc.alias, joined)
+		}
 	}
 }
 

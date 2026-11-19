@@ -10,10 +10,13 @@ import (
 // Базовые имена семейств Claude перечислены явно: в каталоге agy есть только их
 // варианты по уровню, при уже активном agy их можно выбрать через /model.
 var modelAliases = models.NewAliases(map[string]string{
-	"default": "gemini-pro-orchestrator-g1-pro",
+	"default": defaultModel,
 
 	// Orchestrator
-	"orchestrator":                   "gemini-pro-orchestrator-g1-pro",
+	"orchestrator":                   defaultModel,
+	"orchestrator-neon":              "gemini-pro-orchestrator-neon",
+	"gemini-pro-orchestrator-neon":   "gemini-pro-orchestrator-neon",
+	"orchestrator-argon":             "gemini-pro-orchestrator-g1-pro",
 	"g1-pro":                         "gemini-pro-orchestrator-g1-pro",
 	"gemini-pro-orchestrator-g1-pro": "gemini-pro-orchestrator-g1-pro",
 
@@ -95,7 +98,8 @@ var modelAliases = models.NewAliases(map[string]string{
 	"gpt-oss-120b":        "gpt-oss-120b-medium",
 	"gpt-oss-120b-medium": "gpt-oss-120b-medium",
 },
-	models.AliasHint{Alias: "orchestrator", Title: "Orchestrator (Argon)"},
+	models.AliasHint{Alias: "orchestrator", Title: "Orchestrator (Neon)"},
+	models.AliasHint{Alias: "orchestrator-argon", Title: "Orchestrator (Argon)"},
 	models.AliasHint{Alias: "neon", Title: "Gemini 4 Neon"},
 	models.AliasHint{Alias: "argon", Title: "Gemini 4 Argon"},
 	models.AliasHint{Alias: "hydrogen", Title: "Gemini 4 Hydrogen"},
