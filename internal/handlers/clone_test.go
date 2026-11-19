@@ -3,10 +3,13 @@ package handlers
 import (
 	"bro-bot/internal/adapters/mock"
 	"bro-bot/internal/config"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseRepoURL(t *testing.T) {
@@ -222,14 +225,34 @@ func TestCloneDoesNotEchoToken(t *testing.T) {
 		t.Fatal("команда /clone не зарегистрирована")
 	}
 
+	cloneCalled := make(chan struct{})
+	prevClone := cloneRepository
+	cloneRepository = func(_ context.Context, repoURL, _ string) ([]byte, error) {
+		defer close(cloneCalled)
+		return []byte("fatal: Authentication failed for '" + repoURL + "'\n"), errors.New("exit status 128")
+	}
+	t.Cleanup(func() { cloneRepository = prevClone })
+
 	url := "https://" + token + "@github.com/owner/repo.git"
 	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{url}})); err != nil {
 		t.Fatalf("/clone вернула ошибку: %v", err)
 	}
 
+	select {
+	case <-cloneCalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("фоновое клонирование не было запущено")
+	}
+
+	// Дожидаемся завершения фоновой горутины (правка статусного сообщения об ошибке),
+	// чтобы проверить редактирование вывода git и не оставлять горутину после теста.
+	waitFor(t, "правка статусного сообщения /clone", func() bool {
+		return len(mt.EditedMessages()) > 0
+	})
+
 	texts := mt.AllTexts()
-	if len(texts) == 0 {
-		t.Fatal("/clone ничего не отправила")
+	if len(texts) < 2 {
+		t.Fatalf("/clone должна отправить прогресс и обновить его результатом, получили %d сообщений: %v", len(texts), texts)
 	}
 	for _, text := range texts {
 		if strings.Contains(text, token) {
@@ -237,6 +260,10 @@ func TestCloneDoesNotEchoToken(t *testing.T) {
 		}
 	}
 	if !strings.Contains(texts[0], "https://***@github.com/owner/repo.git") {
-		t.Errorf("адрес должен остаться читаемым: %s", texts[0])
+		t.Errorf("адрес в прогрессе должен остаться читаемым: %s", texts[0])
+	}
+	edited := mt.LastEdited()
+	if edited == nil || !strings.Contains(edited.Text, "https://***@github.com/owner/repo.git") {
+		t.Errorf("адрес в ошибке git должен остаться читаемым без токена: %v", edited)
 	}
 }
