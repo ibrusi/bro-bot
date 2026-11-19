@@ -270,3 +270,48 @@ func TestChatConversationKeyNormalizes(t *testing.T) {
 		t.Errorf("ChatConversationKey = %q", got)
 	}
 }
+
+func TestChatSessionClearConversationIDPersistsAndKeepsHistory(t *testing.T) {
+	st := newChatTestStorage(t)
+
+	cm := NewChatManager()
+	cm.InitWithStorage(st)
+
+	cs := cm.GetOrCreate("proj-clear", "gemini-4-neon-medium")
+	cs.AppendTurn(ChatRoleUser, "вопрос")
+	cs.AppendTurn(ChatRoleAssistant, "ответ")
+	cs.SetConversationID("agy", "mcp", "conv-poisoned")
+	cs.SetConversationID("claude", "mcp", "conv-claude")
+
+	cs.ClearConversationID("agy", "mcp")
+
+	if got := cs.ConversationIDFor("agy", "mcp"); got != "" {
+		t.Errorf("ожидали очищенный agy/mcp, получили %q", got)
+	}
+	if got := cs.ConversationIDFor("claude", "mcp"); got != "conv-claude" {
+		t.Errorf("claude/mcp не должен был очиститься, получили %q", got)
+	}
+	if !cs.NeedsContextBootstrap("agy", "mcp") {
+		t.Error("после сброса ConversationID при непустой истории должен требоваться бутстрап контекста")
+	}
+	if cs.TurnsCount() != 2 {
+		t.Errorf("история должна сохраниться (2 реплики), получили %d", cs.TurnsCount())
+	}
+
+	// После перезапуска из SQLite очищенная привязка не возвращается.
+	cm2 := NewChatManager()
+	cm2.InitWithStorage(st)
+	reloaded := cm2.Get("proj-clear")
+	if reloaded == nil {
+		t.Fatal("сессия не восстановилась после перезапуска")
+	}
+	if got := reloaded.ConversationIDFor("agy", "mcp"); got != "" {
+		t.Errorf("после перезапуска agy/mcp должен остаться пустым, получили %q", got)
+	}
+	if got := reloaded.ConversationIDFor("claude", "mcp"); got != "conv-claude" {
+		t.Errorf("после перезапуска claude/mcp должен сохраниться, получили %q", got)
+	}
+	if reloaded.TurnsCount() != 2 {
+		t.Errorf("после перезапуска история должна сохраниться, получили %d", reloaded.TurnsCount())
+	}
+}

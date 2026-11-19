@@ -252,13 +252,14 @@ func runChatLoop(ctx context.Context, cancel context.CancelFunc, m ports.Messeng
 
 // chatResult — результат одного хода диалога.
 type chatResult struct {
-	Answer         string
-	ConversationID string
-	Usage          *domain.UsageStats
-	Duration       float64
-	Status         string
-	TimedOut       bool
-	Err            error
+	Answer            string
+	ConversationID    string
+	Usage             *domain.UsageStats
+	Duration          float64
+	Status            string
+	TimedOut          bool
+	StaleConversation bool
+	Err               error
 }
 
 // runChatTurn выполняет один ход диалога: запускает агента, показывает прогресс и отправляет ответ.
@@ -308,18 +309,28 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 	startedAt := time.Now()
 	res := streamChatAnswer(ctx, m, chat, statusRef, setup.Framework, args, setup, lang)
 
-	if res.ConversationID != "" {
+	timedOut := res.TimedOut || ctx.Err() == context.DeadlineExceeded
+	hasAgentError := !timedOut && ctx.Err() != context.Canceled && (res.Err != nil || strings.EqualFold(res.Status, "ERROR"))
+
+	switch {
+	case hasAgentError || res.StaleConversation:
+		// Сбрасываем ConversationID для пары агент/режим: в CLI agy шаг error_message
+		// «отравляет» сессию, и все последующие ходы в ней возвращают старую ошибку даже
+		// после смены модели. История разговора в ChatSession сохраняется и будет
+		// подмешана в промпт на следующем ходе.
+		session.ClearConversationID(agent, mode)
+	case res.ConversationID != "":
 		session.SetConversationID(agent, mode, res.ConversationID)
 	}
 
-	if res.TimedOut || res.Err != nil || res.Status == "ERROR" {
+	if timedOut || res.Err != nil || strings.EqualFold(res.Status, "ERROR") {
 		message := i18n.T(lang, "chat.answer_failed")
 		if ctx.Err() == context.Canceled {
 			// Пользователь сам остановил ответ командой /chat stop.
 			editOrSend(m, chat, statusRef, i18n.T(lang, "chat.answer_stopped"))
 			return
 		}
-		if res.TimedOut || ctx.Err() == context.DeadlineExceeded {
+		if timedOut {
 			message = i18n.Tf(lang, "chat.answer_timeout", domain.FormatDuration(chatTimeout(), lang))
 		} else if res.Err != nil {
 			message = i18n.Tf(lang, "chat.answer_failed_reason", html.EscapeString(ErrorText(res.Err, lang)))
@@ -405,6 +416,9 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 	}()
 
 	var answer strings.Builder
+	var sawErrorStep bool
+	var sawAgyErrorLine bool
+	var sawResultError bool
 	scanner := bufio.NewScanner(agentProcess.Stdout())
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
@@ -419,6 +433,9 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 			if isAgyPrintTimeoutLine(line) {
 				res.TimedOut = true
 			}
+			if isAgyErrorLine(line) {
+				sawAgyErrorLine = true
+			}
 			// Не-JSON строки терминала показываем как прогресс, но в ответ не включаем.
 			mu.Lock()
 			lastAction = line
@@ -432,6 +449,8 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 
 		if u := evt.StepUpdate; u != nil {
 			switch {
+			case u.StepType == "error_message":
+				sawErrorStep = true
 			case u.StepType == "tool" && u.State == "ACTIVE":
 				desc := domain.FormatToolAction(u.ToolName, u.ToolInfo)
 				mu.Lock()
@@ -454,13 +473,30 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 			if r.Response != "" && answer.Len() == 0 {
 				answer.WriteString(r.Response)
 			}
+			sawResultError = r.IsError()
 		}
 	}
 
 	close(stopTicker)
 	<-tickerDone
 
-	if waitErr := agentProcess.Wait(); waitErr != nil && res.Err == nil {
+	waitErr := agentProcess.Wait()
+	if sawResultError && isStaleAgyResumedError(agyResumedErrorCheck{
+		Agent:           setup.Agent,
+		Mode:            setup.Mode,
+		ResumedConvID:   args.ConversationID,
+		WaitErr:         waitErr,
+		SawErrorStep:    sawErrorStep,
+		SawAgyErrorLine: sawAgyErrorLine,
+		HasTurnOutput:   strings.TrimSpace(answer.String()) != "",
+	}) {
+		log.Printf("chat: ignoring stale agy error on resumed conversation %s: %v", args.ConversationID, res.Err)
+		res.Status = "SUCCESS"
+		res.Err = nil
+		res.StaleConversation = true
+	}
+
+	if waitErr != nil && res.Err == nil {
 		res.Err = waitErr
 	}
 	if scanErr := scanner.Err(); scanErr != nil && res.Err == nil && !cliproc.IsPTYEOF(scanErr) {

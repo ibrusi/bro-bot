@@ -505,6 +505,49 @@ func isAgyPrintTimeoutLine(rawLine string) bool {
 		strings.HasPrefix(trimmed, "Print mode: print timeout after")
 }
 
+// isAgyErrorLine проверяет, является ли не-JSON строка терминального вывода
+// сообщением об ошибке CLI agy текущего хода ("AGY_ERROR: ..." или "error: ...").
+func isAgyErrorLine(rawLine string) bool {
+	trimmed := strings.TrimSpace(rawLine)
+	if !isAgyTerminalLine(trimmed) {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "AGY_ERROR:") ||
+		strings.HasPrefix(trimmed, "error:")
+}
+
+// agyResumedErrorCheck описывает признаки текущего хода для отличения
+// застарелой ошибки agy от реального сбоя.
+type agyResumedErrorCheck struct {
+	Agent           string
+	Mode            string
+	ResumedConvID   string
+	WaitErr         error
+	SawErrorStep    bool
+	SawAgyErrorLine bool
+	HasTurnOutput   bool
+}
+
+// isStaleAgyResumedError определяет особенность CLI agy: если в сессии ранее уже был шаг
+// error_message (например, исчерпание квоты на другой модели), agy при продолжении этой сессии
+// через --conversation успешно выполняет новый ход (exit 0, agent_response, без error_message и
+// AGY_ERROR), но в итоговом событии result всё равно возвращает status="ERROR" со старым текстом.
+func isStaleAgyResumedError(c agyResumedErrorCheck) bool {
+	if !strings.EqualFold(strings.TrimSpace(c.Agent), "agy") {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Mode), "api") {
+		return false
+	}
+	if strings.TrimSpace(c.ResumedConvID) == "" {
+		return false
+	}
+	if c.WaitErr != nil || c.SawErrorStep || c.SawAgyErrorLine {
+		return false
+	}
+	return c.HasTurnOutput
+}
+
 var (
 	// agyBackgroundIdleRegex — системная строка agy о том, что агент закончил ход, а его фоновые
 	// задачи ещё идут: "root agent idle; waiting up to 5s for N background task(s)". Если за ней
@@ -707,6 +750,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	stepCtx, stepCancel := context.WithTimeout(context.Background(), timeout+2*time.Minute)
 	defer stepCancel()
 
+	taskMode := config.ProjectState.GetExecutionMode()
 	framework, frameworkErr := agentFrameworkFor(taskAgent)
 	if frameworkErr != nil {
 		_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.agent_start_failed", taskID, ErrorText(frameworkErr, lang)), ports.Rich())
@@ -809,6 +853,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	var hasResult bool
 	var resultStatus string
 	var resultError string
+	var sawErrorStep bool
+	var sawAgyErrorLine bool
+	var sawTurnOutput bool
 	var hasAskQuestionToolCall bool
 	var pendingQuestionText string
 	var pendingQuestionOptions []string
@@ -839,6 +886,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 
 				if evt.StepUpdate != nil {
 					u := evt.StepUpdate
+					if u.StepType == "error_message" {
+						sawErrorStep = true
+					}
 					if (u.StepType == "tool" && u.State == "ACTIVE") || (u.StepType == "agent_response" && u.TextDelta != "") {
 						background.ObserveAgentActivity()
 					}
@@ -850,6 +900,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 						desc := domain.FormatToolAction(u.ToolName, u.ToolInfo)
 						task.AppendLog(desc)
 					} else if u.StepType == "agent_response" && u.TextDelta != "" {
+						if strings.TrimSpace(u.TextDelta) != "" {
+							sawTurnOutput = true
+						}
 						task.Update(func(t *domain.TaskSession) {
 							t.AppendOutputLocked(u.TextDelta)
 							if matches := prUrlRegexp.FindStringSubmatch(u.TextDelta); len(matches) > 1 {
@@ -888,6 +941,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 						domain.GlobalTokenTracker.RecordResultUsage(*res.Usage, res.DurationSeconds, res.NumTurns)
 					}
 					if res.Response != "" {
+						if strings.TrimSpace(res.Response) != "" {
+							sawTurnOutput = true
+						}
 						task.Update(func(t *domain.TaskSession) {
 							if t.FullOutput.Len() == 0 {
 								t.AppendOutputLocked(res.Response)
@@ -904,6 +960,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 			// Проверка на системный таймаут agy ТОЛЬКО для не-JSON строк терминального вывода
 			if isAgyPrintTimeoutLine(cleanLine) {
 				stepTimedOut = true
+			}
+			if isAgyErrorLine(cleanLine) {
+				sawAgyErrorLine = true
 			}
 			background.ObserveTerminalLine(cleanLine)
 
@@ -950,7 +1009,30 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		return StepResult{Outcome: StepOutcomeTimeout, Error: waitErr, PRURL: lastPR}
 	}
 
-	hasError := (hasResult && (strings.EqualFold(resultStatus, "ERROR") || strings.TrimSpace(resultError) != "")) || waitErr != nil
+	// Вопрос через MCP-инструмент ask_user равноценен вызову ask_question.
+	if q, opts, ok := mcpChannel.pendingQuestion(); ok {
+		hasAskQuestionToolCall = true
+		pendingQuestionText = q
+		pendingQuestionOptions = opts
+	}
+
+	hasResultError := hasResult && (strings.EqualFold(resultStatus, "ERROR") || strings.TrimSpace(resultError) != "")
+	if hasResultError && isStaleAgyResumedError(agyResumedErrorCheck{
+		Agent:           taskAgent,
+		Mode:            taskMode,
+		ResumedConvID:   args.ConversationID,
+		WaitErr:         waitErr,
+		SawErrorStep:    sawErrorStep,
+		SawAgyErrorLine: sawAgyErrorLine,
+		HasTurnOutput:   sawTurnOutput || hasAskQuestionToolCall,
+	}) {
+		log.Printf("pipeline: ignoring stale agy error on resumed conversation %s for task #%d: %s", args.ConversationID, taskID, resultError)
+		resultStatus = "SUCCESS"
+		resultError = ""
+		hasResultError = false
+	}
+
+	hasError := hasResultError || waitErr != nil
 	if hasError {
 		errText := extractStepErrorMessage(task, resultError, waitErr)
 		return StepResult{
@@ -960,13 +1042,6 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 			ResultStatus: resultStatus,
 			PRURL:        lastPR,
 		}
-	}
-
-	// Вопрос через MCP-инструмент ask_user равноценен вызову ask_question.
-	if q, opts, ok := mcpChannel.pendingQuestion(); ok {
-		hasAskQuestionToolCall = true
-		pendingQuestionText = q
-		pendingQuestionOptions = opts
 	}
 
 	// Оцениваем результат шага и детекцию вопросов

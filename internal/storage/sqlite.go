@@ -873,9 +873,17 @@ func (s *SQLiteStorage) DeactivateChatSessions(ctx context.Context, project stri
 }
 
 // SetChatConversationID сохраняет идентификатор сессии агента для пары агент+режим.
+// Пустой conversationID удаляет привязку сессии агента, не затрагивая историю разговора.
 func (s *SQLiteStorage) SetChatConversationID(ctx context.Context, sessionID int, agent, mode, conversationID string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+
+	if strings.TrimSpace(conversationID) == "" {
+		_, err := s.db.ExecContext(ctx,
+			`DELETE FROM chat_conversations WHERE session_id = ? AND agent = ? AND mode = ?`,
+			sessionID, agent, mode)
+		return err
+	}
 
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO chat_conversations (session_id, agent, mode, conversation_id, updated_at)
