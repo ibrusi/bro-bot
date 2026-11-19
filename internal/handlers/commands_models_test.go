@@ -41,6 +41,7 @@ func TestModelCommandResolvesAliasForActiveAgent(t *testing.T) {
 		expected string
 	}{
 		{"agy", "orchestrator", "gemini-pro-orchestrator-g1-pro"},
+		{"agy", "neon", "gemini-4-neon-medium"},
 		{"agy", "argon", "gemini-4-argon-medium"},
 		{"agy", "hydrogen", "gemini-4-hydrogen-medium"},
 		{"agy", "flash", "gemini-3.8-flash-medium"},

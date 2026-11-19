@@ -10,6 +10,12 @@ func TestModelAliases(t *testing.T) {
 	}{
 		{"default", "gemini-pro-orchestrator-g1-pro", true},
 		{"orchestrator", "gemini-pro-orchestrator-g1-pro", true},
+		{"neon", "gemini-4-neon-medium", true},
+		{"4-neon", "gemini-4-neon-medium", true},
+		{"gemini-4-neon", "gemini-4-neon-medium", true},
+		{"neon-high", "gemini-4-neon-high", true},
+		{"neon-xhigh", "gemini-4-neon-xhigh", true},
+		{"neon-low", "gemini-4-neon-low", true},
 		{"argon", "gemini-4-argon-medium", true},
 		{"argon-high", "gemini-4-argon-high", true},
 		{"hydrogen", "gemini-4-hydrogen-medium", true},
@@ -42,6 +48,7 @@ func TestRejectsModel(t *testing.T) {
 	}{
 		{"", false},
 		{"gemini-pro-orchestrator-g1-pro", false},
+		{"neon", false},
 		{"argon", false},
 		{"hydrogen", false},
 		{"gemini-3.1-pro-high", false},

@@ -63,7 +63,7 @@
 - **Поддержка моделей и агентов**:
   - Автоматическое обнаружение доступных моделей из CLI (`agy models`) с кэшированием на диске и запасными механизмами.
   - Алиасы у каждого агента свои и разрешаются для активного агента:
-    - `agy`: `default`, `orchestrator`, `argon`, `hydrogen`, `flash`, `flash-high`, `flash-low`, `pro`, `pro-low`, `sonnet` (Claude Sonnet 5.5), `opus` (Claude Opus 5.5), `oss`. Claude Haiku в каталоге `agy` нет.
+    - `agy`: `default`, `orchestrator`, `neon`, `argon`, `hydrogen`, `flash`, `flash-high`, `flash-low`, `pro`, `pro-low`, `sonnet` (Claude Sonnet 5.5), `opus` (Claude Opus 5.5), `oss`. Claude Haiku в каталоге `agy` нет.
     - `claude`: `default`, `sonnet` (Claude Sonnet 5.5), `opus` (Claude Opus 5.5), `haiku` (Claude Haiku 5.5), `sonnet-5`.
     - `grok`: `default`, `grok`, `4.7` (Grok 4.7), `fast` (Grok 4.7 Fast), `4.6`, `4.5`.
     - Алиас другого агента не применяется: бот подскажет переключиться через `/agent`.
@@ -309,7 +309,7 @@ nano .env
 | `PROJECTS_ROOT` | **Да** | — | Абсолютный путь к каталогу, где хранятся репозитории рабочих проектов. |
 | `SCRIPTS_DIR` | Нет | `scripts` в `BOT_DIR` | Путь к каталогу, где хранятся пользовательские скрипты для команды `/script` (см. [Пользовательские скрипты](#пользовательские-скрипты-script)). |
 | `DEFAULT_PROJECT` | Нет | Первая папка в `PROJECTS_ROOT` | Имя проекта (подпапки в `PROJECTS_ROOT`), выбираемого активным при старте. Если не задано, бот использует первую найденную папку. |
-| `DEFAULT_MODEL` | **Да** | — | Модель по умолчанию для `agy` (например `gemini-pro-orchestrator-g1-pro`, `argon`, `hydrogen`, `sonnet`, `opus`). Алиасы разрешаются в наборе `agy`, поэтому `haiku` недоступен. |
+| `DEFAULT_MODEL` | **Да** | — | Модель по умолчанию для `agy` (например `gemini-pro-orchestrator-g1-pro`, `neon`, `argon`, `hydrogen`, `sonnet`, `opus`). Алиасы разрешаются в наборе `agy`, поэтому `haiku` недоступен. |
 | `GEMINI_API_KEY` | Нет | — | Ключ Google AI Studio для работы агента `agy` в режиме `api` (`/mode api`). Без него режим `api` недоступен. |
 | `GEMINI_API_MODEL` | Нет | Автовыбор | Явное имя модели Gemini API для режима `api` (например `gemini-2.5-flash`). Если не задано, модель подбирается по списку доступных моделей: берётся младшее семейство из старших (flash) в максимальной доступной версии. |
 | `ANTHROPIC_API_KEY` | Нет | — | Ключ Anthropic для работы агента `claude` в режиме `api` (`/mode api`). Без него (и без `CLAUDE_API_KEY`) режим `api` у `claude` недоступен. |
