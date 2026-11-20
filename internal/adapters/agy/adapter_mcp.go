@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 
 	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/config"
@@ -47,6 +48,9 @@ func (a *AgyMCPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 		"NO_COLOR=1",
 		"CI=true",
 	)
+	if token := strings.TrimSpace(args.ChannelToken); token != "" {
+		cmd.Env = append(cmd.Env, mcp.ChannelTokenEnv+"="+token)
+	}
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {

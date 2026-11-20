@@ -75,7 +75,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 	if taskAgent == "" {
 		taskAgent = fallbackAgent
 	}
-	domain.GlobalTokenTracker.StartTaskIfNotActiveWithAgent(projectName, trackModel, trackPrompt, taskAgent)
+	domain.GlobalTokenTracker.StartTaskIfNotActiveWithAgent(projectName, trackModel, taskAgent, trackPrompt)
 
 	// ЭТАП 1: Планирование (если требуется и ещё не утверждён)
 	view2 := task.Snapshot()
@@ -85,10 +85,11 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		// Проверка отмены и перевод в планирование — одним куском: иначе задачу можно
 		// отменить между ними и запустить уже отменённый шаг.
 		var (
-			cancelled        bool
-			existingPlan     string
-			curPrompt        string
-			pendingFollowups []string
+			cancelled           bool
+			existingPlan        string
+			curPrompt           string
+			pendingPlanRevision bool
+			pendingFollowups    []string
 		)
 		task.Update(func(t *domain.TaskSession) {
 			if t.Status == domain.TaskStatusCancelled {
@@ -98,6 +99,8 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			t.Status = domain.TaskStatusPlanning
 			existingPlan = t.Plan
 			curPrompt = t.CurrentPrompt
+			pendingPlanRevision = t.PendingPlanRevision
+			t.PendingPlanRevision = false
 			pendingFollowups = append([]string(nil), t.PendingFollowups...)
 		})
 		if cancelled {
@@ -124,6 +127,8 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			} else {
 				planningPrompt = i18n.Tf(lang, "pipeline.plan_prompt", view.InitialPrompt, pendingSection)
 			}
+		} else if !pendingPlanRevision && view.ConversationID != "" && curPrompt != "" && curPrompt != view.InitialPrompt {
+			planningPrompt = curPrompt
 		} else {
 			feedback := curPrompt
 			if feedback == "" {
@@ -377,9 +382,11 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 
 			finalReport = strings.TrimSpace(utils.SanitizePlanText(finalReport))
 			if finalReport != "" {
+				const maxInlineReportRunes = 3800
+				const reportSummaryRunes = 2500
 				reportRunes := []rune(finalReport)
-				if len(reportRunes) > 1500 {
-					summary := utils.ExtractPlanSummary(finalReport, 1200)
+				if len(reportRunes) > maxInlineReportRunes {
+					summary := utils.ExtractPlanSummary(finalReport, reportSummaryRunes)
 					summaryHTML := utils.MarkdownToTelegramHTML(summary)
 					_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.report_summary", taskID, summaryHTML, len(reportRunes)), ports.Rich())
 
@@ -729,28 +736,41 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 
 	timeout := stepTimeout()
 
+	taskMode := config.ProjectState.GetExecutionMode()
+	isAPI := strings.EqualFold(taskMode, "api")
+
+	mcpChannel := newTaskChannel(m, chat, task, workDir, config.ProjectsRoot, lang)
+	channelToken := generateChannelToken()
+	defer mcpChannels.bindWithToken(0, channelToken, mcpChannel)()
+
 	args := ports.ExecuteArgs{
-		ConversationID: convID,
-		ModelName:      modelName,
-		Prompt:         prompt,
-		WorkDir:        workDir,
-		Effort:         stepEffort,
-		Timeout:        timeout,
+		ConversationID:  convID,
+		ModelName:       modelName,
+		Prompt:          prompt,
+		WorkDir:         workDir,
+		ReadOnly:        isPlanning,
+		Effort:          stepEffort,
+		Timeout:         timeout,
+		BotInstructions: buildBotToolInstructions(lang, isPlanning, false),
+		ChannelToken:    channelToken,
+		BotTools:        newChannelBotToolHandler(mcpChannel),
 	}
 
-	// Передаём правила проекта AGENTS.md как системный промпт ТОЛЬКО для новой сессии (convID == "").
-	// При возобновлении сессии (convID != "") контекст уже сохранён агентом,
-	// и повторная отправка исключена для экономии токенов.
-	if convID == "" {
+	// Передаём правила проекта AGENTS.md как системный промпт для новой сессии (convID == "")
+	// или в stateless API-режиме на каждом шаге. При возобновлении CLI/MCP-сессии
+	// контекст уже сохранён агентом и повторная отправка исключена для экономии токенов.
+	if convID == "" || isAPI {
 		if rules := utils.LoadProjectAgentsRules(workDir, config.ProjectsRoot); rules != "" {
 			args.SystemPrompt = rules
 		}
+	}
+	if isAPI && len(view5.APIHistory) > 0 {
+		args.History = view5.APIHistory
 	}
 
 	stepCtx, stepCancel := context.WithTimeout(context.Background(), timeout+2*time.Minute)
 	defer stepCancel()
 
-	taskMode := config.ProjectState.GetExecutionMode()
 	framework, frameworkErr := agentFrameworkFor(taskAgent)
 	if frameworkErr != nil {
 		_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.agent_start_failed", taskID, ErrorText(frameworkErr, lang)), ports.Rich())
@@ -780,9 +800,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	}
 	syncLegacySession(task)
 
-	// Инструменты бота, которые агент вызывает через MCP-мост, работают в контексте
-	// этой задачи: сообщения идут в её чат, прогресс — в её лог, вопрос — в её шаг.
-	mcpChannel := newTaskChannel(m, chat, task, lang)
+	// Привязываем PID процесса к тому же каналу (дополнительно к ChannelToken).
 	defer mcpChannels.bind(agentProcess.PID(), mcpChannel)()
 
 	scanner := bufio.NewScanner(agentProcess.Stdout())
@@ -857,8 +875,12 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	var sawAgyErrorLine bool
 	var sawTurnOutput bool
 	var hasAskQuestionToolCall bool
-	var pendingQuestionText string
-	var pendingQuestionOptions []string
+	var stepPRURL string
+	type trackedAskStep struct {
+		stepIndex int
+		items     []utils.ParsedQuestion
+	}
+	var trackedAsks []trackedAskStep
 
 	go func() {
 		for scanner.Scan() {
@@ -907,25 +929,43 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 							t.AppendOutputLocked(u.TextDelta)
 							if matches := prUrlRegexp.FindStringSubmatch(u.TextDelta); len(matches) > 1 {
 								t.LastPRURL = matches[1]
+								stepPRURL = matches[1]
 							}
 						})
 					}
 
-					// Фиксация вызова инструмента ask_question (без преждевременного прерывания процесса)
+					// Фиксация вызова инструмента ask_question (накапливаем все вопросы шага)
 					if u.ToolName == "ask_question" || (u.ToolInfo != nil && u.ToolInfo.Name == "ask_question") {
 						hasAskQuestionToolCall = true
+						var items []utils.ParsedQuestion
 						if u.ToolInfo != nil && u.ToolInfo.Parameters != nil {
-							qText := utils.FormatAskQuestionParams(u.ToolInfo.Parameters, lang)
-							qOpts := utils.ExtractAskQuestionOptions(u.ToolInfo.Parameters)
-							if qText != "" {
-								pendingQuestionText = qText
-							}
-							if len(qOpts) > 0 {
-								pendingQuestionOptions = qOpts
+							items = utils.ExtractAskQuestionItems(u.ToolInfo.Parameters)
+							if len(items) == 0 {
+								qText := utils.FormatAskQuestionParams(u.ToolInfo.Parameters, lang)
+								qOpts := utils.ExtractAskQuestionOptions(u.ToolInfo.Parameters)
+								if strings.TrimSpace(qText) != "" {
+									items = []utils.ParsedQuestion{{Question: qText, Options: qOpts}}
+								}
 							}
 						}
-						if pendingQuestionText == "" && u.TextDelta != "" {
-							pendingQuestionText = u.TextDelta
+						if len(items) == 0 && strings.TrimSpace(u.TextDelta) != "" {
+							items = []utils.ParsedQuestion{{Question: strings.TrimSpace(u.TextDelta)}}
+						}
+						if len(items) > 0 {
+							updated := false
+							for idx := range trackedAsks {
+								if trackedAsks[idx].stepIndex == u.StepIndex {
+									trackedAsks[idx].items = items
+									updated = true
+									break
+								}
+							}
+							if !updated {
+								trackedAsks = append(trackedAsks, trackedAskStep{
+									stepIndex: u.StepIndex,
+									items:     items,
+								})
+							}
 						}
 					}
 				}
@@ -950,6 +990,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 							}
 							if matches := prUrlRegexp.FindStringSubmatch(res.Response); len(matches) > 1 {
 								t.LastPRURL = matches[1]
+								stepPRURL = matches[1]
 							}
 						})
 					}
@@ -972,6 +1013,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 				t.AppendOutputLocked(cleanLine + "\n")
 				if matches := prUrlRegexp.FindStringSubmatch(cleanLine); len(matches) > 1 {
 					t.LastPRURL = matches[1]
+					stepPRURL = matches[1]
 				}
 				if m := modelRegexp.FindStringSubmatch(cleanLine); len(m) > 1 {
 					t.LastModelUsed = strings.TrimSpace(m[1])
@@ -1001,19 +1043,44 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	if isCancelled {
 		return StepResult{Outcome: StepOutcomeCancelled, PRURL: lastPR}
 	}
-	// Если PR уже успешно создан в git и получен URL, шаг считается успешно завершённым
-	if lastPR != "" {
+	// Если PR создан именно на ЭТОМ шаге выполнения, шаг считается успешно завершённым.
+	if !isPlanning && stepPRURL != "" {
 		return StepResult{Outcome: StepOutcomeSuccess, PRURL: lastPR, HasResult: hasResult, ResultStatus: resultStatus}
 	}
 	if stepTimedOut || stepCtx.Err() == context.DeadlineExceeded {
 		return StepResult{Outcome: StepOutcomeTimeout, Error: waitErr, PRURL: lastPR}
 	}
 
-	// Вопрос через MCP-инструмент ask_user равноценен вызову ask_question.
-	if q, opts, ok := mcpChannel.pendingQuestion(); ok {
+	// Объединяем вопросы из MCP/API канала (ask_user) и из потока stream-json (ask_question).
+	var mergedQuestions []domain.QuestionItem
+	seenQuestions := make(map[string]bool)
+	appendQuestionItem := func(item domain.QuestionItem) {
+		qKey := strings.ToLower(strings.TrimSpace(item.Question))
+		if qKey == "" || seenQuestions[qKey] {
+			return
+		}
+		seenQuestions[qKey] = true
+		mergedQuestions = append(mergedQuestions, item)
+	}
+	for _, mq := range mcpChannel.pendingQuestions() {
+		appendQuestionItem(mq)
+	}
+	for _, askStep := range trackedAsks {
+		for _, it := range askStep.items {
+			appendQuestionItem(domain.QuestionItem{
+				Question:    it.Question,
+				Options:     append([]string(nil), it.Options...),
+				MultiSelect: it.MultiSelect,
+			})
+		}
+	}
+
+	var pendingQuestionText string
+	var pendingQuestionOptions []string
+	if len(mergedQuestions) > 0 {
 		hasAskQuestionToolCall = true
-		pendingQuestionText = q
-		pendingQuestionOptions = opts
+		pendingQuestionText = mergedQuestions[0].Question
+		pendingQuestionOptions = append([]string(nil), mergedQuestions[0].Options...)
 	}
 
 	hasResultError := hasResult && (strings.EqualFold(resultStatus, "ERROR") || strings.TrimSpace(resultError) != "")
@@ -1050,27 +1117,53 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		AskQuestionCalled:      hasAskQuestionToolCall,
 		PendingQuestionText:    pendingQuestionText,
 		PendingQuestionOptions: pendingQuestionOptions,
-		PRURL:                  lastPR,
+		PRURL:                  stepPRURL,
 		FinalResponse:          fullResp,
 		BackgroundTerminated:   background.Interrupted(),
 	})
 
+	if isAPI {
+		assistantTurn := fullResp
+		if assistantTurn == "" {
+			assistantTurn = pendingQuestionText
+		}
+		if prompt != "" || assistantTurn != "" {
+			task.Update(func(t *domain.TaskSession) {
+				if prompt != "" {
+					t.APIHistory = append(t.APIHistory, ports.ChatMessage{Role: "user", Content: prompt})
+				}
+				if assistantTurn != "" {
+					t.APIHistory = append(t.APIHistory, ports.ChatMessage{Role: "assistant", Content: assistantTurn})
+				}
+				const maxTaskAPIHistory = 40
+				if len(t.APIHistory) > maxTaskAPIHistory {
+					t.APIHistory = append([]ports.ChatMessage(nil), t.APIHistory[len(t.APIHistory)-maxTaskAPIHistory:]...)
+				}
+			})
+		}
+	}
+
 	if isQuestion {
+		if len(mergedQuestions) == 0 && strings.TrimSpace(qText) != "" {
+			mergedQuestions = []domain.QuestionItem{{
+				Question: qText,
+				Options:  append([]string(nil), qOpts...),
+			}}
+		}
 		task.Update(func(t *domain.TaskSession) {
 			t.Status = domain.TaskStatusWaitingInput
+			t.PendingQuestions = mergedQuestions
+			t.CurrentQuestionIndex = 0
+			t.QuestionAcceptAllTxt = false
 			t.LastQuestion = qText
-			t.QuestionOptions = qOpts
+			t.QuestionOptions = append([]string(nil), qOpts...)
 			t.QuestionAskedAt = time.Now()
 		})
 		syncLegacySession(task)
+		domain.GlobalTaskManager.SaveTask(task)
 
+		msgText := formatTaskQuestionMessage(task.Snapshot(), isPlanning, lang)
 		menu := buildQuestionMarkup(task, lang)
-		formattedQ := utils.MarkdownToTelegramHTML(qText)
-		headerKey := "pipeline.question_header"
-		if isPlanning {
-			headerKey = "pipeline.question_header_planning"
-		}
-		msgText := i18n.Tf(lang, headerKey, taskID, html.EscapeString(projectName), formattedQ)
 		qRef, _ := m.Send(context.Background(), chat, msgText, ports.RichWith(menu))
 		if qRef.ID != "" {
 			domain.GlobalTaskManager.RegisterMessageTask(qRef, taskID)
@@ -1243,8 +1336,8 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 				t.Status = domain.TaskStatusRunning
 			}
 			t.CurrentPrompt = answer
-			t.LastQuestion = ""
-			t.QuestionOptions = nil
+			t.ClearPendingQuestionLocked()
+			t.ResetOutputLocked()
 			t.StartedAt = time.Now()
 		})
 		syncLegacySession(task)

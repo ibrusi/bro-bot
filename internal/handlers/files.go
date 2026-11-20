@@ -24,6 +24,36 @@ const (
 	uploadsDirName      = "uploads"
 )
 
+// parseFileCaptionTarget извлекает из подписи к файлу команду (/new, /plan),
+// явный целевой проект/агент и очищенный текст задания.
+func parseFileCaptionTarget(rawCaption string) (hasNewCmd, requiresPlan bool, explicitProj, explicitAgent, cleanedCaption string) {
+	trimmed := strings.TrimSpace(rawCaption)
+	if trimmed == "" {
+		return false, false, "", "", ""
+	}
+
+	rest := trimmed
+	fields := strings.Fields(trimmed)
+	if len(fields) > 0 && strings.HasPrefix(fields[0], "/") {
+		cmd := strings.ToLower(strings.SplitN(fields[0], "@", 2)[0])
+		switch cmd {
+		case "/plan":
+			hasNewCmd = true
+			requiresPlan = true
+			rest = stripLeadingWords(trimmed, 1)
+		case "/new":
+			hasNewCmd = true
+			config.ProjectState.RLock()
+			requiresPlan = config.ProjectState.PlanMode
+			config.ProjectState.RUnlock()
+			rest = stripLeadingWords(trimmed, 1)
+		}
+	}
+
+	explicitProj, explicitAgent, cleanedCaption = parseNewTaskInput(rest, "", "")
+	return hasNewCmd, requiresPlan, explicitProj, explicitAgent, cleanedCaption
+}
+
 // handleDocument обрабатывает входящие файлы, документы и фотографии из Telegram.
 func handleDocument(s ports.Session) error {
 	file := s.File()
@@ -32,8 +62,9 @@ func handleDocument(s ports.Session) error {
 	}
 
 	lang := uiLang()
+	hasNewCmd, captionPlan, explicitProj, explicitAgent, cleanedCaption := parseFileCaptionTarget(file.Caption)
 
-	// 1. Определение целевого проекта
+	// 1. Определение целевого проекта (Reply > явный проект в подписи > ожидающая/активная задача > текущий проект)
 	targetProj := ""
 	var replyTask *domain.TaskSession
 	if msg := s.Message(); msg != nil && msg.ReplyTo != nil {
@@ -42,9 +73,19 @@ func handleDocument(s ports.Session) error {
 			targetProj = t.Snapshot().Project
 		}
 	}
-	active := domain.GlobalTaskManager.GetActiveTask()
-	if targetProj == "" && active != nil && (active.IsActive() || hasFreshPendingQuestion(active)) {
-		targetProj = active.Snapshot().Project
+	if targetProj == "" && explicitProj != "" {
+		targetProj = explicitProj
+	}
+	var (
+		implicitTarget *domain.TaskSession
+		otherWaiting   []*domain.TaskSession
+		staleNote      string
+	)
+	if replyTask == nil {
+		implicitTarget, otherWaiting, staleNote = resolveImplicitTaskTarget()
+		if !hasNewCmd && targetProj == "" && implicitTarget != nil {
+			targetProj = implicitTarget.Snapshot().Project
+		}
 	}
 	if targetProj == "" {
 		config.ProjectState.RLock()
@@ -155,11 +196,10 @@ func handleDocument(s ports.Session) error {
 	}
 
 	// 6. Формирование промпта и статусного уведомления
-	caption := strings.TrimSpace(file.Caption)
 	attachmentNote := i18n.Tf(lang, "file.prompt_attachment", relPath, formatFileSize(written))
 	var promptText string
-	if caption != "" {
-		promptText = fmt.Sprintf("%s\n\n%s", caption, attachmentNote)
+	if cleanedCaption != "" {
+		promptText = fmt.Sprintf("%s\n\n%s", cleanedCaption, attachmentNote)
 	} else {
 		promptText = attachmentNote
 	}
@@ -181,16 +221,46 @@ func handleDocument(s ports.Session) error {
 	if replyTask != nil {
 		return handleAddFollowupToTask(s, replyTask.Snapshot().ID, promptText)
 	}
-	if active != nil && (active.IsActive() || hasFreshPendingQuestion(active)) {
-		return handleAddFollowupToTask(s, active.Snapshot().ID, promptText)
+	if hasNewCmd {
+		return createTaskInProject(s, targetProj, explicitAgent, promptText, captionPlan)
+	}
+	if explicitProj != "" || explicitAgent != "" {
+		if implicitTarget != nil && implicitTarget.Snapshot().Project == targetProj {
+			err := handleAddFollowupToTask(s, implicitTarget.Snapshot().ID, promptText)
+			if err == nil {
+				sendOtherWaitingHint(s, otherWaiting)
+			}
+			return err
+		}
+		if config.ProjectState.GetInteractionMode() == domain.InteractionModeTask {
+			config.ProjectState.RLock()
+			planMode := config.ProjectState.PlanMode
+			config.ProjectState.RUnlock()
+			return createTaskInProject(s, targetProj, explicitAgent, promptText, planMode)
+		}
+		intentSource := cleanedCaption
+		if intentSource == "" {
+			intentSource = promptText
+		}
+		if intent, _ := domain.ClassifyMessageReason(intentSource); intent == domain.IntentWork {
+			return sendWorkSuggestion(s, targetProj, normalizeAgentName(explicitAgent), promptText)
+		}
+		return startChatTurn(s.Messenger(), s.Chat(), targetProj, explicitAgent, promptText, staleNote)
+	}
+	if implicitTarget != nil {
+		err := handleAddFollowupToTask(s, implicitTarget.Snapshot().ID, promptText)
+		if err == nil {
+			sendOtherWaitingHint(s, otherWaiting)
+		}
+		return err
 	}
 	if config.ProjectState.GetInteractionMode() == domain.InteractionModeTask {
 		config.ProjectState.RLock()
 		planMode := config.ProjectState.PlanMode
 		config.ProjectState.RUnlock()
-		return handleCreateNewTaskWithOptions(s, promptText, planMode)
+		return createTaskInProject(s, targetProj, explicitAgent, promptText, planMode)
 	}
-	return handleTextInChatModeWithNote(s, promptText, "")
+	return handleTextInChatModeWithNote(s, promptText, staleNote)
 }
 
 func formatFileSize(bytes int64) string {

@@ -27,8 +27,9 @@ import (
 
 // BridgeCall — вызов инструмента, пересылаемый боту.
 type BridgeCall struct {
-	Tool      string                 `json:"tool"`
-	Arguments map[string]interface{} `json:"arguments,omitempty"`
+	Tool         string                 `json:"tool"`
+	Arguments    map[string]interface{} `json:"arguments,omitempty"`
+	ChannelToken string                 `json:"channel_token,omitempty"`
 }
 
 // BridgeResult — результат вызова, который получит агент.

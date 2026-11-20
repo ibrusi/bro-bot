@@ -5,29 +5,40 @@ import (
 	"time"
 )
 
+// QuestionItem представляет один структурированный вопрос агента пользователю.
+type QuestionItem struct {
+	Question        string   `json:"question"`
+	Options         []string `json:"options,omitempty"`
+	MultiSelect     bool     `json:"is_multi_select,omitempty"`
+	SelectedIndices []int    `json:"selected_indices,omitempty"`
+	Answer          string   `json:"answer,omitempty"`
+}
+
 // TaskRecord представляет запись задачи в базе данных SQLite.
 type TaskRecord struct {
-	ID              int
-	Project         string
-	Model           string
-	Agent           string
-	InitialPrompt   string
-	CurrentPrompt   string
-	Status          string
-	RequiresPlan    bool
-	Plan            string
-	PlanApproved    bool
-	StartedAt       time.Time
-	FinishedAt      time.Time
-	CreatedAt       time.Time
-	LastPRURL       string
-	ConversationID  string
-	LastQuestion    string
-	QuestionOptions []string
-	QuestionAskedAt time.Time
-	RecipientID     string
-	LastModelUsed   string
-	LastTokensUsed  string
+	ID                   int
+	Project              string
+	Model                string
+	Agent                string
+	InitialPrompt        string
+	CurrentPrompt        string
+	Status               string
+	RequiresPlan         bool
+	Plan                 string
+	PlanApproved         bool
+	StartedAt            time.Time
+	FinishedAt           time.Time
+	CreatedAt            time.Time
+	LastPRURL            string
+	ConversationID       string
+	LastQuestion         string
+	QuestionOptions      []string
+	PendingQuestions     []QuestionItem
+	CurrentQuestionIndex int
+	QuestionAskedAt      time.Time
+	RecipientID          string
+	LastModelUsed        string
+	LastTokensUsed       string
 }
 
 // TokenMetricsRecord представляет сохраненные метрики токенов задачи.

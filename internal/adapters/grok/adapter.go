@@ -119,15 +119,17 @@ func (a *Adapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (port
 	proc := &process{cmd: cmd, stdout: eventR, stdin: stdin}
 	go drainStderr(stderr)
 	go proc.run(ctx, stdin, stdout, eventW, turnConfig{
-		WorkDir:        workDir,
-		Prompt:         args.Prompt,
-		SystemPrompt:   args.SystemPrompt,
-		ConversationID: args.ConversationID,
-		Model:          model,
-		Effort:         effortID,
-		HasEffort:      hasEffort,
-		ReadOnly:       args.ReadOnly,
-		Yolo:           yolo,
+		WorkDir:         workDir,
+		Prompt:          args.Prompt,
+		SystemPrompt:    args.SystemPrompt,
+		BotInstructions: args.BotInstructions,
+		ChannelToken:    args.ChannelToken,
+		ConversationID:  args.ConversationID,
+		Model:           model,
+		Effort:          effortID,
+		HasEffort:       hasEffort,
+		ReadOnly:        args.ReadOnly,
+		Yolo:            yolo,
 	})
 	return proc, nil
 }
@@ -144,15 +146,17 @@ func drainStderr(r io.Reader) {
 }
 
 type turnConfig struct {
-	WorkDir        string
-	Prompt         string
-	SystemPrompt   string
-	ConversationID string
-	Model          string
-	Effort         string
-	HasEffort      bool
-	ReadOnly       bool
-	Yolo           bool
+	WorkDir         string
+	Prompt          string
+	SystemPrompt    string
+	BotInstructions string
+	ChannelToken    string
+	ConversationID  string
+	Model           string
+	Effort          string
+	HasEffort       bool
+	ReadOnly        bool
+	Yolo            bool
 }
 
 type mcpEnv struct {
@@ -167,16 +171,21 @@ type mcpServer struct {
 	Env     []mcpEnv `json:"env"`
 }
 
-func broBotServer() mcpServer {
+func broBotServer(channelToken string) mcpServer {
 	args := []string{"mcp-serve"}
 	if socket := strings.TrimSpace(config.MCPSocketPath); socket != "" {
 		args = append(args, "--socket", socket)
+	}
+	env := []mcpEnv{}
+	if tok := strings.TrimSpace(channelToken); tok != "" {
+		args = append(args, "--token", tok)
+		env = append(env, mcpEnv{Name: mcp.ChannelTokenEnv, Value: tok})
 	}
 	return mcpServer{
 		Name:    "bro_bot",
 		Command: mcp.GetBotExecutable(),
 		Args:    args,
-		Env:     []mcpEnv{},
+		Env:     env,
 	}
 }
 
@@ -239,7 +248,7 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 		}
 		var params permissionParams
 		_ = json.Unmarshal(msg.Params, &params)
-		optionID, ok := choosePermission(cfg.ReadOnly, params.ToolCall.Kind, params.Options)
+		optionID, ok := choosePermissionForTool(cfg.ReadOnly, params.ToolCall.Kind, params.ToolCall.Title, params.Options)
 		_ = conn.reply(msg.ID, permissionResult(optionID, ok))
 	}
 
@@ -350,8 +359,19 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 	_ = readErr
 }
 
+func mergeSystemRules(botInstr, sysPrompt string) string {
+	var parts []string
+	if b := strings.TrimSpace(botInstr); b != "" {
+		parts = append(parts, b)
+	}
+	if s := strings.TrimSpace(sysPrompt); s != "" {
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, "\n\n---\n\n")
+}
+
 func openSession(ctx context.Context, conn *rpcConn, cfg turnConfig) (id string, fresh bool, err error) {
-	servers := []mcpServer{broBotServer()}
+	servers := []mcpServer{broBotServer(cfg.ChannelToken)}
 	meta := map[string]any{}
 	if cfg.Yolo {
 		meta["yoloMode"] = true
@@ -371,7 +391,7 @@ func openSession(ctx context.Context, conn *rpcConn, cfg turnConfig) (id string,
 			log.Printf("grok-acp: resume %s: %v", cfg.ConversationID, callErr)
 		}
 	}
-	if rules := strings.TrimSpace(cfg.SystemPrompt); rules != "" {
+	if rules := mergeSystemRules(cfg.BotInstructions, cfg.SystemPrompt); rules != "" {
 		meta["rules"] = rules
 	}
 	params := map[string]any{

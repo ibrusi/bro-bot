@@ -656,3 +656,36 @@ Your goal right now:
 	}
 }
 
+func TestExtractAskQuestionItems(t *testing.T) {
+	batch := ExtractAskQuestionItems(map[string]interface{}{
+		"questions": []interface{}{
+			map[string]interface{}{
+				"question":        "Выбрать стек?",
+				"options":         []interface{}{"Go", "", 42, "Rust"},
+				"is_multi_select": true,
+			},
+			map[string]interface{}{
+				"question": "Деплой?",
+				"options":  []string{"Docker", "Systemd"},
+			},
+		},
+	})
+	if len(batch) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(batch))
+	}
+	if !batch[0].MultiSelect || len(batch[0].Options) != 2 || batch[0].Options[0] != "Go" || batch[0].Options[1] != "Rust" {
+		t.Errorf("unexpected first question item: %+v", batch[0])
+	}
+	if batch[1].MultiSelect || len(batch[1].Options) != 2 || batch[1].Question != "Деплой?" {
+		t.Errorf("unexpected second question item: %+v", batch[1])
+	}
+
+	single := ExtractAskQuestionItems(map[string]interface{}{
+		"question":        "Один вопрос?",
+		"options":         []interface{}{"Да", "Нет"},
+		"is_multi_select": true,
+	})
+	if len(single) != 1 || !single[0].MultiSelect || len(single[0].Options) != 2 {
+		t.Errorf("unexpected single question items: %+v", single)
+	}
+}

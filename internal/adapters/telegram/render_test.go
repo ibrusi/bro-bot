@@ -105,3 +105,26 @@ func TestMsgRefRoundTrip(t *testing.T) {
 		t.Errorf("expected zero MessageRef for nil message, got %+v", got)
 	}
 }
+
+func TestSessionArgsPreservesMultilineText(t *testing.T) {
+	bot, err := tele.NewBot(tele.Settings{Offline: true})
+	if err != nil {
+		t.Fatalf("offline bot: %v", err)
+	}
+	tctx := bot.NewContext(tele.Update{
+		Message: &tele.Message{
+			Text: "/new projB Первая строка\nВторая строка\nТретья строка",
+		},
+	})
+	sess := newSession(nil, tctx)
+	args := sess.Args()
+	want := []string{"projB", "Первая", "строка", "Вторая", "строка", "Третья", "строка"}
+	if len(args) != len(want) {
+		t.Fatalf("Args() = %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}

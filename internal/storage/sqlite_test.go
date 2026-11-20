@@ -638,3 +638,58 @@ func TestChatMessagesAppendAndTrim(t *testing.T) {
 		t.Errorf("после обрезки ожидали 4 последние реплики, получили %d шт (первая %q)", len(all), all[0].Content)
 	}
 }
+
+func TestTaskPendingQuestionsPersistence(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+
+	rec := &TaskRecord{
+		ID:            42,
+		Project:       "projB",
+		Model:         "sonnet",
+		Agent:         "claude",
+		InitialPrompt: "task prompt",
+		Status:        "waiting_input",
+		StartedAt:     time.Now().Truncate(time.Second),
+		PendingQuestions: []QuestionItem{
+			{
+				Question:        "Choose components?",
+				Options:         []string{"API", "Worker", "UI"},
+				MultiSelect:     true,
+				SelectedIndices: []int{0, 2},
+				Answer:          "API, UI",
+			},
+			{
+				Question: "Confirm rollout?",
+				Options:  []string{"Yes", "No"},
+			},
+		},
+		CurrentQuestionIndex: 1,
+	}
+	taskID, err := s.CreateTask(ctx, rec)
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	got, err := s.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.CurrentQuestionIndex != 1 || len(got.PendingQuestions) != 2 {
+		t.Fatalf("unexpected pending questions state: idx=%d, len=%d", got.CurrentQuestionIndex, len(got.PendingQuestions))
+	}
+	q0 := got.PendingQuestions[0]
+	if !q0.MultiSelect || q0.Answer != "API, UI" || len(q0.SelectedIndices) != 2 || q0.SelectedIndices[0] != 0 || q0.SelectedIndices[1] != 2 {
+		t.Errorf("q0 mismatch after round-trip: %+v", q0)
+	}
+
+	got.CurrentQuestionIndex = 0
+	got.PendingQuestions = nil
+	if err := s.UpdateTask(ctx, got); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	cleared, _ := s.GetTask(ctx, taskID)
+	if len(cleared.PendingQuestions) != 0 || cleared.CurrentQuestionIndex != 0 {
+		t.Errorf("expected cleared pending questions, got idx=%d len=%d", cleared.CurrentQuestionIndex, len(cleared.PendingQuestions))
+	}
+}

@@ -58,8 +58,8 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Dialogue transcript inspection (`/history [id]`): view the full conversation and agent actions directly from the session logs.
   - Safe cancellation of stuck or outdated tasks (`/cancel [id]`).
 - **Interactive Dialogues & Clarifying Questions (`ask_question` / `ask_user`)**:
-  - When the agent requires clarification, the bot presents a multi-choice poll with buttons directly in Telegram.
-  - Flexible reply options: plain text messages, Telegram Reply to task notifications, or the `/add [id] <text>` command.
+  - Supports both single questions and multi-question batches (`questions[]`), multiple sequential Q&A rounds in `/new`, `/plan`, and `/chat`, and optional multi-select toggle buttons alongside single-choice buttons and single-message text replies.
+  - Flexible reply options: plain text messages (automatically routed to a waiting task even in another project), Telegram Reply to task notifications, or `/add` / `/resume` commands.
   - Configurable timeout (`QUESTION_TIMEOUT`): if no response is received in time, the task automatically pauses to unblock the project queue for other tasks.
 - **Dynamic Model Registry**:
   - Automatic discovery of available models from the CLI (`agy models`) with disk caching and fallback mechanisms.
@@ -77,8 +77,8 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
   - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, active `agy`/`claude`/`grok` processes, and the `whisper-server` speech recognition engine.
 - **Execution Modes: MCP, API & ACP (`/mode [mcp|api|acp]`)**:
-  - `mcp` (default for `agy` and `claude`): agents run with the bot's built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`). Its tools (`telegram_send_message`, `ask_user`, `report_progress`) reach the running bot over a local Unix-socket bridge and act on the task that started the agent.
-  - `api`: connects directly to provider APIs (Google Gemini API & Anthropic Messages API) with built-in workspace file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`). `grok` does not support this mode.
+  - `mcp` (default for `agy` and `claude`): agents run with the bot's built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`). Its tools (`telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, `list_projects`) reach the running bot over a local Unix-socket bridge using step tokens and process-tree matching, so calls always land in the right task regardless of active project focus.
+  - `api`: connects directly to provider APIs (Google Gemini API & Anthropic Messages API) with built-in workspace tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_search`, `find_files`, `run_command`) and in-process bot tools (`telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, `list_projects`). `grok` does not support this mode.
   - `acp`: Grok only. The bot speaks newline-delimited JSON-RPC to `grok agent stdio`, resumes the ACP session, and translates `session/update` into the same stream the rest of the bot already reads. The project directory is the session `cwd`. The bot MCP server is declared in `mcpServers`.
   - Safe sandboxing: chat mode (`/chat`) provides strictly read-only file access, while file writes and command executions are enabled for pipeline tasks. All paths are validated within the project directory.
 - **Multilingual Interface**:
@@ -93,10 +93,10 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Voice recognition defaults to English (`en`). To switch the language, e.g. to Russian, set `WHISPER_LANGUAGE=ru` in your `.env`.
   - Easy setup via `sudo make install-whisper`.
 - **File & Photo Uploads**:
-  - Documents, source files, and photos sent in Telegram are automatically downloaded (up to 20 MB) into the active project's `uploads/` directory.
+  - Documents, source files, and photos sent in Telegram are automatically downloaded (up to 20 MB) into the target project's `uploads/` directory (resolved from a Reply target, a project prefix or `/plan` / `/new` in the caption, a task waiting for input, or the active project).
   - Safe sanitization against Path Traversal and shell injection, preserving Unicode and Cyrillic filenames.
   - Byte-by-byte deduplication: re-uploading an identical file reuses the existing file without creating duplicates or redundant disk writes.
-  - Contextual routing: attached to active tasks (or via Telegram Reply), passed to new tasks, or explored in conversational mode (`/chat`).
+  - Contextual routing: attached to waiting/active tasks (or via Telegram Reply), passed to new tasks (`/new` / `/plan`), or explored in conversational mode (`/chat`).
 - **Hot-Rebuild & In-Bot CI/CD**:
   - `/restart` — clean, non-blocking systemd service restart.
   - `/rebuild [branch] [--pull] [--force]` — pulls latest code from Git, compiles a fresh Go binary, atomically replaces the executable, restarts the service, and sends a Telegram notification with the new commit hash upon startup.
@@ -170,21 +170,24 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
      - `claude --dangerously-skip-permissions --print --output-format stream-json [--resume <id>] --model <model> -p <prompt>`
    - `claude` connects using `--mcp-config` with an ephemeral config file that is removed after the process exits.
    - `agy` connects via `~/.gemini/config/mcp_config.json`. The bot updates only its own `bro_bot` entry and keeps every other server and setting in the file intact; a malformed file is left untouched.
-   - The agent spawns `bot mcp-serve` as its own child process, so the server forwards every tool call to the running bot over a Unix socket (`<BOT_DIR>/data/mcp/bridge.sock`, directory mode `0700`): one JSON request, one JSON response. The bot identifies the caller by the kernel-reported PID of the socket peer (`SO_PEERCRED`) and walks up its parent processes to the agent it started, so a call always lands in the right task and cannot impersonate another one.
-   - Tools available to the agent:
-     - `telegram_send_message`: sends a message to the task's chat (Markdown is supported);
-     - `ask_user`: asks the user a question with optional answer buttons. The tool does not block: the agent is told to end its turn, the task switches to *waiting for input*, and the answer arrives as the next message of the same agent session (`--resume` / `--conversation`);
-     - `report_progress`: shows the current step, optionally with a percentage, in the live task status.
+   - The agent spawns `bot mcp-serve` as its own child process, so the server forwards every tool call to the running bot over a Unix socket (`<BOT_DIR>/data/mcp/bridge.sock`, directory mode `0700`): one JSON request, one JSON response. The bot identifies the caller by both a per-step `ChannelToken` (`--token` / `BRO_BOT_CHANNEL_TOKEN`) and the kernel-reported PID of the socket peer (`SO_PEERCRED`), so a call always lands in the right task or chat across projects and detached sub-shells.
+   - Bot tools available across MCP, ACP (`grok`), and API (`agy`/`claude`) modes:
+     - `telegram_send_message`: sends a message (or quiet `silent` note) to the task or conversation chat with Markdown formatting;
+     - `send_file`: sends a validated workspace file (diagram, patch, log, report, screenshot) to Telegram;
+     - `ask_user`: asks one question or a structured multi-question batch (`questions[]` with optional `is_multi_select`) with interactive buttons. The tool does not block: the agent ends its turn cleanly, the task switches to *waiting for input*, and the answer arrives as the next message of the same agent session (`--resume` / `--conversation` / API history);
+     - `report_progress`: updates the live task status, optionally with a completion percentage;
+     - `get_task_context`: returns prompt, plan, pending additions, questions, and status for the current or referenced task;
+     - `list_tasks` / `list_projects`: lists tasks across projects and registered workspaces.
    - If the bot is not running or the agent was not started by the bot, the tools return an error to the agent instead of pretending the action succeeded.
 
 2. **API Mode (`api`)**:
    - Direct HTTP/REST communication with model provider endpoints:
      - Google Gemini API (`GEMINI_API_KEY`) via Google GenAI SDK;
      - Anthropic Messages API (`ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`).
-   - Integrated workspace tool engine (`internal/tools`):
-     - Safe file system access (`read_file`, `write_file`, `edit_file`, `list_dir`) with strict containment to the active project path.
-     - Shell command execution (`run_command`) for pipeline tasks.
-     - Sandboxed read-only permissions in conversational mode (`/chat`) and full workspace manipulation in pipeline tasks (`/new`, `/plan`).
+   - Integrated workspace tool engine (`internal/tools`) plus in-process bot tools:
+     - Safe file system access (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_search`, `find_files`) with strict containment to the active project path.
+     - Shell command execution (`run_command`) for pipeline tasks, and in-process access to `telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, and `list_projects`.
+     - Sandboxed read-only permissions in conversational mode (`/chat`) and planning mode (`/plan`), with full workspace manipulation during task execution (`/new` or approved `/plan`).
 
 3. **ACP Mode (`acp`, Grok)**:
    - `grok agent [--always-approve] [--model <id>] [--reasoning-effort <level>] stdio`.
@@ -476,7 +479,7 @@ so the conversation continues. Reset it with `/chat new`.
 | `/history [id]` | View the full transcript of user and agent messages for a task session. | `/history 2` |
 | `/cancel [id]` | Cancel and terminate task execution. | `/cancel 2` |
 
-> 💡 **Tip:** You can reply to any bot notification about a task using standard Telegram **Reply** — the bot will route your response directly to that task!
+> 💡 **Tip:** You can reply to any bot notification about a task using standard Telegram **Reply** — the bot will route your response directly to that task! Multiline prompts and answers with code blocks or line breaks are preserved intact in `/new`, `/plan`, `/add`, `/resume`, and `/chat`.
 
 ---
 

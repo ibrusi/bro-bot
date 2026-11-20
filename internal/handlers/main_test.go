@@ -743,7 +743,7 @@ func TestSendPlanForApprovalSingleMessageFormatting(t *testing.T) {
 	taskID := 12
 	projectName := "plan-project"
 	initialPrompt := strings.Repeat("Разработай сложный модуль. ", 15) // ~400 chars
-	planText := strings.Repeat("1. Шаг архитектурного плана.\n", 60)   // ~1800 runes
+	planText := strings.Repeat("1. Шаг архитектурного плана.\n", 100)  // ~2900 runes > maxInlinePlanRunes
 
 	promptSnippet := utils.TruncateString(initialPrompt, 250)
 	if len([]rune(promptSnippet)) > 250 {
@@ -777,8 +777,9 @@ func TestSendPlanForApprovalSingleMessageFormatting(t *testing.T) {
 	if strings.Contains(msgText, initialPrompt) {
 		t.Errorf("expected initialPrompt to be truncated in plan message")
 	}
-	if len([]rune(msgText)) > 3000 {
-		t.Errorf("expected plan message to comfortably fit in one Telegram message (<3000 runes), got %d", len([]rune(msgText)))
+	if vis := utils.TelegramHTMLVisibleLen(msgText); vis > utils.DefaultTelegramMaxChunkLen {
+		t.Errorf("expected plan message to comfortably fit in one Telegram message (<= %d visible UTF-16), got %d",
+			utils.DefaultTelegramMaxChunkLen, vis)
 	}
 }
 

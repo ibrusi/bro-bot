@@ -178,6 +178,14 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
 `,
 	},
+	{
+		version: 6,
+		name:    "add_pending_questions_to_tasks",
+		sql: `
+ALTER TABLE tasks ADD COLUMN pending_questions TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN current_question_index INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 func runMigrations(ctx context.Context, db *sql.DB) error {

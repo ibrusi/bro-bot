@@ -2,6 +2,8 @@ package agy
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -191,5 +193,32 @@ func TestBuildAgyArgs_PrintTimeout(t *testing.T) {
 				t.Errorf("--print-timeout = %q, want %q (args: %v)", got, tc.want, cmdArgs)
 			}
 		})
+	}
+}
+
+func TestBuildAgyArgs_BotInstructionsEvenWithLocalAgentsMD(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "AGENTS.md"), []byte("# Local rules\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	args := buildAgyArgs(ports.ExecuteArgs{
+		ModelName:       "gemini-3.8-flash-high",
+		Prompt:          "Investigate bug",
+		WorkDir:         workDir,
+		SystemPrompt:    "# Duplicate rules that should be skipped",
+		BotInstructions: "BOT_TOOL_PROMPT_MARKER: use send_file",
+	})
+	var promptArg string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-p" {
+			promptArg = args[i+1]
+			break
+		}
+	}
+	if !strings.Contains(promptArg, "BOT_TOOL_PROMPT_MARKER") {
+		t.Errorf("expected BotInstructions even when local AGENTS.md exists, got: %s", promptArg)
+	}
+	if strings.Contains(promptArg, "Duplicate rules") {
+		t.Errorf("expected SystemPrompt not to duplicate local AGENTS.md, got: %s", promptArg)
 	}
 }

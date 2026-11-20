@@ -12,28 +12,47 @@ import (
 	"bro-bot/internal/domain"
 	"bro-bot/internal/mcp"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 )
 
 // fakeChannel записывает, что агент сделал через инструменты бота.
 type fakeChannel struct {
 	messages  []string
+	silent    []bool
+	files     []string
+	captions  []string
 	progress  []string
 	questions []string
 	options   [][]string
+	batches   [][]utils.ParsedQuestion
 	err       error
 }
 
-func (f *fakeChannel) SendMessage(text string) error {
+func (f *fakeChannel) SendMessage(text string, silent bool) error {
 	f.messages = append(f.messages, text)
+	f.silent = append(f.silent, silent)
+	return f.err
+}
+
+func (f *fakeChannel) SendFile(_ context.Context, path, caption string) error {
+	f.files = append(f.files, path)
+	f.captions = append(f.captions, caption)
 	return f.err
 }
 
 func (f *fakeChannel) ReportProgress(status string) { f.progress = append(f.progress, status) }
 
-func (f *fakeChannel) AskUser(question string, options []string) error {
-	f.questions = append(f.questions, question)
-	f.options = append(f.options, options)
+func (f *fakeChannel) AskQuestions(items []utils.ParsedQuestion) error {
+	f.batches = append(f.batches, items)
+	for _, it := range items {
+		f.questions = append(f.questions, it.Question)
+		f.options = append(f.options, it.Options)
+	}
 	return f.err
+}
+
+func (f *fakeChannel) TaskContext(_ int) (string, error) {
+	return `{"id":1}`, f.err
 }
 
 // processTree — PPID по PID для подмены /proc в тестах.

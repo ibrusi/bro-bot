@@ -37,7 +37,7 @@ func handlePlan(s ports.Session) error {
 		}}
 		return s.Send(i18n.Tf(lang, "plan.overview", statusStr), ports.RichWith(menu))
 	}
-	text := strings.TrimSpace(strings.Join(args, " "))
+	text := commandPayload(s)
 	return handleCreatePlanTask(s, text)
 }
 
@@ -324,7 +324,7 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 
 	_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "plan.approved", taskID, html.EscapeString(projectName)), ports.Rich())
 
-	domain.GlobalTokenTracker.StartTaskWithAgent(projectName, modelName, initialPrompt, ActiveAgentName())
+	domain.GlobalTokenTracker.StartTaskWithAgent(projectName, modelName, ActiveAgentName(), initialPrompt)
 	workDir := filepath.Join(config.ProjectsRoot, projectName)
 	go runAgentTaskPipeline(m, chat, task, workDir, config.ProjectsRoot)
 
@@ -343,6 +343,7 @@ func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback
 	task.Update(func(t *domain.TaskSession) {
 		t.Status = domain.TaskStatusPlanning
 		t.CurrentPrompt = feedback
+		t.PendingPlanRevision = true
 		t.StartedAt = time.Now()
 		t.RecentLogs = nil
 		projectName = t.Project
@@ -447,4 +448,4 @@ func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.Task
 	}
 }
 
-const maxInlinePlanRunes = 1200
+const maxInlinePlanRunes = 2600

@@ -6,10 +6,9 @@ import (
 	tele "gopkg.in/telebot.v3"
 )
 
-// maxChunkRunes — безопасный размер одного чанка при разбиении длинных сообщений.
-// Меньше официального лимита Telegram в 4096 символов, чтобы оставить запас на
-// закрывающие HTML-теги, которые может добавить SplitTelegramHTML на границе чанка.
-const maxChunkRunes = 3800
+// maxChunkVisibleLen — безопасный размер одного чанка (в видимых UTF-16 символах)
+// при разбиении длинных сообщений с небольшим запасом относительно предела Telegram API (4096).
+const maxChunkVisibleLen = utils.DefaultTelegramMaxChunkLen
 
 // sendParams — telegram-specific параметры одной отправки/редактирования,
 // извлечённые из ports.SendOptions.
@@ -38,11 +37,11 @@ func (p sendParams) teleOptions(withMarkup, withReplyTo bool) *tele.SendOptions 
 }
 
 // sendSplit отправляет текст получателю, при необходимости разбивая его на несколько
-// сообщений по maxChunkRunes. Клавиатура прикрепляется только к последнему сообщению.
+// сообщений по maxChunkVisibleLen. Клавиатура прикрепляется только к последнему сообщению.
 // Если Telegram отклоняет разметку (например, из-за незакрытого тега), делается
 // повторная попытка отправки того же чанка обычным текстом.
 func sendSplit(b *tele.Bot, to tele.Recipient, text string, p sendParams) (*tele.Message, error) {
-	chunks := utils.SplitMessageByMode(text, string(p.parseMode), maxChunkRunes)
+	chunks := utils.SplitMessageByMode(text, string(p.parseMode), maxChunkVisibleLen)
 	if len(chunks) == 0 {
 		chunks = []string{""}
 	}
@@ -72,7 +71,7 @@ func sendSplit(b *tele.Bot, to tele.Recipient, text string, p sendParams) (*tele
 // чанк, первый чанк редактируется в исходном сообщении, а остальные досылаются новыми
 // сообщениями — клавиатура остаётся на последнем из них.
 func editSplit(b *tele.Bot, ref tele.Editable, to tele.Recipient, text string, p sendParams) (*tele.Message, error) {
-	chunks := utils.SplitMessageByMode(text, string(p.parseMode), maxChunkRunes)
+	chunks := utils.SplitMessageByMode(text, string(p.parseMode), maxChunkVisibleLen)
 	if len(chunks) == 0 {
 		chunks = []string{""}
 	}

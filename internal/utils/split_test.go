@@ -136,3 +136,36 @@ func TestSplitMessageByMode(t *testing.T) {
 		t.Errorf("expected HTML to be split into >= 2 chunks, got %d", len(htmlChunks))
 	}
 }
+
+func TestVisibleUTF16LenAndNoPrematureSplitting(t *testing.T) {
+	// 3000 кириллических символов в HTML занимают ~6000 байт UTF-8 плюс теги,
+	// но видимая длина в UTF-16 <= 4000 — сообщение должно уйти целиком за 1 раз.
+	body := strings.Repeat("Привет мир! ", 250) // 3000 runes (6000+ UTF-8 bytes with Cyrillic)
+	htmlMsg := "<b>" + strings.Repeat("<code>x</code> ", 10) + "</b>\n" + body
+	if vis := TelegramHTMLVisibleLen(htmlMsg); vis > DefaultTelegramMaxChunkLen {
+		t.Fatalf("expected visible length <= %d, got %d", DefaultTelegramMaxChunkLen, vis)
+	}
+	chunks := SplitTelegramHTML(htmlMsg, DefaultTelegramMaxChunkLen)
+	if len(chunks) != 1 {
+		t.Errorf("expected 1 HTML chunk for long Cyrillic text under 4000 visible UTF-16 units, got %d", len(chunks))
+	}
+
+	// Суррогатные пары (эмодзи) занимают по 2 единицы UTF-16
+	if got := UTF16Len("a😀b"); got != 4 {
+		t.Errorf("UTF16Len(\"a😀b\") = %d, want 4", got)
+	}
+	if vis := TelegramHTMLVisibleLen("<b>&lt;a&amp;b&gt;</b>"); vis != 5 {
+		t.Errorf("TelegramHTMLVisibleLen = %d, want 5", vis)
+	}
+
+	// SplitMarkdown также считает видимую UTF-16 длину, а не байты UTF-8.
+	mdLines := make([]string, 0, 50)
+	for i := 0; i < 50; i++ {
+		mdLines = append(mdLines, "- Пункт кириллического списка номер раз два три четыре пять шесть")
+	}
+	md := strings.Join(mdLines, "\n") // ~3250 runes, ~6000+ UTF-8 bytes
+	mdChunks := SplitMarkdown(md, DefaultMarkdownMaxChunkLen)
+	if len(mdChunks) != 1 {
+		t.Errorf("expected 1 Markdown chunk for ~3250 Cyrillic runes, got %d", len(mdChunks))
+	}
+}

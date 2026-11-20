@@ -10,6 +10,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,35 +63,40 @@ func (s TaskStatus) Emoji() string {
 type TaskSession struct {
 	// mu приватный: снаружи домена состояние задачи читается через Snapshot и
 	// правится через Update, чтобы забытая блокировка не превращалась в гонку.
-	mu               sync.Mutex
-	ID               int
-	Project          string
-	Model            string
-	Agent            string
-	InitialPrompt    string
-	CurrentPrompt    string
-	Status           TaskStatus
-	RequiresPlan     bool
-	Plan             string
-	PlanApproved     bool
-	StartedAt        time.Time
-	FinishedAt       time.Time
-	RecentLogs       []string
-	PendingFollowups []string
-	LastPRURL        string
-	FullOutput       strings.Builder
-	LiveMsg          *ports.MessageRef
-	Chat             ports.ChatID
-	LastModelUsed    string
-	LastTokensUsed   string
-	ConversationID   string
-	LastQuestion     string
-	QuestionOptions  []string
-	QuestionAskedAt  time.Time
-	AnswerChan       chan string
-	PauseChan        chan struct{}
-	TokenMetrics     *TaskTokenMetrics
-	storage          storage.Storage
+	mu                   sync.Mutex
+	ID                   int
+	Project              string
+	Model                string
+	Agent                string
+	InitialPrompt        string
+	CurrentPrompt        string
+	Status               TaskStatus
+	RequiresPlan         bool
+	Plan                 string
+	PlanApproved         bool
+	StartedAt            time.Time
+	FinishedAt           time.Time
+	RecentLogs           []string
+	PendingFollowups     []string
+	LastPRURL            string
+	FullOutput           strings.Builder
+	LiveMsg              *ports.MessageRef
+	Chat                 ports.ChatID
+	LastModelUsed        string
+	LastTokensUsed       string
+	ConversationID       string
+	LastQuestion         string
+	QuestionOptions      []string
+	PendingQuestions     []QuestionItem
+	CurrentQuestionIndex int
+	QuestionAcceptAllTxt bool
+	PendingPlanRevision  bool
+	QuestionAskedAt      time.Time
+	APIHistory           []ports.ChatMessage
+	AnswerChan           chan string
+	PauseChan            chan struct{}
+	TokenMetrics         *TaskTokenMetrics
+	storage              storage.Storage
 
 	// process — живой процесс текущего шага, nil между шагами. Домен видит только
 	// интерфейс: как остановить агента (сигнал группе у CLI, закрытие pipe у API),
@@ -143,6 +149,16 @@ func (t *TaskSession) AppendOutputLocked(text string) {
 func (t *TaskSession) ResetOutputLocked() {
 	t.FullOutput.Reset()
 	t.outputTruncated = false
+}
+
+// ClearPendingQuestionLocked сбрасывает текущий вопрос и состояние пошагового опросника
+// (мьютекс должен быть уже захвачен).
+func (t *TaskSession) ClearPendingQuestionLocked() {
+	t.LastQuestion = ""
+	t.QuestionOptions = nil
+	t.PendingQuestions = nil
+	t.CurrentQuestionIndex = 0
+	t.QuestionAcceptAllTxt = false
 }
 
 // OutputTruncated сообщает, был ли вывод шага обрезан по потолку.
@@ -331,9 +347,14 @@ type TaskView struct {
 	HasLiveProcess    bool
 	HasActivePipeline bool
 
-	RecentLogs       []string
-	PendingFollowups []string
-	QuestionOptions  []string
+	RecentLogs           []string
+	PendingFollowups     []string
+	QuestionOptions      []string
+	PendingQuestions     []QuestionItem
+	CurrentQuestionIndex int
+	QuestionAcceptAllTxt bool
+	PendingPlanRevision  bool
+	APIHistory           []ports.ChatMessage
 
 	LastPRURL      string
 	LastModelUsed  string
@@ -354,6 +375,12 @@ type TaskView struct {
 func (t *TaskSession) Snapshot() TaskView {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	var apiHistory []ports.ChatMessage
+	if len(t.APIHistory) > 0 {
+		apiHistory = make([]ports.ChatMessage, len(t.APIHistory))
+		copy(apiHistory, t.APIHistory)
+	}
 
 	return TaskView{
 		ID:            t.ID,
@@ -376,9 +403,14 @@ func (t *TaskSession) Snapshot() TaskView {
 		HasLiveProcess:    t.hasLiveProcessLocked(),
 		HasActivePipeline: t.hasActivePipelineLocked(),
 
-		RecentLogs:       append([]string(nil), t.RecentLogs...),
-		PendingFollowups: append([]string(nil), t.PendingFollowups...),
-		QuestionOptions:  append([]string(nil), t.QuestionOptions...),
+		RecentLogs:           append([]string(nil), t.RecentLogs...),
+		PendingFollowups:     append([]string(nil), t.PendingFollowups...),
+		QuestionOptions:      append([]string(nil), t.QuestionOptions...),
+		PendingQuestions:     CloneQuestions(t.PendingQuestions),
+		CurrentQuestionIndex: t.CurrentQuestionIndex,
+		QuestionAcceptAllTxt: t.QuestionAcceptAllTxt,
+		PendingPlanRevision:  t.PendingPlanRevision,
+		APIHistory:           apiHistory,
 
 		LastPRURL:      t.LastPRURL,
 		LastModelUsed:  t.LastModelUsed,
@@ -527,29 +559,31 @@ var GlobalTaskManager = NewTaskManager()
 
 func taskRecordToSession(rec *storage.TaskRecord, s storage.Storage) *TaskSession {
 	return &TaskSession{
-		ID:              rec.ID,
-		Project:         rec.Project,
-		Model:           rec.Model,
-		Agent:           rec.Agent,
-		InitialPrompt:   rec.InitialPrompt,
-		CurrentPrompt:   rec.CurrentPrompt,
-		Status:          TaskStatus(rec.Status),
-		RequiresPlan:    rec.RequiresPlan,
-		Plan:            rec.Plan,
-		PlanApproved:    rec.PlanApproved,
-		StartedAt:       rec.StartedAt,
-		FinishedAt:      rec.FinishedAt,
-		LastPRURL:       rec.LastPRURL,
-		ConversationID:  rec.ConversationID,
-		LastQuestion:    rec.LastQuestion,
-		QuestionOptions: rec.QuestionOptions,
-		QuestionAskedAt: rec.QuestionAskedAt,
-		LastModelUsed:   rec.LastModelUsed,
-		LastTokensUsed:  rec.LastTokensUsed,
-		Chat:            ports.ChatID(rec.RecipientID),
-		AnswerChan:      make(chan string, 1),
-		PauseChan:       make(chan struct{}, 1),
-		storage:         s,
+		ID:                   rec.ID,
+		Project:              rec.Project,
+		Model:                rec.Model,
+		Agent:                rec.Agent,
+		InitialPrompt:        rec.InitialPrompt,
+		CurrentPrompt:        rec.CurrentPrompt,
+		Status:               TaskStatus(rec.Status),
+		RequiresPlan:         rec.RequiresPlan,
+		Plan:                 rec.Plan,
+		PlanApproved:         rec.PlanApproved,
+		StartedAt:            rec.StartedAt,
+		FinishedAt:           rec.FinishedAt,
+		LastPRURL:            rec.LastPRURL,
+		ConversationID:       rec.ConversationID,
+		LastQuestion:         rec.LastQuestion,
+		QuestionOptions:      rec.QuestionOptions,
+		PendingQuestions:     CloneQuestions(rec.PendingQuestions),
+		CurrentQuestionIndex: rec.CurrentQuestionIndex,
+		QuestionAskedAt:      rec.QuestionAskedAt,
+		LastModelUsed:        rec.LastModelUsed,
+		LastTokensUsed:       rec.LastTokensUsed,
+		Chat:                 ports.ChatID(rec.RecipientID),
+		AnswerChan:           make(chan string, 1),
+		PauseChan:            make(chan struct{}, 1),
+		storage:              s,
 	}
 }
 
@@ -833,6 +867,76 @@ func (tm *TaskManager) GetActiveOrQueuedTasks() []*TaskSession {
 	return result
 }
 
+// GetWaitingInputTasks возвращает все задачи в статусе WaitingInput,
+// отсортированные по убыванию QuestionAskedAt (самый свежий вопрос — первый),
+// а при равенстве времени — по убыванию ID.
+func (tm *TaskManager) GetWaitingInputTasks() []*TaskSession {
+	tm.RLock()
+	defer tm.RUnlock()
+
+	type waitingItem struct {
+		task    *TaskSession
+		askedAt time.Time
+		id      int
+	}
+	var items []waitingItem
+	for _, id := range tm.taskOrder {
+		task := tm.tasks[id]
+		if task == nil {
+			continue
+		}
+		task.mu.Lock()
+		isWaiting := task.Status == TaskStatusWaitingInput
+		askedAt := task.QuestionAskedAt
+		tid := task.ID
+		task.mu.Unlock()
+		if isWaiting {
+			items = append(items, waitingItem{task: task, askedAt: askedAt, id: tid})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].askedAt.Equal(items[j].askedAt) {
+			return items[i].askedAt.After(items[j].askedAt)
+		}
+		return items[i].id > items[j].id
+	})
+	res := make([]*TaskSession, len(items))
+	for i, it := range items {
+		res[i] = it.task
+	}
+	return res
+}
+
+// ListTasksByProject возвращает до limit самых свежих задач указанного проекта
+// (если project пуст — по всем проектам), от новых к старым.
+func (tm *TaskManager) ListTasksByProject(project string, limit int) []*TaskSession {
+	if limit <= 0 {
+		limit = 10
+	}
+	project = strings.TrimSpace(project)
+
+	tm.RLock()
+	defer tm.RUnlock()
+
+	result := make([]*TaskSession, 0, min(limit, len(tm.taskOrder)))
+	for i := len(tm.taskOrder) - 1; i >= 0 && len(result) < limit; i-- {
+		task := tm.tasks[tm.taskOrder[i]]
+		if task == nil {
+			continue
+		}
+		if project != "" {
+			task.mu.Lock()
+			matches := strings.EqualFold(task.Project, project)
+			task.mu.Unlock()
+			if !matches {
+				continue
+			}
+		}
+		result = append(result, task)
+	}
+	return result
+}
+
 // HasRunningTaskInProject проверяет, выполняется ли прямо сейчас задача в проекте (или ожидает утверждения плана).
 func (tm *TaskManager) HasRunningTaskInProject(project string) bool {
 	tm.RLock()
@@ -891,6 +995,7 @@ func (tm *TaskManager) CancelTask(id int) (*TaskSession, error) {
 	task.Status = TaskStatusCancelled
 	task.FinishedAt = time.Now()
 	task.PendingFollowups = nil
+	task.ClearPendingQuestionLocked()
 	if task.PauseChan != nil {
 		select {
 		case task.PauseChan <- struct{}{}:
@@ -987,8 +1092,7 @@ func (tm *TaskManager) ResumeTask(id int, answer string) (*TaskSession, error) {
 			task.CurrentPrompt = i18n.T(i18n.Active(), "prompt.resume_execution")
 		}
 	}
-	task.LastQuestion = ""
-	task.QuestionOptions = nil
+	task.ClearPendingQuestionLocked()
 
 	if isProjectBusy {
 		task.Status = TaskStatusQueued
@@ -1171,24 +1275,27 @@ func (tm *TaskManager) SaveTask(task *TaskSession) {
 
 	task.mu.Lock()
 	rec := &storage.TaskRecord{
-		ID:              task.ID,
-		Project:         task.Project,
-		Model:           task.Model,
-		InitialPrompt:   task.InitialPrompt,
-		CurrentPrompt:   task.CurrentPrompt,
-		Status:          string(task.Status),
-		RequiresPlan:    task.RequiresPlan,
-		Plan:            task.Plan,
-		PlanApproved:    task.PlanApproved,
-		StartedAt:       task.StartedAt,
-		FinishedAt:      task.FinishedAt,
-		LastPRURL:       task.LastPRURL,
-		ConversationID:  task.ConversationID,
-		LastQuestion:    task.LastQuestion,
-		QuestionOptions: append([]string(nil), task.QuestionOptions...),
-		QuestionAskedAt: task.QuestionAskedAt,
-		LastModelUsed:   task.LastModelUsed,
-		LastTokensUsed:  task.LastTokensUsed,
+		ID:                   task.ID,
+		Project:              task.Project,
+		Model:                task.Model,
+		Agent:                task.Agent,
+		InitialPrompt:        task.InitialPrompt,
+		CurrentPrompt:        task.CurrentPrompt,
+		Status:               string(task.Status),
+		RequiresPlan:         task.RequiresPlan,
+		Plan:                 task.Plan,
+		PlanApproved:         task.PlanApproved,
+		StartedAt:            task.StartedAt,
+		FinishedAt:           task.FinishedAt,
+		LastPRURL:            task.LastPRURL,
+		ConversationID:       task.ConversationID,
+		LastQuestion:         task.LastQuestion,
+		QuestionOptions:      append([]string(nil), task.QuestionOptions...),
+		PendingQuestions:     CloneQuestions(task.PendingQuestions),
+		CurrentQuestionIndex: task.CurrentQuestionIndex,
+		QuestionAskedAt:      task.QuestionAskedAt,
+		LastModelUsed:        task.LastModelUsed,
+		LastTokensUsed:       task.LastTokensUsed,
 	}
 	if task.Chat != "" {
 		rec.RecipientID = string(task.Chat)

@@ -1267,7 +1267,8 @@ func FormatToolAction(name string, info *StreamToolInfo) string {
 	if info == nil || info.Parameters == nil {
 		return fmt.Sprintf("🔧 %s", name)
 	}
-	switch strings.ToLower(name) {
+	normalized := strings.TrimPrefix(strings.ToLower(name), "mcp__bro_bot__")
+	switch normalized {
 	case "run_command":
 		if cmd, ok := info.Parameters["CommandLine"].(string); ok && cmd != "" {
 			return fmt.Sprintf("⚡ %s", utils.TruncateString(cmd, 70))
@@ -1320,9 +1321,15 @@ func FormatToolAction(name string, info *StreamToolInfo) string {
 	case "grep_search":
 		if q, ok := info.Parameters["Query"].(string); ok && q != "" {
 			return fmt.Sprintf("🔍 grep: %s", utils.TruncateString(q, 50))
+		} else if q, ok := info.Parameters["query"].(string); ok && q != "" {
+			return fmt.Sprintf("🔍 grep: %s", utils.TruncateString(q, 50))
+		} else if q, ok := info.Parameters["pattern"].(string); ok && q != "" {
+			return fmt.Sprintf("🔍 grep: %s", utils.TruncateString(q, 50))
 		}
-	case "find_by_name":
+	case "find_by_name", "find_files":
 		if pat, ok := info.Parameters["Pattern"].(string); ok && pat != "" {
+			return fmt.Sprintf("📁 find: %s", utils.TruncateString(pat, 50))
+		} else if pat, ok := info.Parameters["pattern"].(string); ok && pat != "" {
 			return fmt.Sprintf("📁 find: %s", utils.TruncateString(pat, 50))
 		}
 	case "websearch":
@@ -1333,6 +1340,34 @@ func FormatToolAction(name string, info *StreamToolInfo) string {
 		if u, ok := info.Parameters["url"].(string); ok && u != "" {
 			return fmt.Sprintf("🌐 fetch: %s", utils.TruncateString(u, 50))
 		}
+	case "send_file":
+		if p, ok := info.Parameters["path"].(string); ok && p != "" {
+			return fmt.Sprintf("📤 send_file: %s", filepath.Base(p))
+		}
+		return "📤 send_file"
+	case "ask_user":
+		if items := utils.ExtractAskQuestionItems(info.Parameters); len(items) > 0 {
+			if len(items) > 1 {
+				return fmt.Sprintf("❓ ask_user (%d): %s", len(items), utils.TruncateString(items[0].Question, 40))
+			}
+			return fmt.Sprintf("❓ ask_user: %s", utils.TruncateString(items[0].Question, 50))
+		}
+		return "❓ ask_user"
+	case "telegram_send_message":
+		return "💬 send_message"
+	case "report_progress":
+		if msg, ok := info.Parameters["status"].(string); ok && msg != "" {
+			return fmt.Sprintf("📍 progress: %s", utils.TruncateString(msg, 50))
+		} else if msg, ok := info.Parameters["message"].(string); ok && msg != "" {
+			return fmt.Sprintf("📍 progress: %s", utils.TruncateString(msg, 50))
+		}
+		return "📍 progress"
+	case "get_task_context":
+		return "📋 get_task_context"
+	case "list_tasks":
+		return "📋 list_tasks"
+	case "list_projects":
+		return "📁 list_projects"
 	}
 	return fmt.Sprintf("🔧 %s", name)
 }

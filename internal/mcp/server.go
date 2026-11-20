@@ -184,8 +184,13 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 // RunStdioServer запускает MCP-сервер на стандартных потоках ввода/вывода процесса.
 // Инструменты пересылают вызовы боту через мост на сокете socketPath.
 func RunStdioServer(socketPath string) error {
+	return RunStdioServerWithToken(socketPath, "")
+}
+
+// RunStdioServerWithToken запускает MCP-сервер с явным токеном шага channelToken.
+func RunStdioServerWithToken(socketPath, channelToken string) error {
 	// Перенаправляем стандартный логгер в Stderr, чтобы не засорять Stdout JSON-RPC протокол
 	log.SetOutput(os.Stderr)
-	srv := NewServer(NewBridgeTools(socketPath))
+	srv := NewServer(NewBridgeToolsWithToken(socketPath, channelToken))
 	return srv.Run(context.Background(), os.Stdin, os.Stdout)
 }

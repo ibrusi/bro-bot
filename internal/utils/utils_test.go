@@ -42,3 +42,23 @@ func TestFormatCount(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractCommandPayloadMultiline(t *testing.T) {
+	payload, ok := ExtractCommandPayload("/new@bro_bot projB\nLine 1\n  Line 2\n\n```\ncode()\n```")
+	if !ok {
+		t.Fatal("expected ok=true for slash command")
+	}
+	want := "projB\nLine 1\n  Line 2\n\n```\ncode()\n```"
+	if payload != want {
+		t.Errorf("payload = %q, want %q", payload, want)
+	}
+
+	emptyPayload, ok := ExtractCommandPayload("/plan")
+	if !ok || emptyPayload != "" {
+		t.Errorf("expected (\"\", true) for bare command, got (%q, %v)", emptyPayload, ok)
+	}
+
+	if _, ok := ExtractCommandPayload("plain text"); ok {
+		t.Error("expected ok=false for non-command text")
+	}
+}

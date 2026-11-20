@@ -16,7 +16,7 @@ type AgentFramework interface {
 	GetModels(ctx context.Context) ([]byte, error)
 	// GetQuota возвращает сырой JSON для квоты. lang — язык интерфейса: API-адаптеры
 	// собирают сводку сами, и её текст должен быть на языке пользователя; CLI-адаптеры
-	// показывают ответ своего инструмента и параметр игнорируют.
+	// показывают ответ своего инструмента и параметр игноруют.
 	GetQuota(ctx context.Context, lang string) ([]byte, error)
 	// GetQuotaText возвращает текстовое представление квоты на языке lang.
 	GetQuotaText(ctx context.Context, lang string) ([]byte, error)
@@ -43,6 +43,21 @@ type ChatMessage struct {
 	Content string
 }
 
+// BotToolResult — результат вызова инструмента бота (через API-адаптер).
+type BotToolResult struct {
+	Text    string
+	IsError bool
+	// EndTurn сигнализирует API-адаптеру завершить tool-loop после текущего хода
+	// (например, когда агент вызвал ask_user и ждёт ответа человека).
+	EndTurn bool
+}
+
+// BotToolHandler выполняет инструменты бота напрямую в памяти процесса бота
+// (используется API-адаптерами, у которых нет дочернего процесса mcp-serve).
+type BotToolHandler interface {
+	CallBotTool(ctx context.Context, name string, args map[string]interface{}) BotToolResult
+}
+
 // ExecuteArgs содержит аргументы для запуска агента
 type ExecuteArgs struct {
 	ConversationID string
@@ -50,11 +65,14 @@ type ExecuteArgs struct {
 	Prompt         string
 	WorkDir        string
 	// History — предыдущие реплики диалога. Используется только API-адаптерами:
-	// CLI-агенты хранят историю сами (agy --conversation, claude --resume) и это поле игнорируют.
+	// CLI-агенты хранят историю сами (agy --conversation, claude --resume) и это поле игноруют.
 	History []ChatMessage
-	// SystemPrompt — системная инструкция (например, преамбула диалогового режима).
-	// Также только для API-адаптеров: у CLI-агентов преамбула подмешивается в текст промпта.
+	// SystemPrompt — системная инструкция (правила проекта AGENTS.md или преамбула диалогового режима).
 	SystemPrompt string
+	// BotInstructions — системные инструкции самого бота по его инструментам и
+	// правилам взаимодействия (вопросы, файлы, прогресс). Передаются агенту
+	// на первом шаге независимо от наличия локального AGENTS.md в WorkDir.
+	BotInstructions string
 	// ReadOnly указывает, что агенту разрешены только операции чтения файлов (диалоговый режим).
 	ReadOnly bool
 	// Effort — уровень усилия рассуждений (команда /effort). Нулевое значение
@@ -64,6 +82,11 @@ type ExecuteArgs struct {
 	// Адаптеры CLI с собственным флагом таймаута (например, agy --print-timeout)
 	// передают его процессу; при значении <= 0 адаптер использует значение по умолчанию.
 	Timeout time.Duration
+	// ChannelToken — одноразовый токен шага для привязки дочернего mcp-serve
+	// к каналу задачи/диалога (резерв к определению по дереву PID).
+	ChannelToken string
+	// BotTools — прямой мост инструментов бота для api-режима (nil для CLI/MCP/ACP).
+	BotTools BotToolHandler
 }
 
 // AgentProcess инкапсулирует запущенный процесс агента.

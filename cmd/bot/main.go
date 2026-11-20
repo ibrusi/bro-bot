@@ -75,21 +75,22 @@ func buildTranscriber(cfg config.Config) ports.Transcriber {
 	})
 }
 
-// mcpBridgeSocket разбирает аргументы `mcp-serve [--socket PATH]`. Конфигурации,
+// mcpBridgeFlags разбирает аргументы `mcp-serve [--socket PATH] [--token TOKEN]`. Конфигурации,
 // которые пишет бот, передают путь явно; без него (например, сервер прописан
 // вручную через `claude mcp add`) сокет ищется рядом с исполняемым файлом бота.
-func mcpBridgeSocket(args []string) string {
+func mcpBridgeFlags(args []string) (socketPath, channelToken string) {
 	flags := flag.NewFlagSet("mcp-serve", flag.ExitOnError)
 	socket := flags.String("socket", "", "path to the bro-bot MCP bridge socket")
+	token := flags.String("token", "", "optional per-step channel token")
 	_ = flags.Parse(args)
 	if *socket != "" {
-		return *socket
+		return *socket, *token
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		log.Fatalf("mcp server error: cannot locate the bot executable: %v", err)
 	}
-	return config.BridgeSocketPath(filepath.Dir(exe))
+	return config.BridgeSocketPath(filepath.Dir(exe)), *token
 }
 
 // main — корень композиции и единственное место, где бот завершает процесс: всё
@@ -98,7 +99,8 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "mcp-serve":
-			if err := mcp.RunStdioServer(mcpBridgeSocket(os.Args[2:])); err != nil {
+			sock, token := mcpBridgeFlags(os.Args[2:])
+			if err := mcp.RunStdioServerWithToken(sock, token); err != nil {
 				log.Fatalf("mcp server error: %v", err)
 			}
 			return

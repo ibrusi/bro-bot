@@ -40,6 +40,7 @@ var allowedEnvReaders = map[string]string{
 	"internal/adapters/transcript/transcript.go": "HOME через os.UserHomeDir",
 	"internal/storage/sqlite.go":                 "HOME через os.UserHomeDir",
 	"internal/mcp/config.go":                     "HOME через os.UserHomeDir для mcp_config.json",
+	"internal/mcp/tools.go":                      "BRO_BOT_CHANNEL_TOKEN передаётся дочернему процессу mcp-serve на каждый шаг",
 }
 
 type envRead struct {
