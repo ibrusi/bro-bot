@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"bro-bot/internal/ports"
+	"bro-bot/internal/utils"
 
 	tele "gopkg.in/telebot.v3"
 )
@@ -41,6 +42,22 @@ func (s *session) Text() string {
 }
 
 func (s *session) Args() []string {
+	if s.c.Callback() == nil {
+		if m := s.c.Message(); m != nil {
+			raw := m.Text
+			if raw == "" {
+				raw = m.Caption
+			}
+			// Парсим аргументы сами вместо s.c.Args(), т.к. cmdRx в telebot.v3 не имеет
+			// флага (?s) и отбрасывает всё после первого перевода строки '\n'.
+			if payload, ok := utils.ExtractCommandPayload(raw); ok {
+				if payload == "" {
+					return nil
+				}
+				return strings.Fields(payload)
+			}
+		}
+	}
 	return s.c.Args()
 }
 

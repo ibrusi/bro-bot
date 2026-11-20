@@ -414,3 +414,59 @@ func TestClaudeAPI_ToolExecution(t *testing.T) {
 	}
 }
 
+type fakeBotToolHandler struct {
+	calls []string
+	res   ports.BotToolResult
+}
+
+func (f *fakeBotToolHandler) CallBotTool(_ context.Context, name string, _ map[string]interface{}) ports.BotToolResult {
+	f.calls = append(f.calls, name)
+	return f.res
+}
+
+func TestClaudeAPI_BotToolEndTurnAndInstructions(t *testing.T) {
+	var apiTurns int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiTurns++
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sys, _ := body["system"].(string)
+		if !strings.Contains(sys, "BOT_INSTR") || !strings.Contains(sys, "PROJECT_RULES") {
+			t.Errorf("expected merged BotInstructions + SystemPrompt in system field, got %q", sys)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":5}}}\n\n"+
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"ask_user\"}}\n\n"+
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"question\\\":\\\"Proceed?\\\"}\"}}\n\n"+
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"+
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":4}}\n\n"+
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	handler := &fakeBotToolHandler{res: ports.BotToolResult{Text: "shown", EndTurn: true}}
+	adapter := &ClaudeAPIAdapter{HTTPClient: srv.Client(), BaseURL: srv.URL}
+	proc, err := adapter.ExecuteTask(context.Background(), ports.ExecuteArgs{
+		Prompt:          "check",
+		WorkDir:         t.TempDir(),
+		ModelName:       "claude-sonnet-5",
+		SystemPrompt:    "PROJECT_RULES",
+		BotInstructions: "BOT_INSTR",
+		BotTools:        handler,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+	_, _ = io.ReadAll(proc.Stdout())
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if apiTurns != 1 {
+		t.Errorf("expected loop to stop immediately on EndTurn=true, got %d API turns", apiTurns)
+	}
+	if len(handler.calls) != 1 || handler.calls[0] != "ask_user" {
+		t.Errorf("expected ask_user bot tool call, got %v", handler.calls)
+	}
+}

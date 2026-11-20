@@ -24,9 +24,11 @@ const (
 	// ограничены 64 байтами, поэтому текст запроса храним в памяти).
 	chatSuggestionTTL = time.Hour
 	// chatAnswerInlineLimit — до какой длины ответ помещается прямо в статусное сообщение.
-	chatAnswerInlineLimit = 3500
+	chatAnswerInlineLimit = 3950
 	// chatAnswerDocumentLimit — начиная с какой длины ответ отправляется файлом.
-	chatAnswerDocumentLimit = 12000
+	chatAnswerDocumentLimit = 15000
+	// chatAnswerSummaryRunes — длина резюме при отправке длинного ответа файлом.
+	chatAnswerSummaryRunes = 2500
 	// chatBootstrapTurns / chatBootstrapChars — размер контекста, подмешиваемого новому CLI-агенту.
 	chatBootstrapTurns = 12
 	chatBootstrapChars = 6000
@@ -186,10 +188,11 @@ func handleChatMessage(s ports.Session, text string) error {
 // Агент, режим и адаптер фиксируются здесь, на горутине обработчика: фоновый ход
 // не читает глобальное состояние, которое пользователь может поменять командой /agent или /mode.
 type chatTurnSetup struct {
-	Project string
-	Agent   string
-	Mode    string
-	Model   string
+	Project      string
+	ProjectsRoot string
+	Agent        string
+	Mode         string
+	Model        string
 	// Effort — уровень усилия рассуждений на момент начала хода.
 	Effort    effort.Level
 	Framework ports.AgentFramework
@@ -202,11 +205,12 @@ func startChatTurn(m ports.Messenger, chat ports.ChatID, project, agent, text, n
 	config.ProjectState.RUnlock()
 
 	setup := chatTurnSetup{
-		Project: project,
-		Agent:   normalizeAgentName(agent),
-		Mode:    config.ProjectState.GetExecutionMode(),
-		Model:   model,
-		Effort:  config.ProjectState.GetEffort(),
+		Project:      project,
+		ProjectsRoot: config.ProjectsRoot,
+		Agent:        normalizeAgentName(agent),
+		Mode:         config.ProjectState.GetExecutionMode(),
+		Model:        model,
+		Effort:       config.ProjectState.GetEffort(),
 	}
 
 	lang := i18n.Active()
@@ -279,23 +283,41 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 	// таблица сообщений ссылается на tasks(id), а у разговора строки задачи нет.
 	statusRef, _ := m.Send(context.Background(), chat, statusText, ports.Rich())
 
-	workDir := filepath.Join(config.ProjectsRoot, project)
+	projectsRoot := setup.ProjectsRoot
+	if projectsRoot == "" {
+		projectsRoot = config.ProjectsRoot
+	}
+	workDir := filepath.Join(projectsRoot, project)
 	isNewTurn := session.ConversationIDFor(agent, mode) == ""
 
 	var rules string
 	if isNewTurn {
-		rules = utils.LoadProjectAgentsRules(workDir, config.ProjectsRoot)
+		rules = utils.LoadProjectAgentsRules(workDir, projectsRoot)
 	}
 
+	chatCh := &chatChannel{
+		m:            m,
+		chat:         chat,
+		project:      project,
+		workDir:      workDir,
+		projectsRoot: projectsRoot,
+		lang:         lang,
+	}
+	channelToken := generateChannelToken()
+	defer mcpChannels.bindWithToken(0, channelToken, chatCh)()
+
 	args := ports.ExecuteArgs{
-		ConversationID: session.ConversationIDFor(agent, mode),
-		ModelName:      model,
-		Prompt:         buildChatPrompt(session, agent, mode, userText, lang, rules),
-		WorkDir:        workDir,
-		History:        chatHistoryForAgent(session, mode),
-		ReadOnly:       true,
-		Effort:         setup.Effort,
-		Timeout:        chatTimeout(),
+		ConversationID:  session.ConversationIDFor(agent, mode),
+		ModelName:       model,
+		Prompt:          buildChatPrompt(session, agent, mode, userText, lang, rules),
+		WorkDir:         workDir,
+		History:         chatHistoryForAgent(session, mode),
+		ReadOnly:        true,
+		Effort:          setup.Effort,
+		Timeout:         chatTimeout(),
+		BotInstructions: buildBotToolInstructions(lang, false, true),
+		ChannelToken:    channelToken,
+		BotTools:        newChannelBotToolHandler(chatCh),
 	}
 	if strings.EqualFold(mode, "api") {
 		args.SystemPrompt = chatSystemPreamble(lang)
@@ -378,14 +400,35 @@ func streamChatAnswer(ctx context.Context, m ports.Messenger, chat ports.ChatID,
 	startedAt := time.Now()
 
 	// Инструменты бота, вызванные агентом через MCP-мост, работают в этом разговоре.
-	defer mcpChannels.bind(agentProcess.PID(), &chatChannel{
-		m: m, chat: chat, lang: lang,
-		onProgress: func(status string) {
-			mu.Lock()
-			lastAction = status
-			mu.Unlock()
-		},
-	})()
+	progressFn := func(status string) {
+		mu.Lock()
+		lastAction = status
+		mu.Unlock()
+	}
+	var chatCh *chatChannel
+	if args.ChannelToken != "" {
+		if existing, ok := mcpChannels.lookupWithToken(0, args.ChannelToken); ok {
+			if cc, ok := existing.(*chatChannel); ok {
+				chatCh = cc
+			}
+		}
+	}
+	if chatCh == nil {
+		projectsRoot := setup.ProjectsRoot
+		if projectsRoot == "" {
+			projectsRoot = config.ProjectsRoot
+		}
+		chatCh = &chatChannel{
+			m:            m,
+			chat:         chat,
+			project:      setup.Project,
+			workDir:      args.WorkDir,
+			projectsRoot: projectsRoot,
+			lang:         lang,
+		}
+	}
+	chatCh.setProgressFn(progressFn)
+	defer mcpChannels.bind(agentProcess.PID(), chatCh)()
 
 	stopTicker := make(chan struct{})
 	tickerDone := make(chan struct{})
@@ -531,16 +574,8 @@ func sendChatAnswer(m ports.Messenger, chat ports.ChatID, statusRef ports.Messag
 	}
 
 	runes := []rune(answer)
-	switch {
-	case len(runes) <= chatAnswerInlineLimit:
-		editOrSend(m, chat, statusRef, utils.MarkdownToTelegramHTML(answer))
-
-	case len(runes) <= chatAnswerDocumentLimit:
-		editOrSend(m, chat, statusRef, i18n.T(lang, "chat.answer_header"))
-		sendLongMarkdown(m, chat, answer)
-
-	default:
-		summary := utils.MarkdownToTelegramHTML(utils.ExtractPlanSummary(answer, 1200))
+	if len(runes) > chatAnswerDocumentLimit {
+		summary := utils.MarkdownToTelegramHTML(utils.ExtractPlanSummary(answer, chatAnswerSummaryRunes))
 		editOrSend(m, chat, statusRef, i18n.Tf(lang, "chat.answer_summary", summary, len(runes)))
 
 		doc := ports.Document{
@@ -552,6 +587,27 @@ func sendChatAnswer(m ports.Messenger, chat ports.ChatID, statusRef ports.Messag
 		if _, err := m.SendDocument(context.Background(), chat, doc); err != nil {
 			sendLongMarkdown(m, chat, answer)
 		}
+		return
+	}
+
+	fullHTML := utils.MarkdownToTelegramHTML(answer)
+	if utils.TelegramHTMLVisibleLen(fullHTML) <= utils.DefaultTelegramMaxChunkLen {
+		editOrSend(m, chat, statusRef, fullHTML)
+		return
+	}
+
+	chunks := utils.SplitMarkdown(answer, utils.DefaultMarkdownMaxChunkLen)
+	for i, chunk := range chunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			continue
+		}
+		chunkHTML := utils.MarkdownToTelegramHTML(chunk)
+		if i == 0 && statusRef.ID != "" {
+			editOrSend(m, chat, statusRef, chunkHTML)
+			continue
+		}
+		_, _ = m.Send(context.Background(), chat, chunkHTML, ports.Rich())
 	}
 }
 
@@ -625,6 +681,9 @@ func buildWorkSuggestionMarkup(lang string) *ports.Keyboard {
 func rememberSuggestion(ref ports.MessageRef, sug workSuggestion) {
 	if ref.ID == "" {
 		return
+	}
+	if sug.CreatedAt.IsZero() {
+		sug.CreatedAt = time.Now()
 	}
 	suggestionsMu.Lock()
 	defer suggestionsMu.Unlock()
@@ -776,7 +835,7 @@ func handleChat(s ports.Session) error {
 		return s.Send(i18n.T(lang, "chat.stopped"), ports.Rich())
 	}
 
-	return handleChatMessage(s, strings.TrimSpace(strings.Join(args, " ")))
+	return handleChatMessage(s, commandPayload(s))
 }
 
 // handleChatMode — обработчик команды /chatmode.
@@ -843,7 +902,7 @@ func onChatPlan(s ports.Session) error {
 		return respondCardExpired(s, lang)
 	}
 	_ = s.Respond(i18n.T(lang, "chat.toast_planning"))
-	return handleCreateNewTaskWithOptions(s, sug.Text, true)
+	return createTaskInProject(s, sug.Project, sug.Agent, sug.Text, true)
 }
 
 // onChatTask — обработчик кнопки chat_task.
@@ -855,5 +914,5 @@ func onChatTask(s ports.Session) error {
 		return respondCardExpired(s, lang)
 	}
 	_ = s.Respond(i18n.T(lang, "chat.toast_creating_task"))
-	return handleCreateNewTaskWithOptions(s, sug.Text, false)
+	return createTaskInProject(s, sug.Project, sug.Agent, sug.Text, false)
 }

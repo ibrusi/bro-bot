@@ -240,3 +240,33 @@ func TestGrokBinaryLookPathUsedByTests(t *testing.T) {
 		t.Skip("python3 is required for the fake grok agent")
 	}
 }
+
+func TestGrokPermissionsAllowBotMCPInReadOnlyAndPropagatesToken(t *testing.T) {
+	opts := []permOption{
+		{OptionID: "no", Kind: "reject_once"},
+		{OptionID: "yes", Kind: "allow_once"},
+		{OptionID: "always", Kind: "allow_always"},
+	}
+	if id, ok := choosePermissionForTool(true, "other", "mcp__bro_bot__ask_user", opts); !ok || id != "yes" {
+		t.Errorf("expected bot MCP tool to be permitted in readOnly mode, got (%q, %v)", id, ok)
+	}
+	if id, ok := choosePermissionForTool(true, "execute", "bash", opts); !ok || id != "no" {
+		t.Errorf("expected execute tool to be rejected in readOnly mode, got (%q, %v)", id, ok)
+	}
+
+	srv := broBotServer("tok-abc")
+	var hasTokenEnv, hasTokenArg bool
+	for _, kv := range srv.Env {
+		if kv.Value == "tok-abc" {
+			hasTokenEnv = true
+		}
+	}
+	for _, a := range srv.Args {
+		if a == "tok-abc" {
+			hasTokenArg = true
+		}
+	}
+	if !hasTokenEnv || !hasTokenArg {
+		t.Errorf("expected channel token in mcpServer Env and Args: %+v", srv)
+	}
+}

@@ -1,14 +1,17 @@
 package tools
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -26,10 +29,10 @@ const (
 
 // Common error definitions for tools.
 var (
-	ErrReadOnly            = errors.New("operation is not permitted in read-only mode")
-	ErrWorkspaceNotSet     = errors.New("workspace directory is not specified")
-	ErrPathEscapesWorkDir  = errors.New("path escapes workspace directory")
-	ErrFileNotFound        = errors.New("file not found")
+	ErrReadOnly             = errors.New("operation is not permitted in read-only mode")
+	ErrWorkspaceNotSet      = errors.New("workspace directory is not specified")
+	ErrPathEscapesWorkDir   = errors.New("path escapes workspace directory")
+	ErrFileNotFound         = errors.New("file not found")
 	ErrTargetStringNotFound = errors.New("target string not found in file")
 )
 
@@ -289,6 +292,265 @@ func (e *Executor) RunCommand(ctx context.Context, command string) (string, erro
 	return outputStr, nil
 }
 
+// GrepSearch ищет совпадения pattern (регулярное выражение, при ошибке синтаксиса — подстрока)
+// в файлах внутри WorkDir (или подкаталоге relPath), пропуская .git и бинарные файлы.
+func (e *Executor) GrepSearch(ctx context.Context, pattern, relPath, globPattern string, maxResults int) (string, error) {
+	if strings.TrimSpace(pattern) == "" {
+		return "", errors.New("pattern cannot be empty")
+	}
+	if relPath == "" {
+		relPath = "."
+	}
+	if maxResults <= 0 {
+		maxResults = 50
+	}
+	if maxResults > 200 {
+		maxResults = 200
+	}
+
+	absWorkDir, err := filepath.Abs(e.WorkDir)
+	if err != nil {
+		return "", fmt.Errorf("invalid workspace directory %q: %w", e.WorkDir, err)
+	}
+	realWorkDir, err := filepath.EvalSymlinks(absWorkDir)
+	if err != nil {
+		realWorkDir = absWorkDir
+	}
+
+	rootPath, err := e.SafeResolvePath(relPath)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(rootPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("%w: %s", ErrFileNotFound, relPath)
+		}
+		return "", err
+	}
+
+	re, reErr := regexp.Compile(pattern)
+	if reErr != nil {
+		re = regexp.MustCompile(regexp.QuoteMeta(pattern))
+	}
+
+	var bldr strings.Builder
+	matchCount := 0
+	truncated := false
+
+	scanFile := func(filePath string) error {
+		fInfo, statErr := os.Stat(filePath)
+		if statErr != nil || fInfo.IsDir() || fInfo.Size() > maxReadFileBytes {
+			return nil
+		}
+		f, openErr := os.Open(filePath)
+		if openErr != nil {
+			return nil
+		}
+		defer f.Close()
+
+		head := make([]byte, 512)
+		n, _ := f.Read(head)
+		if n > 0 && isBinary(head[:n]) {
+			return nil
+		}
+		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
+			return nil
+		}
+
+		relToRoot, _ := filepath.Rel(absWorkDir, filePath)
+		relToRoot = filepath.ToSlash(relToRoot)
+
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 16*1024), maxReadFileBytes)
+		lineNum := 0
+		for sc.Scan() {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			lineNum++
+			lineText := sc.Text()
+			if !re.MatchString(lineText) {
+				continue
+			}
+			displayLine := lineText
+			if len([]rune(displayLine)) > 400 {
+				displayLine = string([]rune(displayLine)[:397]) + "..."
+			}
+			entry := fmt.Sprintf("%s:%d: %s\n", relToRoot, lineNum, displayLine)
+			if bldr.Len()+len(entry) > maxOutputBytes {
+				truncated = true
+				return fs.SkipAll
+			}
+			bldr.WriteString(entry)
+			matchCount++
+			if matchCount >= maxResults {
+				truncated = true
+				return fs.SkipAll
+			}
+		}
+		return nil
+	}
+
+	if !info.IsDir() {
+		if err := scanFile(rootPath); err != nil && !errors.Is(err, fs.SkipAll) {
+			return "", err
+		}
+	} else {
+		walkErr := filepath.WalkDir(rootPath, func(p string, d fs.DirEntry, walkErr error) error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if walkErr != nil {
+				return nil
+			}
+			if d.Type()&os.ModeSymlink != 0 {
+				realTarget, symErr := filepath.EvalSymlinks(p)
+				if symErr != nil {
+					return nil
+				}
+				rel, relErr := filepath.Rel(realWorkDir, realTarget)
+				if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+			}
+			if d.IsDir() {
+				if d.Name() == ".git" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if globPattern != "" {
+				matched, mErr := filepath.Match(globPattern, d.Name())
+				if mErr == nil && !matched {
+					return nil
+				}
+			}
+			return scanFile(p)
+		})
+		if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
+			return "", walkErr
+		}
+	}
+
+	if matchCount == 0 {
+		return "[No matches found]", nil
+	}
+	res := strings.TrimRight(bldr.String(), "\n")
+	if truncated {
+		res += fmt.Sprintf("\n... [showing first %d matches]", matchCount)
+	}
+	return res, nil
+}
+
+// FindFiles ищет файлы в WorkDir по glob-маске или подстроке в имени/пути, пропуская .git.
+func (e *Executor) FindFiles(pattern, relPath string, maxResults int) (string, error) {
+	if strings.TrimSpace(pattern) == "" {
+		pattern = "*"
+	}
+	if relPath == "" {
+		relPath = "."
+	}
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+	if maxResults > 500 {
+		maxResults = 500
+	}
+
+	absWorkDir, err := filepath.Abs(e.WorkDir)
+	if err != nil {
+		return "", fmt.Errorf("invalid workspace directory %q: %w", e.WorkDir, err)
+	}
+	realWorkDir, err := filepath.EvalSymlinks(absWorkDir)
+	if err != nil {
+		realWorkDir = absWorkDir
+	}
+
+	rootPath, err := e.SafeResolvePath(relPath)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(rootPath); err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("%w: %s", ErrFileNotFound, relPath)
+		}
+		return "", err
+	}
+
+	hasGlobMeta := strings.ContainsAny(pattern, "*?[")
+	lowerPat := strings.ToLower(pattern)
+
+	var matches []string
+	truncated := false
+
+	walkErr := filepath.WalkDir(rootPath, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			realTarget, symErr := filepath.EvalSymlinks(p)
+			if symErr != nil {
+				return nil
+			}
+			rel, relErr := filepath.Rel(realWorkDir, realTarget)
+			if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		relToWork, _ := filepath.Rel(absWorkDir, p)
+		relSlash := filepath.ToSlash(relToWork)
+
+		var matched bool
+		if hasGlobMeta {
+			if ok, mErr := filepath.Match(pattern, d.Name()); mErr == nil && ok {
+				matched = true
+			} else if ok, mErr := filepath.Match(pattern, relSlash); mErr == nil && ok {
+				matched = true
+			}
+		} else {
+			matched = strings.Contains(strings.ToLower(relSlash), lowerPat)
+		}
+		if !matched {
+			return nil
+		}
+
+		matches = append(matches, relSlash)
+		if len(matches) >= maxResults {
+			truncated = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
+		return "", walkErr
+	}
+	if len(matches) == 0 {
+		return "[No matching files found]", nil
+	}
+	sort.Strings(matches)
+	out := strings.Join(matches, "\n")
+	if len(out) > maxOutputBytes {
+		out = out[:maxOutputBytes] + "\n... [output truncated]"
+	} else if truncated {
+		out += fmt.Sprintf("\n... [showing first %d files]", len(matches))
+	}
+	return out, nil
+}
+
 // Execute парсит имя инструмента и аргументы, проверяет права и вызывает соответствующий метод.
 func (e *Executor) Execute(ctx context.Context, name string, args map[string]interface{}, readOnly bool) (string, error) {
 	switch strings.ToLower(name) {
@@ -304,6 +566,22 @@ func (e *Executor) Execute(ctx context.Context, name string, args map[string]int
 	case "list_dir", "list_directory", "list_files":
 		path := extractString(args, "path", "dir_path", "directory")
 		return e.ListDir(path)
+
+	case "grep_search", "grep", "search_files":
+		pattern := extractString(args, "pattern", "query", "Query")
+		if pattern == "" {
+			return "", errors.New("missing required argument 'pattern'")
+		}
+		path := extractString(args, "path", "dir_path", "SearchPath")
+		globPattern := extractString(args, "glob", "include")
+		maxResults := extractInt(args, "max_results")
+		return e.GrepSearch(ctx, pattern, path, globPattern, maxResults)
+
+	case "find_files", "find_by_name", "glob":
+		pattern := extractString(args, "pattern", "Pattern", "glob", "name")
+		path := extractString(args, "path", "dir_path", "SearchDirectory")
+		maxResults := extractInt(args, "max_results")
+		return e.FindFiles(pattern, path, maxResults)
 
 	case "write_file", "write_to_file", "write":
 		if readOnly {

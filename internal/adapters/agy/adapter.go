@@ -3,6 +3,7 @@ package agy
 import (
 	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/config"
+	"bro-bot/internal/mcp"
 	"bro-bot/internal/models"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
@@ -53,11 +54,21 @@ func buildAgyArgs(args ports.ExecuteArgs) []string {
 	}
 
 	finalPrompt := args.Prompt
-	// Если это новая сессия (ConversationID пуст) и передан SystemPrompt:
-	// agy CLI автоматически считывает AGENTS.md из WorkDir. Но если файла в WorkDir нет,
-	// подмешиваем системный промпт в начало первого пользовательского запроса.
-	if args.ConversationID == "" && strings.TrimSpace(args.SystemPrompt) != "" && !utils.HasLocalAgentsRules(args.WorkDir) {
-		finalPrompt = fmt.Sprintf("ИНСТРУКЦИИ ПРОЕКТА (AGENTS.md):\n%s\n\n---\n\n%s", strings.TrimSpace(args.SystemPrompt), args.Prompt)
+	// На первом ходе новой сессии (ConversationID пуст) всегда передаём BotInstructions
+	// (инструменты бота и правила вопросов), а SystemPrompt (AGENTS.md) — только если
+	// в WorkDir нет локального AGENTS.md/GEMINI.md (иначе agy CLI подхватывает его сам).
+	if args.ConversationID == "" {
+		var preamble []string
+		if botInstr := strings.TrimSpace(args.BotInstructions); botInstr != "" {
+			preamble = append(preamble, botInstr)
+		}
+		if sys := strings.TrimSpace(args.SystemPrompt); sys != "" && !utils.HasLocalAgentsRules(args.WorkDir) {
+			preamble = append(preamble, "ИНСТРУКЦИИ ПРОЕКТА (AGENTS.md):\n"+sys)
+		}
+		if len(preamble) > 0 {
+			finalPrompt = fmt.Sprintf("<SYSTEM_PROMPT>\n%s\n</SYSTEM_PROMPT>\n\n%s",
+				strings.Join(preamble, "\n\n---\n\n"), args.Prompt)
+		}
 	}
 
 	cmdArgs = append(cmdArgs, "-p", finalPrompt)
@@ -76,6 +87,9 @@ func (a *AgyAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (p
 		"NO_COLOR=1",
 		"CI=true",
 	)
+	if token := strings.TrimSpace(args.ChannelToken); token != "" {
+		cmd.Env = append(cmd.Env, mcp.ChannelTokenEnv+"="+token)
+	}
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {

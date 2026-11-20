@@ -61,6 +61,16 @@ func (a *ClaudeAPIAdapter) ExecutionMode() string {
 	return "api"
 }
 
+func mergeSystemPrompts(parts ...string) string {
+	var nonEmpty []string
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			nonEmpty = append(nonEmpty, trimmed)
+		}
+	}
+	return strings.Join(nonEmpty, "\n\n---\n\n")
+}
+
 // buildClaudeMessagesBody собирает тело запроса к Messages API: историю диалога
 // (Claude API не хранит сессии на своей стороне) и текущий вопрос пользователя.
 func buildClaudeMessagesBody(modelName string, args ports.ExecuteArgs) map[string]interface{} {
@@ -86,12 +96,12 @@ func buildClaudeMessagesBody(modelName string, args ports.ExecuteArgs) map[strin
 		"messages":   messages,
 		"stream":     true,
 	}
-	if systemPrompt := strings.TrimSpace(args.SystemPrompt); systemPrompt != "" {
+	if systemPrompt := mergeSystemPrompts(args.BotInstructions, args.SystemPrompt); systemPrompt != "" {
 		reqBody["system"] = systemPrompt
 	}
 	applyClaudeEffort(reqBody, modelName, args.Effort)
 	isReadOnly := args.ReadOnly || strings.Contains(args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(args.SystemPrompt, "CHAT MODE")
-	reqBody["tools"] = tools.ClaudeToolDefinitions(isReadOnly)
+	reqBody["tools"] = tools.ClaudeToolDefinitionsWithBot(isReadOnly, args.BotTools != nil)
 	return reqBody
 }
 
@@ -676,12 +686,23 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 
 		// Выполняем инструменты
 		var toolResultBlocks []map[string]interface{}
+		var shouldEndTurn bool
 		for _, tc := range toolCalls {
-			out, execErr := executor.Execute(ctx, tc.toolName, tc.toolInput, isReadOnly)
-			isErr := false
-			if execErr != nil {
-				out = fmt.Sprintf("Error: %v", execErr)
-				isErr = true
+			var out string
+			var isErr bool
+			if stream.args.BotTools != nil && tools.IsBotToolName(tc.toolName) {
+				res := stream.args.BotTools.CallBotTool(ctx, tc.toolName, tc.toolInput)
+				out, isErr = res.Text, res.IsError
+				if res.EndTurn {
+					shouldEndTurn = true
+				}
+			} else {
+				var execErr error
+				out, execErr = executor.Execute(ctx, tc.toolName, tc.toolInput, isReadOnly)
+				if execErr != nil {
+					out = fmt.Sprintf("Error: %v", execErr)
+					isErr = true
+				}
 			}
 			resultBlock := map[string]interface{}{
 				"type":        "tool_result",
@@ -692,6 +713,9 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 				resultBlock["is_error"] = true
 			}
 			toolResultBlocks = append(toolResultBlocks, resultBlock)
+		}
+		if shouldEndTurn {
+			break
 		}
 
 		messages = append(messages, map[string]interface{}{

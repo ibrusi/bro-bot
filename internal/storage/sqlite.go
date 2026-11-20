@@ -100,6 +100,10 @@ func (s *SQLiteStorage) CreateTask(ctx context.Context, task *TaskRecord) (int, 
 	if err != nil {
 		optsJSON = []byte("[]")
 	}
+	pendingQJSON, err := json.Marshal(task.PendingQuestions)
+	if err != nil || len(task.PendingQuestions) == 0 {
+		pendingQJSON = []byte("[]")
+	}
 
 	agent := task.Agent
 	if agent == "" {
@@ -111,8 +115,9 @@ func (s *SQLiteStorage) CreateTask(ctx context.Context, task *TaskRecord) (int, 
 			project, model, agent, initial_prompt, current_prompt, status,
 			requires_plan, plan, plan_approved, started_at, finished_at,
 			last_pr_url, conversation_id, last_question, question_options,
+			pending_questions, current_question_index,
 			question_asked_at, recipient_id, last_model_used, last_tokens_used
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 	`
 
 	var startedAt, finishedAt, questionAskedAt interface{}
@@ -142,6 +147,8 @@ func (s *SQLiteStorage) CreateTask(ctx context.Context, task *TaskRecord) (int, 
 		task.ConversationID,
 		task.LastQuestion,
 		string(optsJSON),
+		string(pendingQJSON),
+		task.CurrentQuestionIndex,
 		questionAskedAt,
 		task.RecipientID,
 		task.LastModelUsed,
@@ -168,6 +175,10 @@ func (s *SQLiteStorage) UpdateTask(ctx context.Context, task *TaskRecord) error 
 	if err != nil {
 		optsJSON = []byte("[]")
 	}
+	pendingQJSON, err := json.Marshal(task.PendingQuestions)
+	if err != nil || len(task.PendingQuestions) == 0 {
+		pendingQJSON = []byte("[]")
+	}
 
 	agent := task.Agent
 	if agent == "" {
@@ -191,6 +202,8 @@ func (s *SQLiteStorage) UpdateTask(ctx context.Context, task *TaskRecord) error 
 			conversation_id = ?,
 			last_question = ?,
 			question_options = ?,
+			pending_questions = ?,
+			current_question_index = ?,
 			question_asked_at = ?,
 			recipient_id = ?,
 			last_model_used = ?,
@@ -225,6 +238,8 @@ func (s *SQLiteStorage) UpdateTask(ctx context.Context, task *TaskRecord) error 
 		task.ConversationID,
 		task.LastQuestion,
 		string(optsJSON),
+		string(pendingQJSON),
+		task.CurrentQuestionIndex,
 		questionAskedAt,
 		task.RecipientID,
 		task.LastModelUsed,
@@ -292,6 +307,7 @@ func scanTaskRow(scanner interface {
 		finishedAt      sql.NullTime
 		questionAskedAt sql.NullTime
 		optsJSON        string
+		pendingQJSON    string
 	)
 
 	err := scanner.Scan(
@@ -312,6 +328,8 @@ func scanTaskRow(scanner interface {
 		&task.ConversationID,
 		&task.LastQuestion,
 		&optsJSON,
+		&pendingQJSON,
+		&task.CurrentQuestionIndex,
 		&questionAskedAt,
 		&task.RecipientID,
 		&task.LastModelUsed,
@@ -337,6 +355,9 @@ func scanTaskRow(scanner interface {
 	if optsJSON != "" {
 		_ = json.Unmarshal([]byte(optsJSON), &task.QuestionOptions)
 	}
+	if pendingQJSON != "" && pendingQJSON != "[]" {
+		_ = json.Unmarshal([]byte(pendingQJSON), &task.PendingQuestions)
+	}
 
 	return &task, nil
 }
@@ -345,7 +366,8 @@ const taskSelectFields = `
 	id, project, model, agent, initial_prompt, current_prompt, status,
 	requires_plan, plan, plan_approved, started_at, finished_at,
 	created_at, last_pr_url, conversation_id, last_question,
-	question_options, question_asked_at, recipient_id, last_model_used,
+	question_options, pending_questions, current_question_index,
+	question_asked_at, recipient_id, last_model_used,
 	last_tokens_used
 `
 

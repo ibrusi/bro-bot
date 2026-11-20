@@ -3,6 +3,9 @@ package utils
 import (
 	"fmt"
 	"regexp"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var AnsiRegex = regexp.MustCompile(`\x1b(\[[0-9;?><=$]*[a-zA-Z~]|\][0-9;]*\x07|\([B0-9])|\r`)
@@ -35,4 +38,24 @@ func FormatCount(value int64) string {
 	default:
 		return fmt.Sprintf("%d", value)
 	}
+}
+
+// ExtractCommandPayload отделяет ведущую /команду (включая /cmd@botname) и возвращает
+// полный текст аргументов с сохранением всех переносов строк и внутреннего форматирования.
+// Обходит ограничение gopkg.in/telebot.v3 (cmdRx без флага (?s)), где Payload обрезается на '\n'.
+// Возвращает ("", false), если rawText не начинается с "/".
+func ExtractCommandPayload(rawText string) (string, bool) {
+	trimmed := strings.TrimSpace(rawText)
+	if !strings.HasPrefix(trimmed, "/") {
+		return "", false
+	}
+	idx := 0
+	for idx < len(trimmed) {
+		r, size := utf8.DecodeRuneInString(trimmed[idx:])
+		if unicode.IsSpace(r) {
+			break
+		}
+		idx += size
+	}
+	return strings.TrimSpace(trimmed[idx:]), true
 }

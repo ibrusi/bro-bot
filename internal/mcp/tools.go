@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 )
 
@@ -13,6 +15,14 @@ const (
 	ToolSendMessage    = "telegram_send_message"
 	ToolAskUser        = "ask_user"
 	ToolReportProgress = "report_progress"
+	ToolSendFile       = "send_file"
+	ToolGetTaskContext = "get_task_context"
+	ToolListTasks      = "list_tasks"
+	ToolListProjects   = "list_projects"
+
+	// ChannelTokenEnv — одноразовый криптографический токен шага, передаваемый
+	// дочернему процессу агента как резервный идентификатор канала к PID-дереву.
+	ChannelTokenEnv = "BRO_BOT_CHANNEL_TOKEN"
 )
 
 // ToolHandler — функция-обработчик вызова MCP-инструмента.
@@ -36,10 +46,24 @@ func NewToolRegistry() *ToolRegistry {
 // работающему боту через мост на сокете socketPath. Если бот недоступен, агент
 // получает ошибку, а не ложное «доставлено».
 func NewBridgeTools(socketPath string) *ToolRegistry {
+	return NewBridgeToolsWithToken(socketPath, "")
+}
+
+// NewBridgeToolsWithToken создаёт реестр инструментов моста с явным токеном шага
+// (либо читает BRO_BOT_CHANNEL_TOKEN из окружения, если channelToken пуст).
+func NewBridgeToolsWithToken(socketPath, channelToken string) *ToolRegistry {
+	token := strings.TrimSpace(channelToken)
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv(ChannelTokenEnv))
+	}
 	r := NewToolRegistry()
 	forward := func(name string) ToolHandler {
 		return func(ctx context.Context, args map[string]interface{}) (string, error) {
-			res, err := CallBridge(ctx, socketPath, BridgeCall{Tool: name, Arguments: args})
+			res, err := CallBridge(ctx, socketPath, BridgeCall{
+				Tool:         name,
+				Arguments:    args,
+				ChannelToken: token,
+			})
 			if err != nil {
 				return "", err
 			}
@@ -60,8 +84,8 @@ func BridgeToolDefinitions() []Tool {
 	return []Tool{
 		{
 			Name: ToolSendMessage,
-			Description: "Send a message to the user in the Telegram chat of the current task. " +
-				"Use it for important notices that should not wait until the end of your turn.",
+			Description: "Send a message to the user in the Telegram chat of the current task or conversation. " +
+				"Supports Markdown formatting and automatically splits long messages into multiple Telegram chunks.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -69,34 +93,66 @@ func BridgeToolDefinitions() []Tool {
 						"type":        "string",
 						"description": "Text of the message; Markdown is supported",
 					},
+					"silent": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Optional: send without notification sound",
+					},
 				},
 				"required": []string{"message"},
 			},
 		},
 		{
 			Name: ToolAskUser,
-			Description: "Ask the user a clarifying question in Telegram; options become answer buttons. " +
-				"The question is delivered immediately and the user's answer arrives as your next user message, " +
-				"so after calling this tool end your turn without doing anything else.",
+			Description: "Ask the user one or more clarifying questions in Telegram; options become interactive buttons. " +
+				"Pass either a single question (question + optional options + optional is_multi_select) " +
+				"OR a batch in questions[] (multiple questions answered in one interactive flow). " +
+				"You may call ask_user across as many Q&A rounds as needed until everything is clear. " +
+				"In task or plan mode, end your turn after calling this tool so the user's reply arrives as the next message.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"question": map[string]interface{}{
 						"type":        "string",
-						"description": "Question text; Markdown is supported",
+						"description": "Single question text (Markdown supported); omit if passing questions[]",
 					},
 					"options": map[string]interface{}{
 						"type":        "array",
 						"items":       map[string]interface{}{"type": "string"},
-						"description": "Optional answer choices shown as buttons",
+						"description": "Optional answer choices shown as buttons for the single question",
+					},
+					"is_multi_select": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Optional: allow picking multiple options simultaneously for the single question",
+					},
+					"questions": map[string]interface{}{
+						"type":        "array",
+						"description": "Batch of questions to ask the user together (up to 10 questions)",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"question": map[string]interface{}{
+									"type":        "string",
+									"description": "Question text (Markdown supported)",
+								},
+								"options": map[string]interface{}{
+									"type":        "array",
+									"items":       map[string]interface{}{"type": "string"},
+									"description": "Optional answer choices shown as buttons",
+								},
+								"is_multi_select": map[string]interface{}{
+									"type":        "boolean",
+									"description": "Allow selecting multiple options for this question",
+								},
+							},
+							"required": []string{"question"},
+						},
 					},
 				},
-				"required": []string{"question"},
 			},
 		},
 		{
 			Name:        ToolReportProgress,
-			Description: "Report the current step of the task. It is shown in the live status message in Telegram.",
+			Description: "Report the current step of the task or chat analysis. Shown in the live status message in Telegram.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -110,6 +166,68 @@ func BridgeToolDefinitions() []Tool {
 					},
 				},
 				"required": []string{"status"},
+			},
+		},
+		{
+			Name: ToolSendFile,
+			Description: "Send a file to the user in Telegram in the context of the current task, plan, or chat. " +
+				"Either pass path to send an existing file from the current project's workspace (max 20 MB), " +
+				"OR pass filename + content to send generated text content directly from memory without modifying disk (ideal in read-only /plan or /chat mode).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Relative path to an existing file inside the current task project directory",
+					},
+					"filename": map[string]interface{}{
+						"type":        "string",
+						"description": "File name when sending in-memory content (e.g. 'schema.sql' or 'diagram.mmd')",
+					},
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "UTF-8 file content to send directly from memory (paired with filename)",
+					},
+					"caption": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional caption for the Telegram file message",
+					},
+				},
+			},
+		},
+		{
+			Name: ToolGetTaskContext,
+			Description: "Read-only tool returning JSON metadata about the current bot session: mode (task/plan/chat), " +
+				"task_id, project, work_dir, agent, model, language, queued pending_followups from the user, and uploaded_files.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			Name: ToolListTasks,
+			Description: "Read-only tool returning active and recent tasks in the current task's project (or another named project): " +
+				"task IDs, statuses, agents, prompts, and PR URLs.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"project": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional project name (defaults to the current task or chat project; pass '*' for all projects)",
+					},
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "Maximum number of recent tasks to return (1-20, default 10)",
+					},
+				},
+			},
+		},
+		{
+			Name:        ToolListProjects,
+			Description: "Read-only tool listing available git projects configured in PROJECTS_ROOT, marking the task project and active bot project.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
 			},
 		},
 	}

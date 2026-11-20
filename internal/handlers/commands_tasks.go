@@ -15,9 +15,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Команды и кнопки управления задачами: создание, статус, дополнение,
@@ -141,15 +144,16 @@ func handleTask(s ports.Session) error {
 		return s.Send(details+agentConflictNote(active, lang), ports.RichWith(markup))
 	}
 
+	payload := commandPayload(s)
 	first := strings.TrimPrefix(args[0], "#")
 	id, err := strconv.Atoi(first)
 	if err != nil {
 		if strings.ToLower(first) == "new" && len(args) > 1 {
-			prompt := strings.Join(args[1:], " ")
+			prompt := stripLeadingWords(payload, 1)
 			return handleCreateNewTask(s, prompt)
 		}
 		if strings.ToLower(first) == "plan" && len(args) > 1 {
-			prompt := strings.Join(args[1:], " ")
+			prompt := stripLeadingWords(payload, 1)
 			return handleCreatePlanTask(s, prompt)
 		}
 		return s.Send(i18n.T(lang, "task.usage_task"), ports.Rich())
@@ -157,8 +161,10 @@ func handleTask(s ports.Session) error {
 
 	// Если передан текст дополнения: /task 2 сделай ещё это
 	if len(args) > 1 {
-		followupText := strings.TrimSpace(strings.Join(args[1:], " "))
-		return handleAddFollowupToTask(s, id, followupText)
+		followupText := stripLeadingWords(payload, 1)
+		if followupText != "" {
+			return handleAddFollowupToTask(s, id, followupText)
+		}
 	}
 
 	task, err := domain.GlobalTaskManager.SetActiveTask(id)
@@ -181,9 +187,10 @@ func handleAdd(s ports.Session) error {
 		return s.Send(i18n.T(lang, "task.usage_add"), ports.Rich())
 	}
 
+	payload := commandPayload(s)
 	first := strings.TrimPrefix(args[0], "#")
 	if id, err := strconv.Atoi(first); err == nil && len(args) > 1 {
-		followupText := strings.TrimSpace(strings.Join(args[1:], " "))
+		followupText := stripLeadingWords(payload, 1)
 		return handleAddFollowupToTask(s, id, followupText)
 	}
 
@@ -191,17 +198,15 @@ func handleAdd(s ports.Session) error {
 	if active == nil {
 		return s.Send(i18n.T(lang, "task.no_active_for_add"), ports.Rich())
 	}
-	followupText := strings.TrimSpace(strings.Join(args, " "))
-	return handleAddFollowupToTask(s, active.Snapshot().ID, followupText)
+	return handleAddFollowupToTask(s, active.Snapshot().ID, payload)
 }
 
 // handleNew — обработчик команды /new.
 func handleNew(s ports.Session) error {
-	args := s.Args()
-	if len(args) == 0 {
+	text := commandPayload(s)
+	if text == "" {
 		return s.Send(i18n.T(uiLang(), "task.usage_new"), ports.Rich())
 	}
-	text := strings.TrimSpace(strings.Join(args, " "))
 	return handleCreateNewTask(s, text)
 }
 
@@ -275,9 +280,22 @@ func onQuestionChoice(s ports.Session) error {
 	if len(parts) < 2 {
 		return s.Respond(i18n.T(lang, "task.toast_bad_button"))
 	}
-	taskID, err1 := strconv.Atoi(parts[0])
-	optIdx, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil {
+	var (
+		taskID int
+		qIdx   = -1
+		optIdx int
+		err1   error
+		err2   error
+		err3   error
+	)
+	taskID, err1 = strconv.Atoi(parts[0])
+	if len(parts) >= 3 {
+		qIdx, err2 = strconv.Atoi(parts[1])
+		optIdx, err3 = strconv.Atoi(parts[2])
+	} else {
+		optIdx, err2 = strconv.Atoi(parts[1])
+	}
+	if err1 != nil || err2 != nil || err3 != nil {
 		return s.Respond(i18n.T(lang, "task.toast_bad_params"))
 	}
 
@@ -288,11 +306,24 @@ func onQuestionChoice(s ports.Session) error {
 
 	view3 := task.Snapshot()
 	status := view3.Status
+	isPlanning := view3.RequiresPlan && !view3.PlanApproved
 	var chosenText string
-	if optIdx >= 0 && optIdx < len(view3.QuestionOptions) {
+	totalQ := len(view3.PendingQuestions)
+	effectiveQ := qIdx
+	if totalQ > 0 {
+		if effectiveQ < 0 || effectiveQ >= totalQ {
+			effectiveQ = view3.CurrentQuestionIndex
+			if effectiveQ < 0 || effectiveQ >= totalQ {
+				effectiveQ = 0
+			}
+		}
+		q := view3.PendingQuestions[effectiveQ]
+		if optIdx >= 0 && optIdx < len(q.Options) {
+			chosenText = q.Options[optIdx]
+		}
+	} else if optIdx >= 0 && optIdx < len(view3.QuestionOptions) {
 		chosenText = view3.QuestionOptions[optIdx]
 	}
-	hasPipeline := view3.HasActivePipeline
 
 	if chosenText == "" {
 		return s.Respond(i18n.T(lang, "task.toast_option_missing"))
@@ -300,65 +331,306 @@ func onQuestionChoice(s ports.Session) error {
 
 	_ = s.Respond(i18n.Tf(lang, "task.toast_chosen", utils.TruncateString(chosenText, 25)))
 
+	if totalQ > 1 {
+		done, combined := recordSingleQuestionAnswerAndAdvance(task, effectiveQ, chosenText, lang)
+		if !done {
+			domain.GlobalTaskManager.SaveTask(task)
+			updatedView := task.Snapshot()
+			nextMsg := formatTaskQuestionMessage(updatedView, isPlanning, lang)
+			nextMenu := buildQuestionMarkup(task, lang)
+			_ = s.Edit(nextMsg, ports.RichWith(nextMenu))
+			return nil
+		}
+		if cb := s.Callback(); cb != nil && cb.MessageText != "" {
+			_ = s.Edit(i18n.Tf(lang, "task.option_chosen_edit",
+				cb.MessageText, optIdx+1, html.EscapeString(chosenText)), ports.Rich())
+		}
+		return deliverTaskAnswer(s, task, combined, lang, -1)
+	}
+
+	if status == domain.TaskStatusWaitingInput || status == domain.TaskStatusPaused {
+		if cb := s.Callback(); cb != nil && cb.MessageText != "" {
+			_ = s.Edit(i18n.Tf(lang, "task.option_chosen_edit",
+				cb.MessageText, optIdx+1, html.EscapeString(chosenText)), ports.Rich())
+		}
+		return deliverTaskAnswer(s, task, chosenText, lang, optIdx)
+	}
+
+	return s.Send(i18n.Tf(lang, "task.not_waiting_status", taskID, i18n.TaskStatusTitle(string(status), lang)), nil)
+}
+
+// onQuestionToggle — обработчик кнопки q_toggle (переключает вариант в мультивыборе).
+func onQuestionToggle(s ports.Session) error {
+	lang := uiLang()
+	parts := strings.Split(s.Callback().Payload, ":")
+	if len(parts) < 3 {
+		return s.Respond(i18n.T(lang, "task.toast_bad_button"))
+	}
+	taskID, err1 := strconv.Atoi(parts[0])
+	qIdx, err2 := strconv.Atoi(parts[1])
+	optIdx, err3 := strconv.Atoi(parts[2])
+	if err1 != nil || err2 != nil || err3 != nil {
+		return s.Respond(i18n.T(lang, "task.toast_bad_params"))
+	}
+
+	task := domain.GlobalTaskManager.GetTask(taskID)
+	if task == nil {
+		return s.Respond(i18n.T(lang, "task.toast_not_found"))
+	}
+
+	var toggled bool
+	task.Update(func(t *domain.TaskSession) {
+		if qIdx >= 0 && qIdx < len(t.PendingQuestions) && optIdx >= 0 && optIdx < len(t.PendingQuestions[qIdx].Options) {
+			t.CurrentQuestionIndex = qIdx
+			domain.ToggleQuestionOption(&t.PendingQuestions[qIdx], optIdx)
+			toggled = true
+		}
+	})
+	if !toggled {
+		return s.Respond(i18n.T(lang, "task.toast_option_missing"))
+	}
+
+	domain.GlobalTaskManager.SaveTask(task)
+	_ = s.Respond(i18n.T(lang, "task.toast_selection_updated"))
+
+	updatedView := task.Snapshot()
+	isPlanning := updatedView.RequiresPlan && !updatedView.PlanApproved
+	msgText := formatTaskQuestionMessage(updatedView, isPlanning, lang)
+	menu := buildQuestionMarkup(task, lang)
+	return s.Edit(msgText, ports.RichWith(menu))
+}
+
+// onQuestionSubmit — обработчик кнопки q_submit для подтверждения мультивыбора.
+func onQuestionSubmit(s ports.Session) error {
+	lang := uiLang()
+	parts := strings.Split(s.Callback().Payload, ":")
+	if len(parts) < 2 {
+		return s.Respond(i18n.T(lang, "task.toast_bad_button"))
+	}
+	taskID, err1 := strconv.Atoi(parts[0])
+	qIdx, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return s.Respond(i18n.T(lang, "task.toast_bad_params"))
+	}
+
+	task := domain.GlobalTaskManager.GetTask(taskID)
+	if task == nil {
+		return s.Respond(i18n.T(lang, "task.toast_not_found"))
+	}
+
+	var selected string
+	var valid bool
+	task.Update(func(t *domain.TaskSession) {
+		if qIdx >= 0 && qIdx < len(t.PendingQuestions) {
+			valid = true
+			selected = domain.FormatSelectedOptions(t.PendingQuestions[qIdx])
+		}
+	})
+	if !valid {
+		return s.Respond(i18n.T(lang, "task.toast_option_missing"))
+	}
+	if strings.TrimSpace(selected) == "" {
+		return s.Respond(i18n.T(lang, "task.toast_nothing_selected"))
+	}
+
+	_ = s.Respond(i18n.Tf(lang, "task.toast_chosen", utils.TruncateString(selected, 25)))
+
+	view := task.Snapshot()
+	totalQ := len(view.PendingQuestions)
+	isPlanning := view.RequiresPlan && !view.PlanApproved
+
+	if totalQ > 1 {
+		done, combined := recordSingleQuestionAnswerAndAdvance(task, qIdx, selected, lang)
+		if !done {
+			domain.GlobalTaskManager.SaveTask(task)
+			updatedView := task.Snapshot()
+			nextMsg := formatTaskQuestionMessage(updatedView, isPlanning, lang)
+			nextMenu := buildQuestionMarkup(task, lang)
+			_ = s.Edit(nextMsg, ports.RichWith(nextMenu))
+			return nil
+		}
+		if cb := s.Callback(); cb != nil && cb.MessageText != "" {
+			_ = s.Edit(i18n.Tf(lang, "task.option_chosen_edit",
+				cb.MessageText, 1, html.EscapeString(selected)), ports.Rich())
+		}
+		return deliverTaskAnswer(s, task, combined, lang, -1)
+	}
+
 	if cb := s.Callback(); cb != nil && cb.MessageText != "" {
 		_ = s.Edit(i18n.Tf(lang, "task.option_chosen_edit",
-			cb.MessageText, optIdx+1, html.EscapeString(chosenText)), ports.Rich())
+			cb.MessageText, 1, html.EscapeString(selected)), ports.Rich())
 	}
+	return deliverTaskAnswer(s, task, selected, lang, -1)
+}
+
+// onQuestionBack — возврат к предыдущему вопросу в интерактивном опроснике.
+func onQuestionBack(s ports.Session) error {
+	lang := uiLang()
+	taskID, err := strconv.Atoi(s.Callback().Payload)
+	if err != nil {
+		return s.Respond(i18n.T(lang, "task.toast_bad_id"))
+	}
+	task := domain.GlobalTaskManager.GetTask(taskID)
+	if task == nil {
+		return s.Respond(i18n.T(lang, "task.toast_not_found"))
+	}
+
+	var curIdx int
+	task.Update(func(t *domain.TaskSession) {
+		if t.QuestionAcceptAllTxt {
+			t.QuestionAcceptAllTxt = false
+		} else if t.CurrentQuestionIndex > 0 {
+			t.CurrentQuestionIndex--
+		}
+		if t.CurrentQuestionIndex >= len(t.PendingQuestions) && len(t.PendingQuestions) > 0 {
+			t.CurrentQuestionIndex = len(t.PendingQuestions) - 1
+		}
+		curIdx = t.CurrentQuestionIndex
+	})
+
+	domain.GlobalTaskManager.SaveTask(task)
+	_ = s.Respond(i18n.Tf(lang, "task.toast_question_switched", curIdx+1))
+
+	updatedView := task.Snapshot()
+	isPlanning := updatedView.RequiresPlan && !updatedView.PlanApproved
+	return s.Edit(formatTaskQuestionMessage(updatedView, isPlanning, lang), ports.RichWith(buildQuestionMarkup(task, lang)))
+}
+
+// onQuestionAllText — переключение опросника в режим ответа на все вопросы одним сообщением.
+func onQuestionAllText(s ports.Session) error {
+	lang := uiLang()
+	taskID, err := strconv.Atoi(s.Callback().Payload)
+	if err != nil {
+		return s.Respond(i18n.T(lang, "task.toast_bad_id"))
+	}
+	task := domain.GlobalTaskManager.GetTask(taskID)
+	if task == nil {
+		return s.Respond(i18n.T(lang, "task.toast_not_found"))
+	}
+
+	task.Update(func(t *domain.TaskSession) {
+		t.QuestionAcceptAllTxt = true
+	})
+	_ = s.Respond(i18n.T(lang, "task.toast_send_all_text"))
+
+	updatedView := task.Snapshot()
+	isPlanning := updatedView.RequiresPlan && !updatedView.PlanApproved
+	return s.Edit(formatTaskQuestionMessage(updatedView, isPlanning, lang), ports.RichWith(buildQuestionMarkup(task, lang)))
+}
+
+func recordSingleQuestionAnswerAndAdvance(task *domain.TaskSession, qIdx int, answer, lang string) (done bool, combined string) {
+	task.Update(func(t *domain.TaskSession) {
+		n := len(t.PendingQuestions)
+		if n <= 1 {
+			if n == 1 {
+				t.PendingQuestions[0].Answer = answer
+			}
+			done = true
+			combined = answer
+			return
+		}
+		if qIdx < 0 || qIdx >= n {
+			qIdx = t.CurrentQuestionIndex
+			if qIdx < 0 || qIdx >= n {
+				qIdx = 0
+			}
+		}
+		t.PendingQuestions[qIdx].Answer = answer
+		t.QuestionAcceptAllTxt = false
+
+		nextIdx := -1
+		for i := qIdx + 1; i < n; i++ {
+			if strings.TrimSpace(t.PendingQuestions[i].Answer) == "" {
+				nextIdx = i
+				break
+			}
+		}
+		if nextIdx == -1 {
+			for i := 0; i < qIdx; i++ {
+				if strings.TrimSpace(t.PendingQuestions[i].Answer) == "" {
+					nextIdx = i
+					break
+				}
+			}
+		}
+		if nextIdx == -1 {
+			done = true
+			combined = domain.FormatCombinedAnswers(t.PendingQuestions, lang)
+			return
+		}
+		t.CurrentQuestionIndex = nextIdx
+		t.LastQuestion = t.PendingQuestions[nextIdx].Question
+		t.QuestionOptions = append([]string(nil), t.PendingQuestions[nextIdx].Options...)
+		t.QuestionAskedAt = time.Now()
+	})
+	return done, combined
+}
+
+// deliverTaskAnswer доставляет готовый ответ задаче, которая ждёт ввода или стоит на паузе.
+func deliverTaskAnswer(s ports.Session, task *domain.TaskSession, answer, lang string, singleOptIdx int) error {
+	view := task.Snapshot()
+	taskID := view.ID
+	status := view.Status
+	proj := view.Project
+	hasPipeline := view.HasActivePipeline
 
 	if status == domain.TaskStatusWaitingInput {
 		if hasPipeline {
-			task.DeliverAnswer(chosenText)
-			return s.Send(i18n.Tf(lang, "task.option_delivered", optIdx+1, taskID, html.EscapeString(chosenText)), ports.Rich())
+			task.Update(func(t *domain.TaskSession) {
+				t.ClearPendingQuestionLocked()
+			})
+			domain.GlobalTaskManager.SaveTask(task)
+			task.DeliverAnswer(answer)
+			if singleOptIdx >= 0 {
+				return s.Send(i18n.Tf(lang, "task.option_delivered", singleOptIdx+1, taskID, html.EscapeString(answer)), ports.Rich())
+			}
+			return s.Send(i18n.Tf(lang, "task.answer_delivered", taskID, html.EscapeString(proj)), ports.Rich())
 		}
 		if HasAgentConflict(task, ActiveAgentName()) {
 			task.Update(func(t *domain.TaskSession) {
-				t.CurrentPrompt = chosenText
+				t.CurrentPrompt = answer
 			})
 			domain.GlobalTaskManager.SaveTask(task)
 			return sendAgentConflictDialog(s, task)
 		}
-		resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, chosenText)
+		resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, answer)
 		if err != nil {
 			return s.Send(i18n.Tf(lang, "task.resume_failed", taskID, ErrorText(err, lang)), ports.Rich())
 		}
 		syncLegacySession(resumedTask)
 		resumedView := resumedTask.Snapshot()
-		resumedStatus := resumedView.Status
-		projectName := resumedView.Project
-
-		if resumedStatus == domain.TaskStatusQueued {
+		if resumedView.Status == domain.TaskStatusQueued {
 			return s.Send(i18n.Tf(lang, "task.queued_with_answer",
-				taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
+				taskID, html.EscapeString(resumedView.Project), html.EscapeString(utils.TruncateString(answer, 250))), ports.Rich())
 		}
-		workDir := filepath.Join(config.ProjectsRoot, projectName)
+		workDir := filepath.Join(config.ProjectsRoot, resumedView.Project)
 		go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
 		return s.Send(i18n.Tf(lang, "task.resumed_with_answer",
-			taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
-	} else if status == domain.TaskStatusPaused {
+			taskID, html.EscapeString(resumedView.Project), html.EscapeString(utils.TruncateString(answer, 250))), ports.Rich())
+	}
+
+	if status == domain.TaskStatusPaused {
 		if HasAgentConflict(task, ActiveAgentName()) {
 			task.Update(func(t *domain.TaskSession) {
-				t.CurrentPrompt = chosenText
+				t.CurrentPrompt = answer
 			})
 			domain.GlobalTaskManager.SaveTask(task)
 			return sendAgentConflictDialog(s, task)
 		}
-		resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, chosenText)
+		resumedTask, err := domain.GlobalTaskManager.ResumeTask(taskID, answer)
 		if err != nil {
 			return s.Send(i18n.Tf(lang, "task.resume_failed", taskID, ErrorText(err, lang)), ports.Rich())
 		}
 		syncLegacySession(resumedTask)
-		resumedView2 := resumedTask.Snapshot()
-		resumedStatus := resumedView2.Status
-		projectName := resumedView2.Project
-
-		if resumedStatus == domain.TaskStatusQueued {
+		resumedView := resumedTask.Snapshot()
+		if resumedView.Status == domain.TaskStatusQueued {
 			return s.Send(i18n.Tf(lang, "task.queued_with_answer",
-				taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
+				taskID, html.EscapeString(resumedView.Project), html.EscapeString(utils.TruncateString(answer, 250))), ports.Rich())
 		}
-		workDir := filepath.Join(config.ProjectsRoot, projectName)
+		workDir := filepath.Join(config.ProjectsRoot, resumedView.Project)
 		go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
 		return s.Send(i18n.Tf(lang, "task.resumed_with_answer",
-			taskID, html.EscapeString(projectName), html.EscapeString(chosenText)), ports.Rich())
+			taskID, html.EscapeString(resumedView.Project), html.EscapeString(utils.TruncateString(answer, 250))), ports.Rich())
 	}
 
 	return s.Send(i18n.Tf(lang, "task.not_waiting_status", taskID, i18n.TaskStatusTitle(string(status), lang)), nil)
@@ -429,10 +701,10 @@ func onQuestionResume(s ports.Session) error {
 		return sendAgentConflictDialog(s, task)
 	}
 
-	if lastQ != "" && len(opts) > 0 {
+	if len(view5.PendingQuestions) > 0 || (lastQ != "" && len(opts) > 0) {
 		menu := buildQuestionMarkup(task, lang)
-		promptMsg := i18n.Tf(lang, "task.question_prompt",
-			taskID, html.EscapeString(proj), utils.MarkdownToTelegramHTML(lastQ))
+		isPlan := view5.RequiresPlan && !view5.PlanApproved
+		promptMsg := formatTaskQuestionMessage(view5, isPlan, lang)
 		return s.Send(promptMsg, ports.RichWith(menu))
 	}
 
@@ -500,8 +772,7 @@ func onTaskAgentRestart(s ports.Session) error {
 			t.CurrentPrompt = t.InitialPrompt
 		}
 		t.LastPRURL = ""
-		t.LastQuestion = ""
-		t.QuestionOptions = nil
+		t.ClearPendingQuestionLocked()
 		t.StartedAt = time.Now()
 		t.RecentLogs = nil
 		t.ResetOutputLocked()
@@ -618,17 +889,18 @@ func handleResume(s ports.Session) error {
 	lang := uiLang()
 
 	args := s.Args()
+	payload := commandPayload(s)
 	var targetID int
 	var answer string
 
 	if len(args) > 0 {
-		if id, err := strconv.Atoi(args[0]); err == nil {
+		if id, err := strconv.Atoi(strings.TrimPrefix(args[0], "#")); err == nil {
 			targetID = id
 			if len(args) > 1 {
-				answer = strings.Join(args[1:], " ")
+				answer = stripLeadingWords(payload, 1)
 			}
 		} else {
-			answer = strings.Join(args, " ")
+			answer = payload
 		}
 	}
 
@@ -675,30 +947,20 @@ func handleResume(s ports.Session) error {
 
 	if status == domain.TaskStatusWaitingInput {
 		if answer != "" {
-			proj := view10.Project
-			if view10.HasActivePipeline {
-				task.DeliverAnswer(answer)
-				return s.Send(i18n.Tf(lang, "task.answer_delivered", targetID, html.EscapeString(proj)), ports.Rich())
-			}
-
-			resumedTask, err := domain.GlobalTaskManager.ResumeTask(targetID, answer)
-			if err != nil {
-				return s.Send(i18n.Tf(lang, "task.resume_failed", targetID, ErrorText(err, lang)), ports.Rich())
-			}
-			syncLegacySession(resumedTask)
-			resumedView5 := resumedTask.Snapshot()
-			resStatus := resumedView5.Status
-
-			if resStatus == domain.TaskStatusQueued {
-				return s.Send(i18n.Tf(lang, "task.queued_with_answer", targetID, html.EscapeString(proj), html.EscapeString(answer)), ports.Rich())
-			}
-
-			workDir := filepath.Join(config.ProjectsRoot, proj)
-			go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
-			return s.Send(i18n.Tf(lang, "task.resumed_with_answer", targetID, html.EscapeString(proj), html.EscapeString(answer)), ports.Rich())
+			return handleAddFollowupToTask(s, targetID, answer)
 		}
 		menu := buildQuestionMarkup(task, lang)
+		if len(view10.PendingQuestions) > 0 {
+			isPlan := view10.RequiresPlan && !view10.PlanApproved
+			return s.Send(formatTaskQuestionMessage(view10, isPlan, lang), ports.RichWith(menu))
+		}
 		return s.Send(i18n.Tf(lang, "task.question_waiting_short", targetID, targetID), ports.RichWith(menu))
+	}
+
+	if status == domain.TaskStatusPaused && answer == "" && len(view10.PendingQuestions) > 0 {
+		menu := buildQuestionMarkup(task, lang)
+		isPlan := view10.RequiresPlan && !view10.PlanApproved
+		return s.Send(formatTaskQuestionMessage(view10, isPlan, lang), ports.RichWith(menu))
 	}
 
 	resumedTask, err := domain.GlobalTaskManager.ResumeTask(targetID, answer)
@@ -751,8 +1013,7 @@ func handleRetryTaskByID(s ports.Session, targetID int) error {
 		}
 		t.CurrentPrompt = t.InitialPrompt
 		t.LastPRURL = ""
-		t.LastQuestion = ""
-		t.QuestionOptions = nil
+		t.ClearPendingQuestionLocked()
 		t.StartedAt = time.Now()
 		t.RecentLogs = nil
 		t.ResetOutputLocked()
@@ -845,15 +1106,35 @@ func isProjectDir(name string) bool {
 	return statErr == nil && fi.IsDir()
 }
 
-// stripLeadingWords удаляет count первых слов из строки text, сохраняя форматирование остатка.
+// commandPayload возвращает полный текст аргументов команды (включая переносы строк),
+// либо fallback из s.Args() для моковых сессий без сырого Text().
+func commandPayload(s ports.Session) string {
+	if s == nil {
+		return ""
+	}
+	if payload, ok := utils.ExtractCommandPayload(s.Text()); ok {
+		return payload
+	}
+	return strings.TrimSpace(strings.Join(s.Args(), " "))
+}
+
+// stripLeadingWords удаляет count первых слов из строки text, сохраняя форматирование и переносы остатка.
 func stripLeadingWords(text string, count int) string {
 	idx := 0
-	for i := 0; i < count; i++ {
-		for idx < len(text) && (text[idx] == ' ' || text[idx] == '\t' || text[idx] == '\n' || text[idx] == '\r') {
-			idx++
+	for i := 0; i < count && idx < len(text); i++ {
+		for idx < len(text) {
+			r, size := utf8.DecodeRuneInString(text[idx:])
+			if !unicode.IsSpace(r) {
+				break
+			}
+			idx += size
 		}
-		for idx < len(text) && !(text[idx] == ' ' || text[idx] == '\t' || text[idx] == '\n' || text[idx] == '\r') {
-			idx++
+		for idx < len(text) {
+			r, size := utf8.DecodeRuneInString(text[idx:])
+			if unicode.IsSpace(r) {
+				break
+			}
+			idx += size
 		}
 	}
 	return strings.TrimSpace(text[idx:])
@@ -913,20 +1194,32 @@ func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan b
 
 	config.ProjectState.RLock()
 	curProj := config.ProjectState.CurrentProject
-	curMod := config.ProjectState.CurrentModel
 	config.ProjectState.RUnlock()
 
+	targetProj, targetAgent, prompt := parseNewTaskInput(text, curProj, curAgent)
+	return createTaskInProject(s, targetProj, targetAgent, prompt, requiresPlan)
+}
+
+func createTaskInProject(s ports.Session, targetProj, targetAgent, prompt string, requiresPlan bool) error {
+	curAgent := ActiveAgentName()
 	lang := uiLang()
 
-	targetProj, targetAgent, prompt := parseNewTaskInput(text, curProj, curAgent)
-	if prompt == "" {
+	if strings.TrimSpace(prompt) == "" {
 		return s.Send(i18n.T(lang, "task.usage_new"), ports.Rich())
 	}
 
-	if targetProj == "" {
+	if strings.TrimSpace(targetProj) == "" {
+		config.ProjectState.RLock()
+		targetProj = config.ProjectState.CurrentProject
+		config.ProjectState.RUnlock()
+	}
+	if strings.TrimSpace(targetProj) == "" {
 		return s.Send(i18n.T(lang, "projects.select_first"), nil)
 	}
 
+	if targetAgent == "" {
+		targetAgent = curAgent
+	}
 	if targetAgent != "" && !strings.EqualFold(targetAgent, curAgent) {
 		if _, err := SwitchActiveAgent(targetAgent); err != nil {
 			return s.Send(i18n.Tf(lang, "task.agent_switch_failed_named", html.EscapeString(targetAgent), ErrorText(err, lang)), ports.Rich())
@@ -934,7 +1227,7 @@ func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan b
 	}
 
 	config.ProjectState.RLock()
-	curMod = config.ProjectState.CurrentModel
+	curMod := config.ProjectState.CurrentModel
 	config.ProjectState.RUnlock()
 
 	task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent(targetProj, curMod, targetAgent, prompt, s.Chat(), requiresPlan)
@@ -963,12 +1256,18 @@ func handleCreateNewTaskWithOptions(s ports.Session, text string, requiresPlan b
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
 
-	domain.GlobalTokenTracker.StartTaskWithAgent(targetProj, curMod, prompt, targetAgent)
+	domain.GlobalTokenTracker.StartTaskWithAgent(targetProj, curMod, targetAgent, prompt)
 	workDir := filepath.Join(config.ProjectsRoot, targetProj)
 
 	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir, config.ProjectsRoot)
 
 	return nil
+}
+
+var numberedMultiAnswerRx = regexp.MustCompile(`(?m)^\s*#?[1-9]\d*[.)\]:]\s+\S+`)
+
+func hasMultipleNumberedAnswers(text string) bool {
+	return len(numberedMultiAnswerRx.FindAllString(text, 2)) >= 2
 }
 
 func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
@@ -998,7 +1297,34 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 		return sendAgentConflictDialog(s, task)
 	}
 
-	task, qLen, isAnswer, err := domain.GlobalTaskManager.AddFollowup(taskID, text)
+	answerText := text
+	if (status == domain.TaskStatusWaitingInput || status == domain.TaskStatusPaused) && len(view12.PendingQuestions) > 1 {
+		if !view12.QuestionAcceptAllTxt && !hasMultipleNumberedAnswers(text) {
+			done, combined := recordSingleQuestionAnswerAndAdvance(task, view12.CurrentQuestionIndex, text, lang)
+			if !done {
+				domain.GlobalTaskManager.SaveTask(task)
+				updatedView := task.Snapshot()
+				isPlanning := updatedView.RequiresPlan && !updatedView.PlanApproved
+				qRef, _ := s.Messenger().Send(context.Background(), s.Chat(),
+					formatTaskQuestionMessage(updatedView, isPlanning, lang),
+					ports.RichWith(buildQuestionMarkup(task, lang)))
+				if qRef.ID != "" {
+					domain.GlobalTaskManager.RegisterMessageTask(qRef, taskID)
+				}
+				return nil
+			}
+			answerText = combined
+		}
+	}
+
+	if status == domain.TaskStatusWaitingInput || status == domain.TaskStatusPaused {
+		task.Update(func(t *domain.TaskSession) {
+			t.ClearPendingQuestionLocked()
+		})
+		domain.GlobalTaskManager.SaveTask(task)
+	}
+
+	task, qLen, isAnswer, err := domain.GlobalTaskManager.AddFollowup(taskID, answerText)
 	if err != nil {
 		return s.Send(i18n.Tf(lang, "task.followup_failed", taskID, ErrorText(err, lang)), ports.Rich())
 	}
@@ -1016,12 +1342,12 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 
 		if curStatus == domain.TaskStatusQueued {
 			return s.Send(i18n.Tf(lang, "task.queued_with_answer",
-				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
+				taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(answerText, 250))), ports.Rich())
 		}
 
 		if HasAgentConflict(task, ActiveAgentName()) {
 			task.Update(func(t *domain.TaskSession) {
-				t.CurrentPrompt = text
+				t.CurrentPrompt = answerText
 			})
 			domain.GlobalTaskManager.SaveTask(task)
 			return sendAgentConflictDialog(s, task)
@@ -1030,7 +1356,7 @@ func handleAddFollowupToTask(s ports.Session, taskID int, text string) error {
 		workDir := filepath.Join(config.ProjectsRoot, proj)
 		go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir, config.ProjectsRoot)
 		return s.Send(i18n.Tf(lang, "task.resumed_with_followup",
-			taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(text, 250))), ports.Rich())
+			taskID, html.EscapeString(proj), html.EscapeString(utils.TruncateString(answerText, 250))), ports.Rich())
 	}
 
 	msg := i18n.Tf(lang, "task.followup_saved",
@@ -1161,24 +1487,142 @@ func buildResumeMarkup(taskID int, lang string) *ports.Keyboard {
 	}}
 }
 
+func formatTaskQuestionMessage(view domain.TaskView, isPlanning bool, lang string) string {
+	totalQ := len(view.PendingQuestions)
+	projHTML := html.EscapeString(view.Project)
+
+	if totalQ <= 1 {
+		rawQ := view.LastQuestion
+		var isMultiSelect bool
+		if totalQ == 1 {
+			rawQ = view.PendingQuestions[0].Question
+			isMultiSelect = view.PendingQuestions[0].MultiSelect
+		}
+		body := utils.MarkdownToTelegramHTML(rawQ)
+		if isMultiSelect {
+			body += i18n.Tf(lang, "task.multi_select_hint", html.EscapeString(i18n.T(lang, "btn.q_submit")))
+		}
+		headerKey := "pipeline.question_header"
+		if isPlanning {
+			headerKey = "pipeline.question_header_planning"
+		}
+		return i18n.Tf(lang, headerKey, view.ID, projHTML, body)
+	}
+
+	if view.QuestionAcceptAllTxt {
+		var listBldr strings.Builder
+		for i, q := range view.PendingQuestions {
+			if i > 0 {
+				listBldr.WriteString("\n\n")
+			}
+			listBldr.WriteString(fmt.Sprintf("<b>%d.</b> %s", i+1, utils.MarkdownToTelegramHTML(q.Question)))
+			if len(q.Options) > 0 {
+				for _, opt := range q.Options {
+					listBldr.WriteString("\n   • " + html.EscapeString(opt))
+				}
+			}
+		}
+		return i18n.Tf(lang, "task.multi_question_all_text_prompt", view.ID, projHTML, totalQ, listBldr.String())
+	}
+
+	idx := view.CurrentQuestionIndex
+	if idx < 0 || idx >= totalQ {
+		idx = 0
+	}
+	curQ := view.PendingQuestions[idx]
+
+	var bodyBldr strings.Builder
+	bodyBldr.WriteString(i18n.Tf(lang, "task.multi_question_progress", idx+1, totalQ, utils.MarkdownToTelegramHTML(curQ.Question)))
+	if curQ.MultiSelect {
+		bodyBldr.WriteString(i18n.Tf(lang, "task.multi_select_hint", html.EscapeString(i18n.T(lang, "btn.q_submit"))))
+	}
+
+	bodyBldr.WriteString(i18n.Tf(lang, "task.multi_question_list_header", totalQ))
+	answeredMark := i18n.T(lang, "task.multi_question_answered_mark")
+	currentMark := i18n.T(lang, "task.multi_question_current_mark")
+	pendingMark := i18n.T(lang, "task.multi_question_pending_mark")
+	for i, q := range view.PendingQuestions {
+		mark := pendingMark
+		if strings.TrimSpace(q.Answer) != "" {
+			mark = answeredMark
+		} else if i == idx {
+			mark = currentMark
+		}
+		ansSuffix := ""
+		if strings.TrimSpace(q.Answer) != "" {
+			ansSuffix = i18n.Tf(lang, "task.multi_question_answer_inline", html.EscapeString(utils.TruncateString(q.Answer, 60)))
+		}
+		bodyBldr.WriteString(fmt.Sprintf("%s %d. %s%s\n",
+			mark, i+1, html.EscapeString(utils.TruncateString(q.Question, 80)), ansSuffix))
+	}
+
+	headerKey := "task.question_header_multi"
+	if isPlanning {
+		headerKey = "task.question_header_planning_multi"
+	}
+	return i18n.Tf(lang, headerKey, view.ID, projHTML, idx+1, totalQ, strings.TrimSpace(bodyBldr.String()))
+}
+
 func buildQuestionMarkup(task *domain.TaskSession, lang string) *ports.Keyboard {
 	view15 := task.Snapshot()
 	taskID := view15.ID
-	options := append([]string(nil), view15.QuestionOptions...)
+	totalQ := len(view15.PendingQuestions)
+	qIdx := view15.CurrentQuestionIndex
+
+	var (
+		options       []string
+		isMultiSelect bool
+		selectedSet   = make(map[int]bool)
+	)
+	if totalQ > 0 {
+		if qIdx < 0 || qIdx >= totalQ {
+			qIdx = 0
+		}
+		q := view15.PendingQuestions[qIdx]
+		options = append([]string(nil), q.Options...)
+		isMultiSelect = q.MultiSelect
+		for _, sel := range q.SelectedIndices {
+			selectedSet[sel] = true
+		}
+	} else {
+		qIdx = 0
+		options = append([]string(nil), view15.QuestionOptions...)
+	}
 
 	var rows [][]ports.Button
 
-	if len(options) > 0 {
+	if !view15.QuestionAcceptAllTxt && len(options) > 0 {
 		var optButtons []ports.Button
 		for i, opt := range options {
 			cleanOpt := strings.TrimSpace(opt)
-			btnText := fmt.Sprintf("%d. %s", i+1, utils.TruncateString(cleanOpt, 30))
-			optButtons = append(optButtons, ports.Button{Text: btnText, Action: "q_choice", Payload: fmt.Sprintf("%d:%d", taskID, i)})
+			if isMultiSelect {
+				prefix := "⬜ "
+				if selectedSet[i] {
+					prefix = "☑️ "
+				}
+				btnText := prefix + utils.TruncateString(cleanOpt, 28)
+				optButtons = append(optButtons, ports.Button{
+					Text:    btnText,
+					Action:  "q_toggle",
+					Payload: fmt.Sprintf("%d:%d:%d", taskID, qIdx, i),
+				})
+			} else {
+				btnText := fmt.Sprintf("%d. %s", i+1, utils.TruncateString(cleanOpt, 30))
+				optButtons = append(optButtons, ports.Button{
+					Text:    btnText,
+					Action:  "q_choice",
+					Payload: fmt.Sprintf("%d:%d:%d", taskID, qIdx, i),
+				})
+			}
 		}
 
 		allShort := true
+		maxShortLen := 15
+		if isMultiSelect {
+			maxShortLen = 13
+		}
 		for _, opt := range options {
-			if len([]rune(opt)) > 15 {
+			if len([]rune(opt)) > maxShortLen {
 				allShort = false
 				break
 			}
@@ -1196,6 +1640,25 @@ func buildQuestionMarkup(task *domain.TaskSession, lang string) *ports.Keyboard 
 			for _, b := range optButtons {
 				rows = append(rows, []ports.Button{b})
 			}
+		}
+
+		if isMultiSelect {
+			rows = append(rows, []ports.Button{
+				{Text: i18n.T(lang, "btn.q_submit"), Action: "q_submit", Payload: fmt.Sprintf("%d:%d", taskID, qIdx)},
+			})
+		}
+	}
+
+	if totalQ > 1 {
+		var nav []ports.Button
+		if view15.QuestionAcceptAllTxt || qIdx > 0 {
+			nav = append(nav, ports.Button{Text: i18n.T(lang, "btn.q_back"), Action: "q_back", Payload: strconv.Itoa(taskID)})
+		}
+		if !view15.QuestionAcceptAllTxt {
+			nav = append(nav, ports.Button{Text: i18n.T(lang, "btn.q_all_text"), Action: "q_all_text", Payload: strconv.Itoa(taskID)})
+		}
+		if len(nav) > 0 {
+			rows = append(rows, nav)
 		}
 	}
 
@@ -1261,7 +1724,7 @@ func checkAndStartQueuedTask(m ports.Messenger, project, root string) {
 	_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, startKey,
 		nextID, html.EscapeString(project), html.EscapeString(utils.TruncateString(prompt, 80))), ports.Rich())
 
-	domain.GlobalTokenTracker.StartTaskWithAgent(project, model, prompt, tAgent)
+	domain.GlobalTokenTracker.StartTaskWithAgent(project, model, tAgent, prompt)
 	workDir := filepath.Join(root, project)
 	go runAgentTaskPipeline(m, chat, nextTask, workDir, config.ProjectsRoot)
 }
@@ -1310,7 +1773,13 @@ func sendLongMarkdown(m ports.Messenger, chat ports.ChatID, text string) {
 		return
 	}
 
-	chunks := utils.SplitMarkdown(text, 3500)
+	fullHTML := utils.MarkdownToTelegramHTML(text)
+	if utils.TelegramHTMLVisibleLen(fullHTML) <= utils.DefaultTelegramMaxChunkLen {
+		_, _ = m.Send(context.Background(), chat, fullHTML, ports.Rich())
+		return
+	}
+
+	chunks := utils.SplitMarkdown(text, utils.DefaultMarkdownMaxChunkLen)
 	for _, chunk := range chunks {
 		chunk = strings.TrimSpace(chunk)
 		if chunk == "" {

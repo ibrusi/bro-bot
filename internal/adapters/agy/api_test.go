@@ -333,4 +333,3 @@ func TestAgyAPIAdapter_ProcessExecutionFallback(t *testing.T) {
 		t.Errorf("expected error to mention GEMINI_API_KEY, got: %v", err)
 	}
 }
-

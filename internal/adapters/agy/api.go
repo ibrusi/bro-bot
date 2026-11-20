@@ -328,15 +328,25 @@ var errStreamOutputClosed = errors.New("agy-api: output stream closed")
 
 const maxGeminiTurns = 30
 
+func mergeSystemPrompts(parts ...string) string {
+	var nonEmpty []string
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			nonEmpty = append(nonEmpty, trimmed)
+		}
+	}
+	return strings.Join(nonEmpty, "\n\n---\n\n")
+}
+
 // streamOnce выполняет генерацию с поддержкой вызова инструментов и возвращает накопленный текст, счётчики и число ходов.
 func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, modelName string, args ports.ExecuteArgs) (string, map[string]interface{}, int, error) {
 	model := client.GenerativeModel(modelName)
-	if systemPrompt := strings.TrimSpace(args.SystemPrompt); systemPrompt != "" {
+	if systemPrompt := mergeSystemPrompts(args.BotInstructions, args.SystemPrompt); systemPrompt != "" {
 		model.SystemInstruction = genai.NewUserContent(genai.Text(systemPrompt))
 	}
 
 	isReadOnly := args.ReadOnly || strings.Contains(args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(args.SystemPrompt, "CHAT MODE")
-	model.Tools = tools.GeminiToolDeclarations(isReadOnly)
+	model.Tools = tools.GeminiToolDeclarationsWithBot(isReadOnly, args.BotTools != nil)
 
 	executor := tools.NewExecutor(args.WorkDir)
 
@@ -429,10 +439,24 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 		}
 
 		var nextParts []genai.Part
+		var shouldEndTurn bool
 		for _, fc := range fnCalls {
-			out, execErr := executor.Execute(ctx, fc.Name, fc.Args, isReadOnly)
-			if execErr != nil {
-				out = fmt.Sprintf("Error: %v", execErr)
+			var out string
+			if args.BotTools != nil && tools.IsBotToolName(fc.Name) {
+				res := args.BotTools.CallBotTool(ctx, fc.Name, fc.Args)
+				out = res.Text
+				if res.IsError {
+					out = "Error: " + out
+				}
+				if res.EndTurn {
+					shouldEndTurn = true
+				}
+			} else {
+				var execErr error
+				out, execErr = executor.Execute(ctx, fc.Name, fc.Args, isReadOnly)
+				if execErr != nil {
+					out = fmt.Sprintf("Error: %v", execErr)
+				}
 			}
 			nextParts = append(nextParts, genai.FunctionResponse{
 				Name: fc.Name,
@@ -440,6 +464,9 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 					"result": out,
 				},
 			})
+		}
+		if shouldEndTurn {
+			break
 		}
 		parts = nextParts
 	}

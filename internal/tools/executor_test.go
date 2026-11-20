@@ -246,8 +246,8 @@ func TestExecuteDispatchAndReadOnly(t *testing.T) {
 
 	// Aliases test (e.g. view_file, replace_file_content)
 	editRes, err := executor.Execute(ctx, "replace_file_content", map[string]interface{}{
-		"TargetFile":     "test.txt",
-		"TargetContent":  "world",
+		"TargetFile":         "test.txt",
+		"TargetContent":      "world",
 		"ReplacementContent": "bro",
 	}, false)
 	if err != nil {
@@ -271,5 +271,66 @@ func TestExecuteDispatchAndReadOnly(t *testing.T) {
 	_, err = executor.Execute(ctx, "unknown_tool", nil, false)
 	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
 		t.Errorf("expected unknown tool error, got %v", err)
+	}
+}
+
+func TestGrepSearchFindFilesAndBotToolDefs(t *testing.T) {
+	tempDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tempDir, "pkg"), 0755)
+	_ = os.MkdirAll(filepath.Join(tempDir, ".git"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "pkg", "main.go"), []byte("package pkg\nfunc Hello() {}\n"), 0644)
+	_ = os.WriteFile(filepath.Join(tempDir, "pkg", "notes.txt"), []byte("Hello notes\n"), 0644)
+	_ = os.WriteFile(filepath.Join(tempDir, ".git", "HEAD"), []byte("Hello git\n"), 0644)
+
+	executor := NewExecutor(tempDir)
+	ctx := context.Background()
+
+	grepOut, err := executor.Execute(ctx, "grep_search", map[string]interface{}{
+		"pattern": "Hello",
+		"glob":    "*.go",
+	}, true)
+	if err != nil {
+		t.Fatalf("grep_search failed: %v", err)
+	}
+	if !strings.Contains(grepOut, "pkg/main.go:2:") || strings.Contains(grepOut, "notes.txt") || strings.Contains(grepOut, ".git") {
+		t.Errorf("unexpected grep_search output:\n%s", grepOut)
+	}
+
+	findOut, err := executor.Execute(ctx, "find_files", map[string]interface{}{
+		"pattern": "*.go",
+	}, true)
+	if err != nil {
+		t.Fatalf("find_files failed: %v", err)
+	}
+	if !strings.Contains(findOut, "pkg/main.go") || strings.Contains(findOut, "notes.txt") || strings.Contains(findOut, ".git") {
+		t.Errorf("unexpected find_files output:\n%s", findOut)
+	}
+
+	if !IsBotToolName("send_file") || !IsBotToolName("ask_user") || IsBotToolName("read_file") {
+		t.Errorf("unexpected IsBotToolName checks")
+	}
+
+	claudeTools := ClaudeToolDefinitionsWithBot(true, true)
+	foundSendFile := false
+	for _, td := range claudeTools {
+		if td["name"] == "send_file" {
+			foundSendFile = true
+		}
+	}
+	if !foundSendFile {
+		t.Errorf("expected send_file in ClaudeToolDefinitionsWithBot")
+	}
+
+	geminiDecls := GeminiToolDeclarationsWithBot(true, true)
+	foundAskUser := false
+	for _, gtool := range geminiDecls {
+		for _, fn := range gtool.FunctionDeclarations {
+			if fn.Name == "ask_user" {
+				foundAskUser = true
+			}
+		}
+	}
+	if !foundAskUser {
+		t.Errorf("expected ask_user in GeminiToolDeclarationsWithBot")
 	}
 }

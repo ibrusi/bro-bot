@@ -42,23 +42,33 @@ func GetBotExecutable() string {
 // имена инструментов у агента: например, mcp__bro_bot__ask_user у claude.
 const bridgeServerName = "bro_bot"
 
-// bridgeServerArgs — аргументы запуска `bot mcp-serve` с сокетом моста socketPath.
+// bridgeServerArgs — аргументы запуска `bot mcp-serve` с сокетом моста socketPath и токеном шага.
 // Без пути mcp-serve найдёт сокет рядом со своим исполняемым файлом.
-func bridgeServerArgs(socketPath string) []string {
-	if socketPath == "" {
-		return []string{"mcp-serve"}
+func bridgeServerArgs(socketPath, channelToken string) []string {
+	args := []string{"mcp-serve"}
+	if socketPath != "" {
+		args = append(args, "--socket", socketPath)
 	}
-	return []string{"mcp-serve", "--socket", socketPath}
+	if strings.TrimSpace(channelToken) != "" {
+		args = append(args, "--token", strings.TrimSpace(channelToken))
+	}
+	return args
 }
 
 // WriteTempMCPConfigFile создает временный файл конфигурации mcp-config.json,
 // в котором MCP-сервер бота подключается к мосту на сокете socketPath.
 func WriteTempMCPConfigFile(socketPath string) (string, error) {
+	return WriteTempMCPConfigFileWithToken(socketPath, "")
+}
+
+// WriteTempMCPConfigFileWithToken создает временный файл конфигурации mcp-config.json
+// с привязкой к одноразовому токену шага channelToken.
+func WriteTempMCPConfigFileWithToken(socketPath, channelToken string) (string, error) {
 	cfg := Config{
 		MCPServers: map[string]ServerConfig{
 			bridgeServerName: {
 				Command: GetBotExecutable(),
-				Args:    bridgeServerArgs(socketPath),
+				Args:    bridgeServerArgs(socketPath, channelToken),
 			},
 		},
 	}
@@ -87,7 +97,7 @@ func EnsureAgyMCPConfig(socketPath string) error {
 		return err
 	}
 	cfgPath := filepath.Join(home, ".gemini", "config", "mcp_config.json")
-	return ensureServerInConfig(cfgPath, bridgeServerName, GetBotExecutable(), bridgeServerArgs(socketPath))
+	return ensureServerInConfig(cfgPath, bridgeServerName, GetBotExecutable(), bridgeServerArgs(socketPath, ""))
 }
 
 // ensureServerInConfig записывает в файл конфигурации path сервер name с командой

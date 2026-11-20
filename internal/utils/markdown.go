@@ -52,13 +52,13 @@ func runeVisualWidth(r rune) int {
 		return 0
 	}
 	if (r >= 0x1F300 && r <= 0x1FAFF) || // Emojis, Pictographs
-		(r >= 0x2600 && r <= 0x27BF) ||   // Dingbats (❌ 0x274c, ✅ 0x2705)
-		(r >= 0x2B50 && r <= 0x2B55) ||   // Звёзды и символы
+		(r >= 0x2600 && r <= 0x27BF) || // Dingbats (❌ 0x274c, ✅ 0x2705)
+		(r >= 0x2B50 && r <= 0x2B55) || // Звёзды и символы
 		(r >= 0x1F1E6 && r <= 0x1F1FF) || // Флаги
-		(r >= 0x2300 && r <= 0x23FF) ||   // Часы, таймеры
-		(r >= 0x2E80 && r <= 0x9FFF) ||   // CJK Ideographs
-		(r >= 0xF900 && r <= 0xFAFF) ||   // CJK Compatibility
-		(r >= 0xFF01 && r <= 0xFF60) ||   // Полноширинные формы
+		(r >= 0x2300 && r <= 0x23FF) || // Часы, таймеры
+		(r >= 0x2E80 && r <= 0x9FFF) || // CJK Ideographs
+		(r >= 0xF900 && r <= 0xFAFF) || // CJK Compatibility
+		(r >= 0xFF01 && r <= 0xFF60) || // Полноширинные формы
 		(r >= 0xFFE0 && r <= 0xFFE6) {
 		return 2
 	}
@@ -675,84 +675,107 @@ func EnsureTagsClosed(htmlStr string) string {
 	return htmlStr
 }
 
-// SplitMarkdown разбивает длинный Markdown-текст на части без разрыва блоков кода.
+// DefaultMarkdownMaxChunkLen — безопасный размер одного Markdown-чанка в единицах UTF-16
+// с учётом того, что разметка после перевода в HTML в видимой длине станет компактнее
+// (скрываются **, `, URL в [текст](url)) и гарантированно поместится в Telegram (4096).
+const DefaultMarkdownMaxChunkLen = 3950
+
+// SplitMarkdown разбивает длинный Markdown-текст на части <= maxChunkLen (в UTF-16
+// единицах) без разрыва блоков кода.
 func SplitMarkdown(text string, maxChunkLen int) []string {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
 	}
 	if maxChunkLen <= 0 {
-		maxChunkLen = 3500
+		maxChunkLen = DefaultMarkdownMaxChunkLen
 	}
 
-	runes := []rune(text)
-	if len(runes) <= maxChunkLen {
+	if UTF16Len(text) <= maxChunkLen {
 		return []string{text}
 	}
 
 	lines := strings.Split(text, "\n")
 	var chunks []string
 	var curChunk strings.Builder
+	curLen := 0
+	curHasBody := false
 	var inCodeBlock bool
 	var codeBlockFence string
+
+	flush := func() {
+		if !curHasBody {
+			return
+		}
+		if inCodeBlock {
+			curChunk.WriteString("\n```")
+		}
+		chunks = append(chunks, curChunk.String())
+		curChunk.Reset()
+		curLen = 0
+		curHasBody = false
+		if inCodeBlock {
+			prefix := codeBlockFence + "\n"
+			curChunk.WriteString(prefix)
+			curLen = UTF16Len(prefix)
+		}
+	}
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		isFence := strings.HasPrefix(trimmed, "```")
+		lineLen := UTF16Len(line)
+
+		reserve := 0
+		if inCodeBlock {
+			reserve = 4 // резерв для закрывающего "\n```"
+		}
 
 		// Если текущая строка превышает maxChunkLen сама по себе (очень длинная строка)
-		if len([]rune(line)) > maxChunkLen {
-			if curChunk.Len() > 0 {
-				if inCodeBlock {
-					curChunk.WriteString("\n```")
-				}
-				chunks = append(chunks, curChunk.String())
-				curChunk.Reset()
-				if inCodeBlock {
-					curChunk.WriteString(codeBlockFence + "\n")
-				}
+		if lineLen+reserve > maxChunkLen {
+			if curHasBody {
+				flush()
 			}
 
 			lineRunes := []rune(line)
-			for len(lineRunes) > maxChunkLen {
-				sub := string(lineRunes[:maxChunkLen])
-				lineRunes = lineRunes[maxChunkLen:]
-				if inCodeBlock {
-					chunks = append(chunks, sub+"\n```")
-				} else {
-					chunks = append(chunks, sub)
+			for len(lineRunes) > 0 {
+				avail := maxChunkLen - curLen - reserve
+				if avail < 20 {
+					avail = 20
 				}
-				if inCodeBlock {
-					curChunk.WriteString(codeBlockFence + "\n")
+				cut := slicePrefixByUTF16(lineRunes, avail)
+				part := string(lineRunes[:cut])
+				curChunk.WriteString(part)
+				curLen += UTF16Len(part)
+				curHasBody = true
+				lineRunes = lineRunes[cut:]
+				if len(lineRunes) > 0 {
+					if lineRunes[0] == ' ' {
+						lineRunes = lineRunes[1:]
+					}
+					flush()
 				}
-			}
-			if len(lineRunes) > 0 {
-				curChunk.WriteString(string(lineRunes))
 			}
 			continue
 		}
 
-		// Проверяем, поместится ли строка в текущий чанк
-		projectedLen := curChunk.Len() + len(line) + 1
-		if inCodeBlock {
-			projectedLen += 4 // резерв для закрывающего ```
+		sepLen := 0
+		if curHasBody {
+			sepLen = 1
+		}
+		projectedLen := curLen + sepLen + lineLen + reserve
+		if projectedLen > maxChunkLen && curHasBody {
+			flush()
+			sepLen = 0
 		}
 
-		if projectedLen > maxChunkLen && curChunk.Len() > 0 {
-			if inCodeBlock {
-				curChunk.WriteString("\n```")
-			}
-			chunks = append(chunks, curChunk.String())
-			curChunk.Reset()
-			if inCodeBlock {
-				curChunk.WriteString(codeBlockFence + "\n")
-			}
-		}
-
-		if curChunk.Len() > 0 {
+		if sepLen == 1 {
 			curChunk.WriteByte('\n')
+			curLen++
 		}
 		curChunk.WriteString(line)
+		curLen += lineLen
+		curHasBody = true
 
 		if isFence {
 			if !inCodeBlock {
@@ -765,11 +788,85 @@ func SplitMarkdown(text string, maxChunkLen int) []string {
 		}
 	}
 
-	if curChunk.Len() > 0 {
+	if curHasBody {
 		chunks = append(chunks, curChunk.String())
 	}
 
 	return chunks
+}
+
+// ParsedQuestion описывает один структурированный вопрос из параметров ask_question / ask_user.
+type ParsedQuestion struct {
+	Question    string
+	Options     []string
+	MultiSelect bool
+}
+
+// ExtractAskQuestionItems извлекает структурированный список вопросов без сплющивания вариантов.
+func ExtractAskQuestionItems(params map[string]interface{}) []ParsedQuestion {
+	if params == nil {
+		return nil
+	}
+
+	var out []ParsedQuestion
+	if qs, ok := params["questions"].([]interface{}); ok && len(qs) > 0 {
+		for _, qItem := range qs {
+			qMap, ok := qItem.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			qText, _ := qMap["question"].(string)
+			qText = strings.TrimSpace(qText)
+			if qText == "" {
+				continue
+			}
+			multi, _ := qMap["is_multi_select"].(bool)
+			out = append(out, ParsedQuestion{
+				Question:    qText,
+				Options:     extractStringOptions(qMap["options"]),
+				MultiSelect: multi,
+			})
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+
+	if qText, ok := params["question"].(string); ok {
+		qText = strings.TrimSpace(qText)
+		if qText != "" {
+			multi, _ := params["is_multi_select"].(bool)
+			out = append(out, ParsedQuestion{
+				Question:    qText,
+				Options:     extractStringOptions(params["options"]),
+				MultiSelect: multi,
+			})
+		}
+	}
+	return out
+}
+
+func extractStringOptions(raw interface{}) []string {
+	var res []string
+	switch v := raw.(type) {
+	case []interface{}:
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			if tr := strings.TrimSpace(s); tr != "" {
+				res = append(res, tr)
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if tr := strings.TrimSpace(s); tr != "" {
+				res = append(res, tr)
+			}
+		}
+	}
+	return res
 }
 
 // FormatAskQuestionParams форматирует параметры инструмента ask_question в читаемый

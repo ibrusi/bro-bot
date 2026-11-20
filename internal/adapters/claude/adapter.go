@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"bro-bot/internal/adapters/cliproc"
+	"bro-bot/internal/mcp"
 	"bro-bot/internal/ports"
 	"bro-bot/internal/utils"
 
@@ -69,10 +70,9 @@ func buildClaudeArgs(args ports.ExecuteArgs) []string {
 	if args.ConversationID != "" {
 		// В Claude для возобновления существующей сессии используется --resume (-r)
 		cmdArgs = append(cmdArgs, "--resume", args.ConversationID)
-	} else if systemPrompt := strings.TrimSpace(args.SystemPrompt); systemPrompt != "" {
-		// На первом ходе новой сессии передаём системный промпт через --append-system-prompt.
-		// Claude сохраняет его в снэпшоте сессии (--system-prompt-snapshot on), поэтому при
-		// последующих вызовах с --resume повторная передача не требуется.
+	} else if systemPrompt := mergeSystemPrompts(args.BotInstructions, args.SystemPrompt); systemPrompt != "" {
+		// На первом ходе новой сессии передаём инструкции бота и системный промпт проекта через --append-system-prompt.
+		// Claude сохраняет его в снэпшоте сессии, поэтому при последующих --resume повторная передача не требуется.
 		cmdArgs = append(cmdArgs, "--append-system-prompt", systemPrompt)
 	}
 	if claudeModel := resolveClaudeModel(args.ModelName); claudeModel != "" {
@@ -99,6 +99,9 @@ func (a *ClaudeAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 		"NO_COLOR=1",
 		"CI=true",
 	)
+	if token := strings.TrimSpace(args.ChannelToken); token != "" {
+		cmd.Env = append(cmd.Env, mcp.ChannelTokenEnv+"="+token)
+	}
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {

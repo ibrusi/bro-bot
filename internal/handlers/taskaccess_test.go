@@ -176,7 +176,8 @@ func isTaskListProducer(expr ast.Expr) bool {
 	if !ok {
 		return false
 	}
-	return sel.Sel.Name == "ListTasks" || sel.Sel.Name == "GetActiveOrQueuedTasks"
+	return sel.Sel.Name == "ListTasks" || sel.Sel.Name == "GetActiveOrQueuedTasks" ||
+		sel.Sel.Name == "GetWaitingInputTasks" || sel.Sel.Name == "ListTasksByProject"
 }
 
 // scanFunc собирает в пределах одной функции имена переменных задачи и области

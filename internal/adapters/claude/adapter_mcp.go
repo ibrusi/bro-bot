@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"bro-bot/internal/adapters/cliproc"
@@ -31,7 +32,7 @@ func (a *ClaudeMCPAdapter) ExecutionMode() string {
 }
 
 func (a *ClaudeMCPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (ports.AgentProcess, error) {
-	cfgFile, err := mcp.WriteTempMCPConfigFile(config.MCPSocketPath)
+	cfgFile, err := mcp.WriteTempMCPConfigFileWithToken(config.MCPSocketPath, args.ChannelToken)
 	if err != nil {
 		return nil, fmt.Errorf("claude-mcp: write config: %w", err)
 	}
@@ -45,6 +46,9 @@ func (a *ClaudeMCPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteAr
 		"NO_COLOR=1",
 		"CI=true",
 	)
+	if token := strings.TrimSpace(args.ChannelToken); token != "" {
+		cmd.Env = append(cmd.Env, mcp.ChannelTokenEnv+"="+token)
+	}
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {

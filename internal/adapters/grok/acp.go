@@ -10,6 +10,8 @@ import (
 	"io"
 	"strings"
 	"sync"
+
+	"bro-bot/internal/tools"
 )
 
 // json-rpc поверх stdin/stdout процесса `grok agent stdio`.
@@ -250,15 +252,46 @@ func readOnlyToolKind(kind string) bool {
 	}
 }
 
+// isBotMCPTool распознаёт вызовы MCP-инструментов самого bro-bot (bro_bot / bro-bot),
+// которые безопасны и должны работать в диалоге (/chat), /plan и /new.
+func isBotMCPTool(toolTitle string) bool {
+	lower := strings.ToLower(strings.TrimSpace(toolTitle))
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, "mcp__bro_bot__") ||
+		strings.HasPrefix(lower, "mcp__bro-bot__") ||
+		strings.HasPrefix(lower, "bro_bot:") ||
+		strings.HasPrefix(lower, "bro_bot/") ||
+		strings.HasPrefix(lower, "bro-bot:") ||
+		strings.HasPrefix(lower, "bro-bot/") ||
+		lower == "bro_bot" || lower == "bro-bot" {
+		return true
+	}
+	// Разбираем формат вида "bro_bot: ask_user" или суффикс после '/', ':', '__'.
+	base := lower
+	for _, sep := range []string{"__", "/", ":", " "} {
+		if idx := strings.LastIndex(base, sep); idx != -1 {
+			base = strings.TrimSpace(base[idx+len(sep):])
+		}
+	}
+	return tools.IsBotToolName(base)
+}
+
 // choosePermission выбирает вариант ответа на session/request_permission.
-// В задаче предпочтительно «разрешить всегда», в диалоге запись и команды отклоняются.
-// Второе значение false — ответа с выбором нет, запрос нужно отменить.
 func choosePermission(readOnly bool, toolKind string, options []permOption) (string, bool) {
+	return choosePermissionForTool(readOnly, toolKind, "", options)
+}
+
+// choosePermissionForTool выбирает вариант ответа на session/request_permission с учётом
+// имени инструмента toolTitle (разрешает MCP-инструменты bro_bot даже в диалоговом режиме).
+func choosePermissionForTool(readOnly bool, toolKind, toolTitle string, options []permOption) (string, bool) {
 	if len(options) == 0 {
 		return "", false
 	}
+	allowedInReadOnly := readOnlyToolKind(toolKind) || isBotMCPTool(toolTitle)
 	var prefer []string
-	if readOnly && !readOnlyToolKind(toolKind) {
+	if readOnly && !allowedInReadOnly {
 		prefer = []string{"reject_once", "reject_always"}
 	} else if readOnly {
 		prefer = []string{"allow_once", "allow_always"}
