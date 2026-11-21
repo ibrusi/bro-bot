@@ -343,7 +343,7 @@ func onQuestionChoice(s ports.Session) error {
 		}
 		if cb := s.Callback(); cb != nil && cb.MessageText != "" {
 			_ = s.Edit(i18n.Tf(lang, "task.option_chosen_edit",
-				cb.MessageText, optIdx+1, html.EscapeString(chosenText)), ports.Rich())
+				html.EscapeString(cb.MessageText), optIdx+1, html.EscapeString(chosenText)), ports.Rich())
 		}
 		return deliverTaskAnswer(s, task, combined, lang, -1)
 	}
@@ -351,7 +351,7 @@ func onQuestionChoice(s ports.Session) error {
 	if status == domain.TaskStatusWaitingInput || status == domain.TaskStatusPaused {
 		if cb := s.Callback(); cb != nil && cb.MessageText != "" {
 			_ = s.Edit(i18n.Tf(lang, "task.option_chosen_edit",
-				cb.MessageText, optIdx+1, html.EscapeString(chosenText)), ports.Rich())
+				html.EscapeString(cb.MessageText), optIdx+1, html.EscapeString(chosenText)), ports.Rich())
 		}
 		return deliverTaskAnswer(s, task, chosenText, lang, optIdx)
 	}
@@ -450,15 +450,15 @@ func onQuestionSubmit(s ports.Session) error {
 			return nil
 		}
 		if cb := s.Callback(); cb != nil && cb.MessageText != "" {
-			_ = s.Edit(i18n.Tf(lang, "task.option_chosen_edit",
-				cb.MessageText, 1, html.EscapeString(selected)), ports.Rich())
+			_ = s.Edit(i18n.Tf(lang, "task.multi_option_chosen_edit",
+				html.EscapeString(cb.MessageText), html.EscapeString(selected)), ports.Rich())
 		}
 		return deliverTaskAnswer(s, task, combined, lang, -1)
 	}
 
 	if cb := s.Callback(); cb != nil && cb.MessageText != "" {
-		_ = s.Edit(i18n.Tf(lang, "task.option_chosen_edit",
-			cb.MessageText, 1, html.EscapeString(selected)), ports.Rich())
+		_ = s.Edit(i18n.Tf(lang, "task.multi_option_chosen_edit",
+			html.EscapeString(cb.MessageText), html.EscapeString(selected)), ports.Rich())
 	}
 	return deliverTaskAnswer(s, task, selected, lang, -1)
 }
@@ -658,7 +658,7 @@ func onQuestionPause(s ports.Session) error {
 	syncLegacySession(task)
 
 	if cb := s.Callback(); cb != nil && cb.MessageText != "" {
-		_ = s.Edit(i18n.Tf(lang, "task.paused_edit", cb.MessageText), ports.Rich())
+		_ = s.Edit(i18n.Tf(lang, "task.paused_edit", html.EscapeString(cb.MessageText)), ports.Rich())
 	}
 
 	view4 := task.Snapshot()
@@ -945,19 +945,20 @@ func handleResume(s ports.Session) error {
 	view10 := task.Snapshot()
 	status := view10.Status
 
+	hasStructuredQ := len(view10.PendingQuestions) > 0 || (view10.LastQuestion != "" && len(view10.QuestionOptions) > 0)
 	if status == domain.TaskStatusWaitingInput {
 		if answer != "" {
 			return handleAddFollowupToTask(s, targetID, answer)
 		}
 		menu := buildQuestionMarkup(task, lang)
-		if len(view10.PendingQuestions) > 0 {
+		if hasStructuredQ {
 			isPlan := view10.RequiresPlan && !view10.PlanApproved
 			return s.Send(formatTaskQuestionMessage(view10, isPlan, lang), ports.RichWith(menu))
 		}
 		return s.Send(i18n.Tf(lang, "task.question_waiting_short", targetID, targetID), ports.RichWith(menu))
 	}
 
-	if status == domain.TaskStatusPaused && answer == "" && len(view10.PendingQuestions) > 0 {
+	if status == domain.TaskStatusPaused && answer == "" && hasStructuredQ {
 		menu := buildQuestionMarkup(task, lang)
 		isPlan := view10.RequiresPlan && !view10.PlanApproved
 		return s.Send(formatTaskQuestionMessage(view10, isPlan, lang), ports.RichWith(menu))
@@ -1485,189 +1486,6 @@ func buildResumeMarkup(taskID int, lang string) *ports.Keyboard {
 			{Text: i18n.T(lang, "btn.cancel"), Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
 		},
 	}}
-}
-
-func formatTaskQuestionMessage(view domain.TaskView, isPlanning bool, lang string) string {
-	totalQ := len(view.PendingQuestions)
-	projHTML := html.EscapeString(view.Project)
-
-	if totalQ <= 1 {
-		rawQ := view.LastQuestion
-		var isMultiSelect bool
-		if totalQ == 1 {
-			rawQ = view.PendingQuestions[0].Question
-			isMultiSelect = view.PendingQuestions[0].MultiSelect
-		}
-		body := utils.MarkdownToTelegramHTML(rawQ)
-		if isMultiSelect {
-			body += i18n.Tf(lang, "task.multi_select_hint", html.EscapeString(i18n.T(lang, "btn.q_submit")))
-		}
-		headerKey := "pipeline.question_header"
-		if isPlanning {
-			headerKey = "pipeline.question_header_planning"
-		}
-		return i18n.Tf(lang, headerKey, view.ID, projHTML, body)
-	}
-
-	if view.QuestionAcceptAllTxt {
-		var listBldr strings.Builder
-		for i, q := range view.PendingQuestions {
-			if i > 0 {
-				listBldr.WriteString("\n\n")
-			}
-			listBldr.WriteString(fmt.Sprintf("<b>%d.</b> %s", i+1, utils.MarkdownToTelegramHTML(q.Question)))
-			if len(q.Options) > 0 {
-				for _, opt := range q.Options {
-					listBldr.WriteString("\n   • " + html.EscapeString(opt))
-				}
-			}
-		}
-		return i18n.Tf(lang, "task.multi_question_all_text_prompt", view.ID, projHTML, totalQ, listBldr.String())
-	}
-
-	idx := view.CurrentQuestionIndex
-	if idx < 0 || idx >= totalQ {
-		idx = 0
-	}
-	curQ := view.PendingQuestions[idx]
-
-	var bodyBldr strings.Builder
-	bodyBldr.WriteString(i18n.Tf(lang, "task.multi_question_progress", idx+1, totalQ, utils.MarkdownToTelegramHTML(curQ.Question)))
-	if curQ.MultiSelect {
-		bodyBldr.WriteString(i18n.Tf(lang, "task.multi_select_hint", html.EscapeString(i18n.T(lang, "btn.q_submit"))))
-	}
-
-	bodyBldr.WriteString(i18n.Tf(lang, "task.multi_question_list_header", totalQ))
-	answeredMark := i18n.T(lang, "task.multi_question_answered_mark")
-	currentMark := i18n.T(lang, "task.multi_question_current_mark")
-	pendingMark := i18n.T(lang, "task.multi_question_pending_mark")
-	for i, q := range view.PendingQuestions {
-		mark := pendingMark
-		if strings.TrimSpace(q.Answer) != "" {
-			mark = answeredMark
-		} else if i == idx {
-			mark = currentMark
-		}
-		ansSuffix := ""
-		if strings.TrimSpace(q.Answer) != "" {
-			ansSuffix = i18n.Tf(lang, "task.multi_question_answer_inline", html.EscapeString(utils.TruncateString(q.Answer, 60)))
-		}
-		bodyBldr.WriteString(fmt.Sprintf("%s %d. %s%s\n",
-			mark, i+1, html.EscapeString(utils.TruncateString(q.Question, 80)), ansSuffix))
-	}
-
-	headerKey := "task.question_header_multi"
-	if isPlanning {
-		headerKey = "task.question_header_planning_multi"
-	}
-	return i18n.Tf(lang, headerKey, view.ID, projHTML, idx+1, totalQ, strings.TrimSpace(bodyBldr.String()))
-}
-
-func buildQuestionMarkup(task *domain.TaskSession, lang string) *ports.Keyboard {
-	view15 := task.Snapshot()
-	taskID := view15.ID
-	totalQ := len(view15.PendingQuestions)
-	qIdx := view15.CurrentQuestionIndex
-
-	var (
-		options       []string
-		isMultiSelect bool
-		selectedSet   = make(map[int]bool)
-	)
-	if totalQ > 0 {
-		if qIdx < 0 || qIdx >= totalQ {
-			qIdx = 0
-		}
-		q := view15.PendingQuestions[qIdx]
-		options = append([]string(nil), q.Options...)
-		isMultiSelect = q.MultiSelect
-		for _, sel := range q.SelectedIndices {
-			selectedSet[sel] = true
-		}
-	} else {
-		qIdx = 0
-		options = append([]string(nil), view15.QuestionOptions...)
-	}
-
-	var rows [][]ports.Button
-
-	if !view15.QuestionAcceptAllTxt && len(options) > 0 {
-		var optButtons []ports.Button
-		for i, opt := range options {
-			cleanOpt := strings.TrimSpace(opt)
-			if isMultiSelect {
-				prefix := "⬜ "
-				if selectedSet[i] {
-					prefix = "☑️ "
-				}
-				btnText := prefix + utils.TruncateString(cleanOpt, 28)
-				optButtons = append(optButtons, ports.Button{
-					Text:    btnText,
-					Action:  "q_toggle",
-					Payload: fmt.Sprintf("%d:%d:%d", taskID, qIdx, i),
-				})
-			} else {
-				btnText := fmt.Sprintf("%d. %s", i+1, utils.TruncateString(cleanOpt, 30))
-				optButtons = append(optButtons, ports.Button{
-					Text:    btnText,
-					Action:  "q_choice",
-					Payload: fmt.Sprintf("%d:%d:%d", taskID, qIdx, i),
-				})
-			}
-		}
-
-		allShort := true
-		maxShortLen := 15
-		if isMultiSelect {
-			maxShortLen = 13
-		}
-		for _, opt := range options {
-			if len([]rune(opt)) > maxShortLen {
-				allShort = false
-				break
-			}
-		}
-
-		if allShort && len(optButtons) > 1 {
-			for i := 0; i < len(optButtons); i += 2 {
-				if i+1 < len(optButtons) {
-					rows = append(rows, []ports.Button{optButtons[i], optButtons[i+1]})
-				} else {
-					rows = append(rows, []ports.Button{optButtons[i]})
-				}
-			}
-		} else {
-			for _, b := range optButtons {
-				rows = append(rows, []ports.Button{b})
-			}
-		}
-
-		if isMultiSelect {
-			rows = append(rows, []ports.Button{
-				{Text: i18n.T(lang, "btn.q_submit"), Action: "q_submit", Payload: fmt.Sprintf("%d:%d", taskID, qIdx)},
-			})
-		}
-	}
-
-	if totalQ > 1 {
-		var nav []ports.Button
-		if view15.QuestionAcceptAllTxt || qIdx > 0 {
-			nav = append(nav, ports.Button{Text: i18n.T(lang, "btn.q_back"), Action: "q_back", Payload: strconv.Itoa(taskID)})
-		}
-		if !view15.QuestionAcceptAllTxt {
-			nav = append(nav, ports.Button{Text: i18n.T(lang, "btn.q_all_text"), Action: "q_all_text", Payload: strconv.Itoa(taskID)})
-		}
-		if len(nav) > 0 {
-			rows = append(rows, nav)
-		}
-	}
-
-	rows = append(rows, []ports.Button{
-		{Text: i18n.T(lang, "btn.pause"), Action: "q_pause", Payload: strconv.Itoa(taskID)},
-		{Text: i18n.T(lang, "btn.cancel"), Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
-	})
-
-	return &ports.Keyboard{Rows: rows}
 }
 
 func checkAndStartQueuedTask(m ports.Messenger, project, root string) {

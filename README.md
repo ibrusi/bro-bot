@@ -59,6 +59,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - Safe cancellation of stuck or outdated tasks (`/cancel [id]`).
 - **Interactive Dialogues & Clarifying Questions (`ask_question` / `ask_user`)**:
   - Supports both single questions and multi-question batches (`questions[]`), multiple sequential Q&A rounds in `/new`, `/plan`, and `/chat`, and optional multi-select toggle buttons alongside single-choice buttons and single-message text replies.
+  - Answer choices (as well as plan implementation variants) are always shown as a complete numbered list in the message text without truncation, while inline buttons adapt automatically: full labels for short options and balanced numeric buttons (`1`, `2`, …) with synchronized multi-select checkboxes and selection counters for longer options.
   - Flexible reply options: plain text messages (automatically routed to a waiting task even in another project), Telegram Reply to task notifications, or `/add` / `/resume` commands.
   - Configurable timeout (`QUESTION_TIMEOUT`): if no response is received in time, the task automatically pauses to unblock the project queue for other tasks.
 - **Dynamic Model Registry**:

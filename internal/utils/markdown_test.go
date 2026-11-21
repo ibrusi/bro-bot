@@ -451,6 +451,18 @@ func TestExtractPlanVariantOptions(t *testing.T) {
 	if ExtractPlanVariantOptions(singleText) != nil {
 		t.Errorf("expected nil for text without multiple variants")
 	}
+
+	// Long variants (>40 chars) are preserved without aggressive 40-rune truncation
+	longV1 := "Вариант 1: Перевести хранилище сессий на SQLite WAL с отдельным пулом соединений для высокой нагрузки"
+	longV2 := "Вариант 2: Вынести очередь в Redis Streams с фоновым обработчиком и гарантией доставки"
+	longPlan := longV1 + "\n" + longV2
+	longVariants := ExtractPlanVariantOptions(longPlan)
+	if len(longVariants) != 2 {
+		t.Fatalf("expected 2 long variants, got %d", len(longVariants))
+	}
+	if longVariants[0] != longV1 || longVariants[1] != longV2 {
+		t.Errorf("long variants were unexpectedly truncated: %+v", longVariants)
+	}
 }
 
 func TestExtractPlanSummary(t *testing.T) {

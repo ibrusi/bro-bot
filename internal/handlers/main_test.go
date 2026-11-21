@@ -199,6 +199,9 @@ func TestBuildQuestionMarkup(t *testing.T) {
 			totalButtons++
 			if btn.Action == "q_choice" {
 				foundChoice = true
+				if strings.Contains(btn.Text, "...") {
+					t.Errorf("short option button should not be truncated, got %q", btn.Text)
+				}
 			}
 			if btn.Action == "q_pause" || btn.Text == "⏸ Приостановить" {
 				foundPause = true
