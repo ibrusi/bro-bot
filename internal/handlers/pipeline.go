@@ -1069,7 +1069,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		for _, it := range askStep.items {
 			appendQuestionItem(domain.QuestionItem{
 				Question:    it.Question,
-				Options:     append([]string(nil), it.Options...),
+				Options:     normalizeQuestionOptions(it.Options),
 				MultiSelect: it.MultiSelect,
 			})
 		}

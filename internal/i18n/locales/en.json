@@ -17,7 +17,8 @@
 
     "btn.approve_plan": "✅ Approve plan",
     "btn.approve_and_start": "✅ Approve and start",
-    "btn.approve_variant": "Approve: %s",
+    "btn.approve_variant": "✅ %s",
+    "btn.approve_variant_num": "✅ %d",
     "btn.cancel": "❌ Cancel",
     "btn.resume": "▶️ Resume",
     "btn.pause": "⏸ Pause",
@@ -33,6 +34,7 @@
     "btn.agent_switch": "🔀 Switch to %s",
     "btn.retry": "🔄 Retry task",
     "btn.q_submit": "✅ Submit selection",
+    "btn.q_submit_count": "✅ Submit selection (%d)",
     "btn.q_back": "⬅️ Previous question",
     "btn.q_all_text": "✍️ Answer all by text",
 
@@ -177,6 +179,7 @@
     "task.cancelled": "🛑 Task <b>#%d</b> (<code>%s</code>) stopped.",
     "task.cancelled_rich": "🛑 <b>Task #%d (<code>%s</code>) stopped.</b>",
     "task.option_chosen_edit": "%s\n\n✅ <b>Option %d selected:</b> <i>«%s»</i>",
+    "task.multi_option_chosen_edit": "%s\n\n✅ <b>Selected:</b> <i>«%s»</i>",
     "task.option_delivered": "💬 <b>Option %d selected for task #%d:</b>\n<i>«%s»</i>",
     "task.queued_with_answer": "⏳ <b>Task #%d queued for project</b> <code>%s</code> with the answer:\n<i>«%s»</i>",
     "task.resumed_with_answer": "▶️ <b>Task #%d resumed in <code>%s</code> with the answer:</b>\n<i>«%s»</i>",
@@ -249,6 +252,7 @@
     "plan.note_long": "\n\n📄 <i>Full detailed plan (%d characters):</i> /planfile_%d (or the button below)",
     "plan.note_short": "\n\n📄 <i>Full plan:</i> /planfile_%d",
     "plan.approval_request": "📋 <b>Implementation plan of task #%d</b> (<code>%s</code>):\n\n📝 <b>Task:</b> <i>«%s»</i>\n\n%s%s\n\n👆 <b>The plan is waiting for your approval:</b>\n• Press <b>«%s»</b> (or pick a variant) or use <code>/approve %d</code>.\n• To amend it, send <code>/add %d &lt;notes&gt;</code> or reply to the message.\n• To cancel: <b>«%s»</b> or <code>/cancel %d</code>.",
+    "plan.variants_header": "\n\n🔀 <b>Implementation variants:</b>\n",
     "plan.empty_fallback": "The agent did not produce a detailed plan. You can add notes to the task or approve it as is.",
 
     "chat.system_preamble": "CHAT MODE. You answer the user's questions about the project in chat.\nAllowed: read files, search the code, run safe read-only commands (git log, git status, ls, grep), explain the architecture and propose solutions in words.\nFORBIDDEN: creating git branches, changing, creating or deleting files, committing and pushing, opening pull requests, running migrations and deployments.\nIf answering would require a code change — do not make it; briefly describe what needs to be done instead: the user will file it as a separate task.\nAnswer briefly, to the point, and in English.",

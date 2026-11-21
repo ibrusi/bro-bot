@@ -33,6 +33,9 @@ const (
 	maxAncestorDepth = 16
 	// maxQuestionOptions — сколько вариантов ответа превращается в кнопки.
 	maxQuestionOptions = 10
+	// maxQuestionOptionRunes ограничивает длину одного варианта ответа:
+	// достаточно для развёрнутой формулировки без потери смысла и защищает хранилище/чат.
+	maxQuestionOptionRunes = 500
 	// maxToolTextRunes ограничивает текст, который агент отправляет за один вызов.
 	maxToolTextRunes = 32000
 	// maxSendFileBytes — безопасный предел отправки файла в Telegram (50 МБ).
@@ -314,17 +317,7 @@ func normalizeAskQuestionItems(args map[string]interface{}) []utils.ParsedQuesti
 		if q == "" {
 			continue
 		}
-		var opts []string
-		for _, opt := range it.Options {
-			trimmed := strings.TrimSpace(opt)
-			if trimmed == "" {
-				continue
-			}
-			opts = append(opts, utils.TruncateString(trimmed, 64))
-			if len(opts) == maxQuestionOptions {
-				break
-			}
-		}
+		opts := normalizeQuestionOptions(it.Options)
 		out = append(out, utils.ParsedQuestion{
 			Question:    q,
 			Options:     opts,
@@ -332,6 +325,21 @@ func normalizeAskQuestionItems(args map[string]interface{}) []utils.ParsedQuesti
 		})
 	}
 	return out
+}
+
+func normalizeQuestionOptions(raw []string) []string {
+	var opts []string
+	for _, opt := range raw {
+		trimmed := strings.TrimSpace(opt)
+		if trimmed == "" {
+			continue
+		}
+		opts = append(opts, utils.TruncateString(trimmed, maxQuestionOptionRunes))
+		if len(opts) == maxQuestionOptions {
+			break
+		}
+	}
+	return opts
 }
 
 // buildBotToolInstructions формирует секцию системного промпта с описанием доступных
@@ -543,8 +551,15 @@ func (c *chatChannel) AskQuestions(items []utils.ParsedQuestion) error {
 			header += html.EscapeString(multiSuffix)
 		}
 		bldr.WriteString(header)
-		for _, option := range it.Options {
-			bldr.WriteString("\n• " + html.EscapeString(option))
+		if len(it.Options) > 0 {
+			if len(items) == 1 {
+				bldr.WriteString("\n\n")
+				bldr.WriteString(formatQuestionOptionsHTML(it.Options, false, nil))
+			} else {
+				for optIdx, option := range it.Options {
+					bldr.WriteString(fmt.Sprintf("\n   %d) %s", optIdx+1, formatOptionTextHTML(option)))
+				}
+			}
 		}
 	}
 	_, err := c.m.Send(context.Background(), c.chat, bldr.String(), ports.Rich())

@@ -978,6 +978,8 @@ func ExtractAskQuestionOptions(params map[string]interface{}) []string {
 	return result
 }
 
+const maxPlanVariantRunes = 200
+
 var planVariantRegex = regexp.MustCompile(`(?i)(?:^|\n)\s*(?:#{1,6}\s+|(?:\d+\.|\*|-)\s+)?((?:Вариант|Option|Альтернатива)\s*(?:\d+|[A-Za-zА-Яа-я])\b(?:[^\n]*))`)
 
 // ExtractPlanVariantOptions ищет в тексте плана предложенные альтернативные варианты реализации.
@@ -1001,10 +1003,7 @@ func ExtractPlanVariantOptions(planText string) []string {
 		raw := strings.TrimSpace(m[1])
 		raw = strings.Trim(raw, "*_#`~:- ")
 		raw = strings.Join(strings.Fields(raw), " ")
-		if len([]rune(raw)) > 40 {
-			runes := []rune(raw)
-			raw = string(runes[:37]) + "..."
-		}
+		raw = TruncateString(raw, maxPlanVariantRunes)
 		lower := strings.ToLower(raw)
 		if raw != "" && !seen[lower] {
 			seen[lower] = true

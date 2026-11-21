@@ -398,25 +398,10 @@ func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.Task
 		planText = i18n.T(lang, "plan.empty_fallback")
 	}
 
-	var rows [][]ports.Button
-
-	// Проверяем наличие альтернативных вариантов в плане
 	variants := utils.ExtractPlanVariantOptions(planText)
-	if len(variants) > 0 {
-		for i, v := range variants {
-			btnText := i18n.Tf(lang, "btn.approve_variant", utils.TruncateString(v, 24))
-			rows = append(rows, []ports.Button{{Text: btnText, Action: "plan_appr_var", Payload: fmt.Sprintf("%d:%d", taskID, i)}})
-		}
-	}
-
+	planMenu := buildPlanApprovalMarkup(taskID, variants, lang)
 	approveLabel := i18n.T(lang, "btn.approve_and_start")
 	cancelLabel := i18n.T(lang, "btn.cancel")
-	rows = append(rows, []ports.Button{
-		{Text: approveLabel, Action: "plan_approve", Payload: strconv.Itoa(taskID)},
-		{Text: cancelLabel, Action: "plan_cancel", Payload: strconv.Itoa(taskID)},
-	})
-	rows = append(rows, []ports.Button{{Text: i18n.T(lang, "btn.download_plan"), Action: "plan_doc", Payload: strconv.Itoa(taskID)}})
-	planMenu := &ports.Keyboard{Rows: rows}
 
 	planRunes := []rune(planText)
 	isLongPlan := len(planRunes) > maxInlinePlanRunes
@@ -430,6 +415,9 @@ func sendPlanForApproval(m ports.Messenger, chat ports.ChatID, task *domain.Task
 	} else {
 		planDisplayHTML = utils.MarkdownToTelegramHTML(planText)
 		planNote = i18n.Tf(lang, "plan.note_short", taskID)
+	}
+	if len(variants) > 0 {
+		planNote += formatPlanVariantsSection(variants, lang)
 	}
 
 	promptSnippet := utils.TruncateString(initialPrompt, 250)
