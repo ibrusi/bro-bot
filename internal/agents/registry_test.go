@@ -174,6 +174,15 @@ func TestPreferredMode(t *testing.T) {
 	if mode, ok := acpOnly.PreferredMode(); !ok || mode != ModeACP {
 		t.Errorf("агент только с acp предпочитает %q", mode)
 	}
+	acpDefault := Spec{
+		Name:        "agy",
+		DefaultMode: ModeACP,
+		NewAPI:      func() ports.AgentFramework { return &fakeFramework{kind: "api"} },
+		NewACP:      func() ports.AgentFramework { return &fakeFramework{kind: "acp"} },
+	}
+	if mode, ok := acpDefault.PreferredMode(); !ok || mode != ModeACP {
+		t.Errorf("агент с DefaultMode=acp предпочитает %q", mode)
+	}
 	fw, err := func() (ports.AgentFramework, error) {
 		reg := NewRegistry()
 		reg.Register(acpOnly)

@@ -66,6 +66,9 @@ type Spec struct {
 	RejectsModel func(model string) bool
 	// ModelAliases — псевдонимы моделей агента (/model sonnet), общие для всех режимов.
 	ModelAliases models.Aliases
+	// DefaultMode — предпочтительный режим по умолчанию при переключении на агента
+	// (например, acp для agy). Пустое значение сохраняет совместимый текущий режим.
+	DefaultMode string
 	// NewAPI, NewMCP и NewACP собирают адаптер для соответствующего режима.
 	// Нет фабрики — агент этот режим не поддерживает.
 	NewAPI func() ports.AgentFramework
@@ -85,9 +88,12 @@ func (s Spec) Supports(mode string) bool {
 	}
 }
 
-// PreferredMode — режим, в котором агент точно запускается.
-// У grok это acp, у остальных по умолчанию mcp.
+// PreferredMode — режим по умолчанию, в котором агент гарантированно запускается.
+// Если задан и поддерживается DefaultMode, используется он; иначе mcp -> api -> acp.
 func (s Spec) PreferredMode() (string, bool) {
+	if s.DefaultMode != "" && s.Supports(s.DefaultMode) {
+		return NormalizeMode(s.DefaultMode), true
+	}
 	if s.NewACP != nil && s.NewMCP == nil && s.NewAPI == nil {
 		return ModeACP, true
 	}

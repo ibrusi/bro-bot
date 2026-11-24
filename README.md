@@ -47,7 +47,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 - **Conversational Mode (default)**:
   - A plain message is a conversation with the agent about the active project: context is preserved between messages, so `/resume` is no longer needed.
   - When a message looks like a code-change request, the bot does not run it silently — it offers buttons: answer in chat, draft a plan, or create a task.
-  - Works for every agent (`agy`, `claude`, `grok`) and every execution mode that agent supports (`mcp`, `api`, `acp`); switching `/agent` or `/mode` mid-conversation keeps the thread. Grok keeps its own ACP session.
+  - Works for every agent (`agy`, `claude`, `grok`) and every execution mode that agent supports (`acp`, `mcp`, `api`); switching `/agent` or `/mode` mid-conversation keeps the thread, and ACP agents (`agy`, `grok`) keep their own ACP sessions.
   - In chat the agent only reads the code and answers: file edits, branches, commits and PRs go through a task.
   - Controls: `/chat` (status), `/chat <question>`, `/chat new`, `/chat stop`, `/chatmode [on|off]`.
 - **Intelligent Task Pipeline**:
@@ -71,16 +71,16 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
     - An alias of another agent is not applied: the bot suggests switching with `/agent`.
   - Instant model viewing and switching (`/model`, `/model <name|alias>`, `/model refresh`).
   - Reasoning effort control (`/effort [auto|low|medium|high|xhigh|max]`), shared by `agy`, `claude`, and `grok` and saved across restarts. Grok has no `max` step: the bot sends `xhigh`.
-  - Multi-agent toggle (`/agent <agy|claude|grok>`). Choosing `grok` switches the execution mode to `acp`. Choosing `agy` or `claude` while `acp` is active returns to `mcp`.
+  - Multi-agent toggle (`/agent <agy|claude|grok>`). Choosing `agy` or `grok` switches the execution mode to `acp` (default for both). Choosing `claude` switches to `mcp` when `acp` is active.
 - **Quota, Token & Resource Monitoring**:
   - `/usage` (or `/limits`) — live quota limits and credit balances (`agy /quota`, `agy /credits`).
   - `/tokens` (or `/stats`) — granular token statistics for the current/completed task: Input, Output, Thinking, Cache Read, and Cache Hit Rate.
   - `/context [id]` — visual breakdown of context window utilization (system prompts, conversation history, tool outputs).
   - `/top` (or `/ps`, `/resources`) — real-time server telemetry: CPU, RAM, free disk space, Load Average, systemd cgroup metrics, active `agy`/`claude`/`grok` processes, and the `whisper-server` speech recognition engine.
-- **Execution Modes: MCP, API & ACP (`/mode [mcp|api|acp]`)**:
-  - `mcp` (default for `agy` and `claude`): agents run with the bot's built-in Model Context Protocol (MCP) server over stdio JSON-RPC 2.0 (`claude` via `--mcp-config`, `agy` via `mcp_config.json`). Its tools (`telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, `list_projects`) reach the running bot over a local Unix-socket bridge using step tokens and process-tree matching, so calls always land in the right task regardless of active project focus.
-  - `api`: connects directly to provider APIs (Google Gemini API & Anthropic Messages API) with built-in workspace tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_search`, `find_files`, `run_command`) and in-process bot tools (`telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, `list_projects`). `grok` does not support this mode.
-  - `acp`: Grok only. The bot speaks newline-delimited JSON-RPC to `grok agent stdio`, resumes the ACP session, and translates `session/update` into the same stream the rest of the bot already reads. The project directory is the session `cwd`. The bot MCP server is declared in `mcpServers`.
+- **Execution Modes: ACP, MCP & API (`/mode [acp|mcp|api]`)**:
+  - `acp` (default for `agy` and `grok`): `agy acp` and `grok agent stdio` communicate over the Agent Client Protocol (newline-delimited JSON-RPC over stdio), resume the ACP session (`session/resume`), and access all 7 bot tools (`telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, `list_projects`) through an ephemeral in-process HTTP MCP server (`127.0.0.1:0` with single-use `Bearer` token), without spawning `bot mcp-serve` or using a Unix socket.
+  - `mcp` (default for `claude`): `claude` runs with the bot's built-in stdio Model Context Protocol server (`bot mcp-serve`) via `--mcp-config`. Its tools reach the running bot over a local Unix-socket bridge using step tokens and process-tree matching, so calls always land in the right task regardless of active project focus.
+  - `api`: connects directly to provider APIs (Google Gemini API for `agy` & Anthropic Messages API for `claude`) with built-in workspace tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_search`, `find_files`, `run_command`) and in-process bot tools (`telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, `list_projects`). `grok` does not support this mode.
   - Safe sandboxing: chat mode (`/chat`) provides strictly read-only file access, while file writes and command executions are enabled for pipeline tasks. All paths are validated within the project directory.
 - **Multilingual Interface**:
   - Every bot reply, button, command description and agent prompt comes from a message catalog — English and Russian ship out of the box.
@@ -135,13 +135,13 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 │  internal/system/    ──► Hot-Rebuild, Systemd & Top/PS   │
 │  internal/utils/     ──► Rich-text & Markdown parser     │
 └───────┬────────────────────────────────────────────┬─────────┘
-        │ Mode: mcp (Default)                        │ Mode: api (Direct REST)
+        │ Mode: acp / mcp (CLI Agents)               │ Mode: api (Direct REST)
         ▼                                            ▼
 ┌────────────────────────────────────────┐   ┌────────────────────────────────┐
-│ Claude / Agy with MCP Tools            │   │ Direct API Clients:            │
-│ • bot mcp-serve & JSON-RPC 2.0         │   │ • Gemini API                   │
-│ • Socket bridge to the bot             │   │ • Anthropic Messages API       │
-│ • PTY terminal & stream-json events    │   │ • File Tools (read/write/exec) │
+│ Agy / Grok (ACP) & Claude (MCP)        │   │ Direct API Clients:            │
+│ • agy acp / grok agent stdio (HTTP MCP)│   │ • Gemini API                   │
+│ • claude + bot mcp-serve (Socket)      │   │ • Anthropic Messages API       │
+│ • NDJSON ACP & stream-json events      │   │ • File Tools (read/write/exec) │
 └───────────────────┬────────────────────┘   └───────────────┬────────────────┘
                     │                                        │
                     └───────────────────┬────────────────────┘
@@ -165,23 +165,27 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
 
 `bro-bot` abstracts agent execution behind `ports.Agent` and `agents.Registry`, supporting three operation modes:
 
-1. **MCP Mode (`mcp`, default)**:
-   - Local agents (`claude`, `agy`) are executed inside isolated pseudo-terminals (PTY) with streaming NDJSON output (`stream-json`) and connected to the bot's built-in Model Context Protocol (MCP) server — the `bot mcp-serve` subcommand speaking JSON-RPC 2.0 over stdio:
-     - `agy --dangerously-skip-permissions --print-timeout 1h --output-format stream-json [--conversation <id>] --model <model> -p <prompt>`
-     - `claude --dangerously-skip-permissions --print --output-format stream-json [--resume <id>] --model <model> -p <prompt>`
-   - `claude` connects using `--mcp-config` with an ephemeral config file that is removed after the process exits.
-   - `agy` connects via `~/.gemini/config/mcp_config.json`. The bot updates only its own `bro_bot` entry and keeps every other server and setting in the file intact; a malformed file is left untouched.
-   - The agent spawns `bot mcp-serve` as its own child process, so the server forwards every tool call to the running bot over a Unix socket (`<BOT_DIR>/data/mcp/bridge.sock`, directory mode `0700`): one JSON request, one JSON response. The bot identifies the caller by both a per-step `ChannelToken` (`--token` / `BRO_BOT_CHANNEL_TOKEN`) and the kernel-reported PID of the socket peer (`SO_PEERCRED`), so a call always lands in the right task or chat across projects and detached sub-shells.
-   - Bot tools available across MCP, ACP (`grok`), and API (`agy`/`claude`) modes:
+1. **ACP Mode (`acp`, default for `agy` and `grok`)**:
+   - `agy acp` (Google Antigravity) and `grok agent [--always-approve] [--model <id>] [--reasoning-effort <level>] stdio`.
+   - Handshake: `initialize` (plus `authenticate` with `cached_token` or API-key method when required by `grok`), then `session/resume` or `session/new` (fallback when resume fails). `session/load` is not used so history is not replayed into Telegram.
+   - Bot tools (`telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, `list_projects`) are attached in `session/new` / `session/resume` via an ephemeral in-process HTTP MCP server (`127.0.0.1:0` + single-use `Authorization: Bearer` token) dispatching straight to `BotTools`, with no `bot mcp-serve` subprocess or Unix socket. Legacy `bro_bot` entries in `~/.gemini/config/mcp_config.json` and `~/.gemini/antigravity-cli/mcp_config.json` are cleaned up automatically so global configs do not shadow the session HTTP MCP endpoint.
+   - In chat (`ReadOnly`), `session/request_permission` rejects anything except read, search, think, and fetch. In tasks, `agy` approves file/shell actions automatically and `grok` approves with `allow_always` unless `GROK_ACP_YOLO` is turned off. Stopping a turn cancels the process group.
+   - Bot tools available across ACP (`agy`/`grok`), MCP (`claude`), and API (`agy`/`claude`) modes:
      - `telegram_send_message`: sends a message (or quiet `silent` note) to the task or conversation chat with Markdown formatting;
-     - `send_file`: sends a validated workspace file (diagram, patch, log, report, screenshot) to Telegram;
-     - `ask_user`: asks one question or a structured multi-question batch (`questions[]` with optional `is_multi_select`) with interactive buttons. The tool does not block: the agent ends its turn cleanly, the task switches to *waiting for input*, and the answer arrives as the next message of the same agent session (`--resume` / `--conversation` / API history);
+     - `send_file`: sends a validated workspace file (`path`) or an in-memory generated text file (`filename` + `content`) to Telegram;
+     - `ask_user`: asks one question or a structured multi-question batch (`questions[]` with optional `is_multi_select`) with interactive buttons. The tool does not block: the agent ends its turn cleanly, the task switches to *waiting for input*, and the answer arrives as the next message of the same agent session (`session/resume` / `--resume` / API history);
      - `report_progress`: updates the live task status, optionally with a completion percentage;
      - `get_task_context`: returns prompt, plan, pending additions, questions, and status for the current or referenced task;
-     - `list_tasks` / `list_projects`: lists tasks across projects and registered workspaces.
-   - If the bot is not running or the agent was not started by the bot, the tools return an error to the agent instead of pretending the action succeeded.
+     - `list_tasks` / `list_projects`: lists tasks across a project (`*` for all projects) and registered workspaces.
+   - If the bot is not running or the token/peer check fails, the tools return an error to the agent instead of pretending the action succeeded.
 
-2. **API Mode (`api`)**:
+2. **MCP Mode (`mcp`, default for `claude`)**:
+   - Local `claude` runs inside an isolated pseudo-terminal (PTY) with streaming NDJSON output (`stream-json`) and connects to the bot's built-in stdio Model Context Protocol (MCP) server (`bot mcp-serve` over JSON-RPC 2.0):
+     - `claude --dangerously-skip-permissions --print --output-format stream-json [--resume <id>] --model <model> -p <prompt>`
+   - `claude` connects using `--mcp-config` with an ephemeral config file that is removed after the process exits.
+   - `claude` spawns `bot mcp-serve` as its child process, forwarding every tool call over `<BOT_DIR>/data/mcp/bridge.sock` (directory mode `0700`) authenticated with a per-step `ChannelToken` and `SO_PEERCRED` PID matching.
+
+3. **API Mode (`api`)**:
    - Direct HTTP/REST communication with model provider endpoints:
      - Google Gemini API (`GEMINI_API_KEY`) via Google GenAI SDK;
      - Anthropic Messages API (`ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`).
@@ -189,13 +193,6 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
      - Safe file system access (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_search`, `find_files`) with strict containment to the active project path.
      - Shell command execution (`run_command`) for pipeline tasks, and in-process access to `telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, and `list_projects`.
      - Sandboxed read-only permissions in conversational mode (`/chat`) and planning mode (`/plan`), with full workspace manipulation during task execution (`/new` or approved `/plan`).
-
-3. **ACP Mode (`acp`, Grok)**:
-   - `grok agent [--always-approve] [--model <id>] [--reasoning-effort <level>] stdio`.
-   - Handshake: `initialize`, then `authenticate` with the saved login (`cached_token`) or an API-key method. A browser login is not opened; sign in with `grok login` or set `XAI_API_KEY` for the CLI.
-   - `session/resume` continues a stored session id. `session/load` is not used, because it replays history into the Telegram answer. If resume fails, `session/new` replaces the id.
-   - Chat (`ReadOnly`) answers `session/request_permission` with reject for anything except read, search, think, and fetch. Tasks approve with `allow_always` unless `GROK_ACP_YOLO` is turned off.
-   - Follow-up text is not written to the ACP stdin. Stopping the turn kills the process group.
 
 ### Messenger Abstraction
 
@@ -237,7 +234,7 @@ sudo make install LANG=ru
 
 The `make install` command performs the following sequence:
 1. **`step1-user`**: Installs essential system dependencies (`git`, `curl`, `wget`, `build-essential`, `sudo`, `python3`, `python3-pip`, `ffmpeg`), creates the `deploy` system user with passwordless `sudo`, and initializes workspace directories (`~/.local/bin`, `~/projects`).
-2. **`step2-agents`** (or **`step2-agy`**): Checks and restores `agy`, installs Claude Code CLI, and configures the `bro_bot` MCP server for both agents.
+2. **`step2-agents`** (or **`step2-agy`**): Checks and restores `agy`, installs Claude Code CLI, configures the `bro_bot` MCP server for `claude`, and removes legacy `bro_bot` entries from Gemini CLI MCP configs (`agy` connects via ACP with in-process HTTP MCP).
 3. **`step3-service`**: Generates systemd unit `/etc/systemd/system/bro-bot.service` with automatic restart and `.env` support, then registers and enables the service.
 4. **`step4-clone-build`**: Checks for Go 1.23+ (downloads and installs it if missing), clones or updates the repository at `/home/deploy/bro-bot`, prepares `.env` from `.env.example`, and compiles the `bot` binary.
 5. **`step5-start`**: Restarts `bro-bot.service`, checks that it is active, and prints the current status.
@@ -326,7 +323,7 @@ nano .env
 | `XAI_API_KEY` | No | — | xAI key for the `grok` CLI in `acp` mode. The bot does not read it; the `grok` process inherits the environment. A completed `grok login` takes precedence. |
 | `GROK_ACP_YOLO` | No | on | Tool approval for Grok tasks. Empty or any value other than `false`, `0`, `no`, `off` passes `--always-approve` and `yoloMode`. Chat stays read-only either way. |
 | `QUESTION_TIMEOUT` | **Yes** | — | Timeout waiting for user response to agent questions (`ask_question` in agy, MCP `ask_user`). Formats: `15m`, `300s`, `1h`, or seconds. When elapsed, the task pauses. |
-| `STEP_TIMEOUT` | No | `1h` | Execution timeout for a single agent step (`--print-timeout` for `agy`). Formats: `1h`, `30m`, `3600s`, or seconds. When exceeded, the task is paused while preserving the session. |
+| `STEP_TIMEOUT` | No | `1h` | Execution timeout for a single agent step. Formats: `1h`, `30m`, `3600s`, or seconds. When exceeded, the task is paused while preserving the session. |
 | `AUTO_CONTINUE_MAX` | No | `2` | How many times in a row a step is continued automatically when the agent ends its turn without waiting for its own background commands (agy prints `root agent idle; waiting … background task(s)` and the agent never wakes up, and/or `terminating N background task(s) on exit`). The step continues in the same agent session. When the limit is reached, the task is paused with a «Resume» button instead of being reported as completed. `0` disables auto-continue. |
 | `CHAT_TIMEOUT` | No | `1h` | Timeout for a single answer in conversational mode (`/chat`). Formats: `1h`, `30m`, `3600s`, or seconds. |
 | `BOT_DIR` | No | Executable's directory | Path to the bot's source code for `/rebuild` and storing restart markers. When unset, the executable's directory is used — but only if a `go.mod` sits next to it. Otherwise the bot refuses to start and says so. |

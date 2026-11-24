@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"bro-bot/internal/config"
+	"bro-bot/internal/effort"
 	"bro-bot/internal/ports"
 
 	"github.com/google/generative-ai-go/genai"
@@ -292,7 +293,7 @@ func TestSpecDefaultModelIsOrchestrator(t *testing.T) {
 	}
 }
 
-func TestBuildAgyArgs_ResolvesOrchestratorAlias(t *testing.T) {
+func TestResolveAgyModelTarget_ResolvesOrchestratorAlias(t *testing.T) {
 	tests := []struct {
 		alias    string
 		expected string
@@ -301,16 +302,12 @@ func TestBuildAgyArgs_ResolvesOrchestratorAlias(t *testing.T) {
 		{"orchestrator-argon", "gemini-pro-orchestrator-g1-pro"},
 	}
 	for _, tc := range tests {
-		args := buildAgyArgs(ports.ExecuteArgs{
-			ModelName: tc.alias,
-			Prompt:    "check",
-		})
-		joined := strings.Join(args, " ")
-		if !strings.Contains(joined, "--model "+tc.expected) {
-			t.Errorf("ожидали --model %s для алиаса %s, получили: %s", tc.expected, tc.alias, joined)
+		modelID, effortVal := resolveAgyModelTarget(tc.alias, effort.Auto)
+		if modelID != tc.expected {
+			t.Errorf("ожидали modelID %s для алиаса %s, получили: %s", tc.expected, tc.alias, modelID)
 		}
-		if strings.Contains(joined, "--effort") {
-			t.Errorf("не ожидали --effort для алиаса %s, получили: %s", tc.alias, joined)
+		if effortVal != "" {
+			t.Errorf("не ожидали effort для алиаса %s, получили: %s", tc.alias, effortVal)
 		}
 	}
 }

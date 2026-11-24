@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"bro-bot/internal/adapters/acp"
 	"bro-bot/internal/effort"
 	"bro-bot/internal/ports"
 )
@@ -29,37 +30,37 @@ func TestParseGrokModelsOutput(t *testing.T) {
 }
 
 func TestChoosePermission(t *testing.T) {
-	opts := []permOption{
+	opts := []acp.PermOption{
 		{OptionID: "yes", Kind: "allow_once"},
 		{OptionID: "always", Kind: "allow_always"},
 		{OptionID: "no", Kind: "reject_once"},
 	}
-	if id, ok := choosePermission(false, "execute", opts); !ok || id != "always" {
+	if id, ok := acp.ChoosePermission(false, acp.ToolCallPermission{Kind: "execute"}, opts); !ok || id != "always" {
 		t.Errorf("задача должна разрешать всегда, получили %q ok=%v", id, ok)
 	}
-	if id, ok := choosePermission(true, "execute", opts); !ok || id != "no" {
+	if id, ok := acp.ChoosePermission(true, acp.ToolCallPermission{Kind: "execute"}, opts); !ok || id != "no" {
 		t.Errorf("диалог должен отклонять команду, получили %q ok=%v", id, ok)
 	}
-	if id, ok := choosePermission(true, "read", opts); !ok || id != "yes" {
+	if id, ok := acp.ChoosePermission(true, acp.ToolCallPermission{Kind: "read"}, opts); !ok || id != "yes" {
 		t.Errorf("диалог должен разрешать чтение один раз, получили %q ok=%v", id, ok)
 	}
 }
 
 func TestTranslateUpdateTextAndTool(t *testing.T) {
 	text := []byte(`{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hi"}}}`)
-	evt, ok := translateUpdate("s1", text, 1)
+	evt, ok := acp.TranslateUpdate("s1", text, 1)
 	if !ok || evt.StepUpdate == nil || evt.StepUpdate.TextDelta != "Hi" || evt.StepUpdate.StepType != "agent_response" {
 		t.Fatalf("текст: %+v ok=%v", evt, ok)
 	}
 
 	tool := []byte(`{"update":{"sessionUpdate":"tool_call","toolCallId":"t","title":"read_file","kind":"read","status":"in_progress","rawInput":{"path":"main.go"}}}`)
-	evt, ok = translateUpdate("s1", tool, 2)
+	evt, ok = acp.TranslateUpdate("s1", tool, 2)
 	if !ok || evt.StepUpdate.ToolName != "read_file" || evt.StepUpdate.State != "ACTIVE" {
 		t.Fatalf("инструмент: %+v", evt.StepUpdate)
 	}
 
 	thought := []byte(`{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"secret"}}}`)
-	if _, ok := translateUpdate("s1", thought, 3); ok {
+	if _, ok := acp.TranslateUpdate("s1", thought, 3); ok {
 		t.Fatal("мысли не должны попадать в ответ")
 	}
 }
@@ -83,6 +84,15 @@ func TestRejectsForeignModels(t *testing.T) {
 	}
 }
 
+type fakeGrokBotTools struct {
+	calls []string
+}
+
+func (f *fakeGrokBotTools) CallBotTool(_ context.Context, name string, _ map[string]interface{}) ports.BotToolResult {
+	f.calls = append(f.calls, name)
+	return ports.BotToolResult{Text: `{"ok":true}`}
+}
+
 func TestExecuteTaskSpeaksACP(t *testing.T) {
 	dir := t.TempDir()
 	permFile := filepath.Join(dir, "perm")
@@ -95,12 +105,15 @@ func TestExecuteTaskSpeaksACP(t *testing.T) {
 	grokBin = script
 	t.Cleanup(func() { grokBin = prev })
 
+	botTools := &fakeGrokBotTools{}
 	proc, err := NewAdapter().ExecuteTask(context.Background(), ports.ExecuteArgs{
-		Prompt:    "Say hello",
-		WorkDir:   dir,
-		ModelName: "gemini-3.1-pro-high",
-		ReadOnly:  true,
-		Effort:    effort.High,
+		Prompt:       "Say hello",
+		WorkDir:      dir,
+		ModelName:    "gemini-3.1-pro-high",
+		ReadOnly:     true,
+		Effort:       effort.High,
+		ChannelToken: "tok-grok-http",
+		BotTools:     botTools,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -115,21 +128,26 @@ func TestExecuteTaskSpeaksACP(t *testing.T) {
 		t.Fatalf("wait: %v\n%s", waitErr, out)
 	}
 	text := string(out)
-	if !strings.Contains(text, `"conversation_id":"sess-1"`) {
-		t.Fatalf("нет id сессии:\n%s", text)
+	for _, want := range []string{
+		`"conversation_id":"sess-1"`,
+		`"text_delta":"Hello"`,
+		`"status":"SUCCESS"`,
+		`"input_tokens":321`,
+		`"thinking_tokens":44`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output missing %s:\n%s", want, text)
+		}
 	}
-	if !strings.Contains(text, `"text_delta":"Hello"`) {
-		t.Fatalf("нет текста ответа:\n%s", text)
-	}
-	if !strings.Contains(text, `"status":"SUCCESS"`) {
-		t.Fatalf("ход не завершился успехом:\n%s", text)
+	if len(botTools.calls) != 1 || botTools.calls[0] != "list_projects" {
+		t.Errorf("expected HTTP tools/call list_projects in-process, got %v", botTools.calls)
 	}
 	chosen, err := os.ReadFile(permFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(chosen)) != "no" {
-		t.Fatalf("в диалоге команда должна быть отклонена, выбрано %q", chosen)
+	if strings.TrimSpace(string(chosen)) != "yes\nyes\nno" {
+		t.Fatalf("в диалоге search_tool и use_tool(bro_bot) разрешены, а bash отклонён; получили %q", chosen)
 	}
 }
 
@@ -169,17 +187,50 @@ func TestExecuteTaskAllowsToolsWhenNotReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(chosen)) != "always" {
-		t.Fatalf("задача должна разрешать инструмент, выбрано %q\n%s", chosen, out)
+	if strings.TrimSpace(string(chosen)) != "always\nalways\nalways" {
+		t.Fatalf("задача должна разрешать инструменты, выбрано %q\n%s", chosen, out)
+	}
+}
+
+func TestGrokACPCleansToolServerWhenStartFails(t *testing.T) {
+	prev := grokBin
+	grokBin = filepath.Join(t.TempDir(), "does-not-exist-grok")
+	t.Cleanup(func() { grokBin = prev })
+
+	_, err := NewAdapter().ExecuteTask(context.Background(), ports.ExecuteArgs{
+		Prompt:   "hi",
+		WorkDir:  t.TempDir(),
+		BotTools: &fakeGrokBotTools{},
+	})
+	if err == nil {
+		t.Fatal("expected error when grok binary cannot start")
 	}
 }
 
 const fakeGrokScript = "#!/usr/bin/env python3\n" + `
-import json, os, sys
+import json, os, sys, urllib.request
 perm = os.environ.get("PERM_FILE", "")
+perms = []
+mcp_srv = None
+
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
+
+def http_mcp(srv, method, params=None, msg_id=1):
+    headers = {h["name"]: h["value"] for h in srv.get("headers", [])}
+    headers["Content-Type"] = "application/json"
+    body = json.dumps({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params or {}}).encode()
+    req = urllib.request.Request(srv["url"], data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return json.loads(resp.read().decode())
+
+def http_delete(srv):
+    headers = {h["name"]: h["value"] for h in srv.get("headers", [])}
+    req = urllib.request.Request(srv["url"], headers=headers, method="DELETE")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return resp.status
+
 while True:
     line = sys.stdin.readline()
     if not line:
@@ -190,21 +241,35 @@ while True:
     msg = json.loads(line)
     method = msg.get("method")
     mid = msg.get("id")
+    params = msg.get("params") or {}
     if method == "initialize":
         send({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"authMethods":[{"id":"cached_token"}],"agentCapabilities":{"loadSession":True,"sessionCapabilities":{"resume":{}}}}})
     elif method == "session/resume":
         send({"jsonrpc":"2.0","id":mid,"error":{"code":-32002,"message":"unknown session"}})
     elif method == "session/new":
+        srvs = params.get("mcpServers") or []
+        if srvs and srvs[0].get("type") == "http":
+            mcp_srv = srvs[0]
         send({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"sess-1"}})
     elif method == "session/prompt":
+        if mcp_srv:
+            http_mcp(mcp_srv, "tools/call", {"name": "list_projects", "arguments": {}}, 1)
         send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hello"}}}})
-        send({"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"toolCall":{"kind":"execute","title":"bash"},"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"always","kind":"allow_always"},{"optionId":"no","kind":"reject_once"}]}})
-        reply = json.loads(sys.stdin.readline())
-        outcome = (reply.get("result") or {}).get("outcome") or {}
-        if perm:
-            open(perm, "w").write(outcome.get("optionId") or "")
-        send({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn"}})
+        for req_id, tc in [
+            (7, {"kind":"other","title":"Search tools: \"bro_bot\"","rawInput":{"query":"bro_bot"}}),
+            (8, {"kind":"other","title":"use_tool","rawInput":{"tool_name":"bro_bot__list_projects"}}),
+            (9, {"kind":"execute","title":"bash"}),
+        ]:
+            send({"jsonrpc":"2.0","id":req_id,"method":"session/request_permission","params":{"toolCall":tc,"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"always","kind":"allow_always"},{"optionId":"no","kind":"reject_once"}]}})
+            reply = json.loads(sys.stdin.readline())
+            outcome = (reply.get("result") or {}).get("outcome") or {}
+            perms.append(outcome.get("optionId") or "")
+        send({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn","_meta":{"usage":{"inputTokens":321,"outputTokens":55,"cachedReadTokens":12,"reasoningTokens":44,"totalTokens":376}}}})
     elif method == "session/close":
+        if mcp_srv:
+            assert http_delete(mcp_srv) == 204
+        if perm:
+            open(perm, "w").write("\n".join(perms))
         send({"jsonrpc":"2.0","id":mid,"result":{}})
         break
     elif mid is not None:
@@ -212,17 +277,17 @@ while True:
 `
 
 func TestPickAuthMethodPrefersCachedToken(t *testing.T) {
-	id, ok := pickAuthMethod([]authMethod{{ID: "grok.com"}, {ID: "cached_token"}})
+	id, ok := pickAuthMethod([]acp.AuthMethod{{ID: "grok.com"}, {ID: "cached_token"}})
 	if !ok || id != "cached_token" {
 		t.Fatalf("метод = %q ok=%v", id, ok)
 	}
-	if _, ok := pickAuthMethod([]authMethod{{ID: "grok.com"}}); ok {
+	if _, ok := pickAuthMethod([]acp.AuthMethod{{ID: "grok.com"}}); ok {
 		t.Fatal("браузерный вход без токена не должен выбираться")
 	}
 }
 
 func TestEncodeEventIsOneJSONLine(t *testing.T) {
-	data, err := encodeEvent(streamEvent{Event: "init", ConversationID: "s"})
+	data, err := acp.EncodeEvent(acp.StreamEvent{Event: "init", ConversationID: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,19 +307,19 @@ func TestGrokBinaryLookPathUsedByTests(t *testing.T) {
 }
 
 func TestGrokPermissionsAllowBotMCPInReadOnlyAndPropagatesToken(t *testing.T) {
-	opts := []permOption{
+	opts := []acp.PermOption{
 		{OptionID: "no", Kind: "reject_once"},
 		{OptionID: "yes", Kind: "allow_once"},
 		{OptionID: "always", Kind: "allow_always"},
 	}
-	if id, ok := choosePermissionForTool(true, "other", "mcp__bro_bot__ask_user", opts); !ok || id != "yes" {
+	if id, ok := acp.ChoosePermission(true, acp.ToolCallPermission{Kind: "other", Title: "mcp__bro_bot__ask_user"}, opts); !ok || id != "yes" {
 		t.Errorf("expected bot MCP tool to be permitted in readOnly mode, got (%q, %v)", id, ok)
 	}
-	if id, ok := choosePermissionForTool(true, "execute", "bash", opts); !ok || id != "no" {
+	if id, ok := acp.ChoosePermission(true, acp.ToolCallPermission{Kind: "execute", Title: "bash"}, opts); !ok || id != "no" {
 		t.Errorf("expected execute tool to be rejected in readOnly mode, got (%q, %v)", id, ok)
 	}
 
-	srv := broBotServer("tok-abc")
+	srv := acp.BroBotStdioServer("tok-abc")
 	var hasTokenEnv, hasTokenArg bool
 	for _, kv := range srv.Env {
 		if kv.Value == "tok-abc" {

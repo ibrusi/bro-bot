@@ -1,48 +1,48 @@
-package grok
+package acp
 
 import (
 	"encoding/json"
 	"strings"
 )
 
-// События, которые уже понимают диалог и пайплайн задач (stream-json agy).
-// Адаптер переводит в них уведомления ACP, чтобы остальной бот не знал про протокол.
+// События, которые понимают диалог и пайплайн задач (stream-json формат).
+// Адаптеры ACP переводят в них уведомления session/update и итоги session/prompt.
 
-type streamEvent struct {
+type StreamEvent struct {
 	Event          string            `json:"event"`
 	ConversationID string            `json:"conversation_id,omitempty"`
-	StepUpdate     *streamStepUpdate `json:"step_update,omitempty"`
-	Result         *streamResult     `json:"result,omitempty"`
+	StepUpdate     *StreamStepUpdate `json:"step_update,omitempty"`
+	Result         *StreamResult     `json:"result,omitempty"`
 }
 
-type streamStepUpdate struct {
+type StreamStepUpdate struct {
 	ConversationID string          `json:"conversation_id,omitempty"`
 	StepIndex      int             `json:"step_index,omitempty"`
 	State          string          `json:"state,omitempty"`
 	StepType       string          `json:"step_type,omitempty"`
 	ToolName       string          `json:"tool_name,omitempty"`
-	ToolInfo       *streamToolInfo `json:"tool_info,omitempty"`
+	ToolInfo       *StreamToolInfo `json:"tool_info,omitempty"`
 	TextDelta      string          `json:"text_delta,omitempty"`
-	Usage          *streamUsage    `json:"usage,omitempty"`
+	Usage          *StreamUsage    `json:"usage,omitempty"`
 }
 
-type streamToolInfo struct {
+type StreamToolInfo struct {
 	Name       string         `json:"name,omitempty"`
 	Parameters map[string]any `json:"parameters,omitempty"`
 	Output     string         `json:"output,omitempty"`
 }
 
-type streamResult struct {
+type StreamResult struct {
 	ConversationID  string       `json:"conversation_id,omitempty"`
 	Status          string       `json:"status"`
 	Error           string       `json:"error,omitempty"`
 	Response        string       `json:"response,omitempty"`
 	DurationSeconds float64      `json:"duration_seconds,omitempty"`
 	NumTurns        int          `json:"num_turns,omitempty"`
-	Usage           *streamUsage `json:"usage,omitempty"`
+	Usage           *StreamUsage `json:"usage,omitempty"`
 }
 
-type streamUsage struct {
+type StreamUsage struct {
 	InputTokens     int64 `json:"input_tokens,omitempty"`
 	OutputTokens    int64 `json:"output_tokens,omitempty"`
 	ThinkingTokens  int64 `json:"thinking_tokens,omitempty"`
@@ -60,13 +60,61 @@ type sessionUpdate struct {
 	Kind          string          `json:"kind"`
 	Status        string          `json:"status"`
 	RawInput      map[string]any  `json:"rawInput"`
+	Args          map[string]any  `json:"args"`
 	RawOutput     json.RawMessage `json:"rawOutput"`
 	Locations     []struct {
 		Path string `json:"path"`
 	} `json:"locations"`
 }
 
-// contentText достаёт текст из блока ACP или из массива кусков tool content.
+type rpcUsage struct {
+	InputTokens      int64 `json:"inputTokens"`
+	OutputTokens     int64 `json:"outputTokens"`
+	CachedReadTokens int64 `json:"cachedReadTokens"`
+	ThoughtTokens    int64 `json:"thoughtTokens"`
+	ReasoningTokens  int64 `json:"reasoningTokens"`
+	TotalTokens      int64 `json:"totalTokens"`
+}
+
+// ParseUsage извлекает статистику токенов из результата session/prompt:
+// поддерживает как top-level usage (agy), так и _meta.usage (grok).
+func ParseUsage(raw json.RawMessage) *StreamUsage {
+	if len(bytesTrim(raw)) == 0 {
+		return nil
+	}
+	var res struct {
+		Usage *rpcUsage `json:"usage"`
+		Meta  struct {
+			Usage *rpcUsage `json:"usage"`
+		} `json:"_meta"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil
+	}
+	u := res.Usage
+	if u == nil {
+		u = res.Meta.Usage
+	}
+	if u == nil {
+		return nil
+	}
+	thinking := u.ThoughtTokens
+	if thinking == 0 {
+		thinking = u.ReasoningTokens
+	}
+	if u.InputTokens == 0 && u.OutputTokens == 0 && thinking == 0 && u.CachedReadTokens == 0 && u.TotalTokens == 0 {
+		return nil
+	}
+	return &StreamUsage{
+		InputTokens:     u.InputTokens,
+		OutputTokens:    u.OutputTokens,
+		ThinkingTokens:  thinking,
+		CacheReadTokens: u.CachedReadTokens,
+		TotalTokens:     u.TotalTokens,
+	}
+}
+
+// contentText достаёт текст из блока ACP или из массива фрагментов tool content.
 func contentText(raw json.RawMessage) string {
 	raw = bytesTrim(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -109,7 +157,14 @@ func bytesTrim(raw json.RawMessage) json.RawMessage {
 	return json.RawMessage(strings.TrimSpace(string(raw)))
 }
 
-func toolLabel(u sessionUpdate) string {
+func toolLabel(u sessionUpdate, params map[string]any) string {
+	if strings.EqualFold(strings.TrimSpace(u.Name), "call_mcp_tool") && params != nil {
+		srv := firstString(params, "ServerName", "server_name", "server")
+		tn := firstString(params, "ToolName", "tool_name", "tool")
+		if isBroBotServerName(srv) && tn != "" {
+			return "mcp__bro_bot__" + tn
+		}
+	}
 	for _, name := range []string{u.ToolName, u.Name, u.Title, u.Kind} {
 		if strings.TrimSpace(name) != "" {
 			return strings.TrimSpace(name)
@@ -121,27 +176,26 @@ func toolLabel(u sessionUpdate) string {
 	return "tool"
 }
 
-// translateUpdate переводит одно уведомление session/update в событие потока.
-// Мысли агента в ответ не попадают: их видит только журнал, если текст пуст.
-// Второе значение false — событие показывать не нужно.
-func translateUpdate(sessionID string, raw json.RawMessage, step int) (streamEvent, bool) {
-	var params struct {
+// TranslateUpdate переводит одно уведомление session/update в событие потока.
+// Мысли агента в ответ не попадают; второе значение false означает, что событие не отображается.
+func TranslateUpdate(sessionID string, raw json.RawMessage, step int) (StreamEvent, bool) {
+	var wrapper struct {
 		Update sessionUpdate `json:"update"`
 	}
-	if err := json.Unmarshal(raw, &params); err != nil {
-		return streamEvent{}, false
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return StreamEvent{}, false
 	}
-	u := params.Update
+	u := wrapper.Update
 	switch u.SessionUpdate {
 	case "agent_message_chunk":
 		text := contentText(u.Content)
 		if text == "" {
-			return streamEvent{}, false
+			return StreamEvent{}, false
 		}
-		return streamEvent{
+		return StreamEvent{
 			Event:          "step_update",
 			ConversationID: sessionID,
-			StepUpdate: &streamStepUpdate{
+			StepUpdate: &StreamStepUpdate{
 				ConversationID: sessionID,
 				StepIndex:      step,
 				State:          "ACTIVE",
@@ -149,6 +203,7 @@ func translateUpdate(sessionID string, raw json.RawMessage, step int) (streamEve
 				TextDelta:      text,
 			},
 		}, true
+
 	case "tool_call", "tool_call_update":
 		state := "ACTIVE"
 		switch strings.ToLower(u.Status) {
@@ -157,17 +212,21 @@ func translateUpdate(sessionID string, raw json.RawMessage, step int) (streamEve
 		case "failed":
 			state = "FAILED"
 		}
-		// Повторные «в работе» не засоряют ленту: важен старт и завершение.
+		// Повторные «в работе» не засоряют ленту: важны старт и завершение.
 		if u.SessionUpdate == "tool_call_update" && state == "ACTIVE" {
-			return streamEvent{}, false
+			return StreamEvent{}, false
 		}
-		params := u.RawInput
-		if params == nil {
-			params = map[string]any{}
+		params := make(map[string]any)
+		for k, v := range u.Args {
+			params[k] = v
+		}
+		for k, v := range u.RawInput {
+			params[k] = v
 		}
 		if len(u.Locations) > 0 && params["path"] == nil && u.Locations[0].Path != "" {
 			params["path"] = u.Locations[0].Path
 		}
+		label := toolLabel(u, params)
 		output := contentText(u.Content)
 		if output == "" {
 			output = contentText(u.RawOutput)
@@ -175,28 +234,30 @@ func translateUpdate(sessionID string, raw json.RawMessage, step int) (streamEve
 		if len(output) > 4000 {
 			output = output[:4000] + "…"
 		}
-		return streamEvent{
+		return StreamEvent{
 			Event:          "step_update",
 			ConversationID: sessionID,
-			StepUpdate: &streamStepUpdate{
+			StepUpdate: &StreamStepUpdate{
 				ConversationID: sessionID,
 				StepIndex:      step,
 				State:          state,
 				StepType:       "tool",
-				ToolName:       toolLabel(u),
-				ToolInfo: &streamToolInfo{
-					Name:       toolLabel(u),
+				ToolName:       label,
+				ToolInfo: &StreamToolInfo{
+					Name:       label,
 					Parameters: params,
 					Output:     output,
 				},
 			},
 		}, true
+
 	default:
-		return streamEvent{}, false
+		return StreamEvent{}, false
 	}
 }
 
-func encodeEvent(evt streamEvent) ([]byte, error) {
+// EncodeEvent сериализует StreamEvent в одну строку NDJSON.
+func EncodeEvent(evt StreamEvent) ([]byte, error) {
 	data, err := json.Marshal(evt)
 	if err != nil {
 		return nil, err

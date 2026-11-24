@@ -30,10 +30,10 @@ func testAgentRegistry() *agents.Registry {
 	reg := agents.NewRegistry()
 
 	agySpec := agy.Spec()
-	agySpec.NewMCP = func() ports.AgentFramework {
+	agySpec.NewACP = func() ports.AgentFramework {
 		return &mock.AgentFramework{
 			Name:         "agy",
-			Mode:         agents.ModeMCP,
+			Mode:         agents.ModeACP,
 			Hang:         true,
 			ModelsOutput: testAgyModelsOutput,
 		}
@@ -120,10 +120,14 @@ func TestSwitchActiveAgentReturnsDataWithoutMarkup(t *testing.T) {
 		t.Errorf("модель Gemini должна смениться на sonnet, получили %+v", res)
 	}
 
-	// Обратно на agy: модели Claude при переключении агента заменяются на orchestrator.
+	// Обратно на agy: модели Claude при переключении агента заменяются на orchestrator,
+	// а режим по умолчанию для agy — acp.
 	res, err = SwitchActiveAgent("agy")
 	if err != nil {
 		t.Fatalf("SwitchActiveAgent(agy): %v", err)
+	}
+	if res.Mode != "acp" || !res.ModeDefaulted {
+		t.Errorf("ожидали переход agy на режим по умолчанию acp, получили %+v", res)
 	}
 	if !res.ModelSwitched() || res.Model != "gemini-pro-orchestrator-neon" {
 		t.Errorf("при переключении с claude на agy ожидали orchestrator (gemini-pro-orchestrator-neon), получили %+v", res)
@@ -201,14 +205,22 @@ func TestSwitchActiveAgentToGrokUsesACP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SwitchActiveAgent(agy): %v", err)
 	}
-	if back.Mode != "mcp" || !back.ModeAdjusted {
-		t.Errorf("возврат с acp на agy должен вернуть mcp, получили %+v", back)
+	if back.Mode != "acp" || back.ModeAdjusted {
+		t.Errorf("возврат с acp на agy должен сохранить acp, получили %+v", back)
 	}
 	if !back.ModelSwitched() || back.Model != "gemini-pro-orchestrator-neon" {
 		t.Errorf("возврат с grok на agy должен выставить orchestrator (gemini-pro-orchestrator-neon), получили %+v", back)
 	}
-	if got := config.ProjectState.GetExecutionMode(); got != "mcp" {
+	if got := config.ProjectState.GetExecutionMode(); got != "acp" {
 		t.Errorf("после возврата режим = %q", got)
+	}
+
+	// Явный /mode mcp для agy также отклоняется.
+	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{"mcp"}})); err != nil {
+		t.Fatalf("/mode mcp (agy): %v", err)
+	}
+	if got := config.ProjectState.GetExecutionMode(); got != "acp" {
+		t.Errorf("явный /mode mcp не должен сменить режим agy, получили %q", got)
 	}
 }
 
@@ -242,14 +254,14 @@ func TestModeAPIRefusesWithoutKeyAndKeepsMode(t *testing.T) {
 	if _, err := SwitchActiveAgent("agy"); err != nil {
 		t.Fatal(err)
 	}
-	config.ProjectState.SetExecutionMode("mcp")
+	config.ProjectState.SetExecutionMode("acp")
 
 	handler := mt.commands["mode"]
 	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{"api"}})); err != nil {
 		t.Fatalf("/mode api: %v", err)
 	}
 
-	if got := config.ProjectState.GetExecutionMode(); got != "mcp" {
+	if got := config.ProjectState.GetExecutionMode(); got != "acp" {
 		t.Errorf("режим не должен был смениться без ключа, получили %q", got)
 	}
 	last := mt.LastSent()
@@ -268,7 +280,7 @@ func TestModeAPISwitchesWithKey(t *testing.T) {
 	if _, err := SwitchActiveAgent("agy"); err != nil {
 		t.Fatal(err)
 	}
-	config.ProjectState.SetExecutionMode("mcp")
+	config.ProjectState.SetExecutionMode("acp")
 
 	handler := mt.commands["mode"]
 	if err := handler(adminSession(mt, &mock.Session{ArgsVal: []string{"api"}})); err != nil {
@@ -311,5 +323,94 @@ func TestHandlersDoNotImportAdapters(t *testing.T) {
 		if !registry().Known(spec.Name) {
 			t.Errorf("агент %q из спецификации не зарегистрирован в тестовом реестре", spec.Name)
 		}
+	}
+}
+
+func TestSwitchActiveAgentToAgyUsesACPByDefault(t *testing.T) {
+	setupTestApp(t)
+	t.Setenv("GEMINI_API_KEY", "test-key")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	// Начинаем с claude в api: переключение на agy обязано выбрать его режим по умолчанию (acp),
+	// даже несмотря на то что agy тоже поддерживает api.
+	if _, err := switchActiveAgent("claude", "api", false, false); err != nil {
+		t.Fatalf("switchActiveAgent(claude, api): %v", err)
+	}
+	config.ProjectState.SetExecutionMode("api")
+
+	res, err := SwitchActiveAgent("agy")
+	if err != nil {
+		t.Fatalf("SwitchActiveAgent(agy): %v", err)
+	}
+	if res.Agent != "agy" || res.Mode != "acp" || !res.ModeDefaulted {
+		t.Errorf("переключение на agy должно выставить DefaultMode acp, получили %+v", res)
+	}
+	if got := config.ProjectState.GetExecutionMode(); got != "acp" {
+		t.Errorf("режим в ProjectState = %q, ожидали acp", got)
+	}
+	if st := domain.GlobalTaskManager.Storage(); st != nil {
+		if saved, err := st.GetSetting(context.Background(), "execution_mode"); err != nil || saved != "acp" {
+			t.Errorf("сохранённый execution_mode = %q, err=%v", saved, err)
+		}
+	}
+
+	// Переключение с claude (mcp) на agy также переводит режим в acp.
+	if _, err := switchActiveAgent("claude", "mcp", false, false); err != nil {
+		t.Fatalf("switchActiveAgent(claude, mcp): %v", err)
+	}
+	config.ProjectState.SetExecutionMode("mcp")
+	res, err = SwitchActiveAgent("agy")
+	if err != nil {
+		t.Fatalf("SwitchActiveAgent(agy): %v", err)
+	}
+	if res.Mode != "acp" || !res.ModeDefaulted {
+		t.Errorf("переключение с claude/mcp на agy должно выбрать acp, получили %+v", res)
+	}
+}
+
+func TestInitActiveAgentMigratesLegacyAgyMCPAndPreservesAPI(t *testing.T) {
+	// 1. Устаревшая сохранённая пара agy + mcp мигрирует в agy + acp и обновляет SQLite.
+	setupTestApp(t)
+	config.ProjectState.SetExecutionMode("mcp")
+	if st := domain.GlobalTaskManager.Storage(); st != nil {
+		_ = st.SetSetting(context.Background(), "execution_mode", "mcp")
+	}
+	initActiveAgent("agy", true)
+	if got := ActiveAgentName(); got != "agy" {
+		t.Errorf("активный агент = %q, ожидали agy", got)
+	}
+	if got := config.ProjectState.GetExecutionMode(); got != "acp" {
+		t.Errorf("legacy agy+mcp должен мигрировать в acp, получили %q", got)
+	}
+	if st := domain.GlobalTaskManager.Storage(); st != nil {
+		if saved, err := st.GetSetting(context.Background(), "execution_mode"); err != nil || saved != "acp" {
+			t.Errorf("execution_mode в SQLite = %q, err=%v; ожидали acp", saved, err)
+		}
+	}
+
+	// 2. Сохранённая пара agy + api (при наличии ключа) сохраняется без отката в acp.
+	setupTestApp(t)
+	t.Setenv("GEMINI_API_KEY", "test-key")
+	config.ProjectState.SetExecutionMode("api")
+	if st := domain.GlobalTaskManager.Storage(); st != nil {
+		_ = st.SetSetting(context.Background(), "execution_mode", "api")
+	}
+	initActiveAgent("agy", true)
+	if got := ActiveAgentName(); got != "agy" {
+		t.Errorf("активный агент = %q, ожидали agy", got)
+	}
+	if got := config.ProjectState.GetExecutionMode(); got != "api" {
+		t.Errorf("agy+api при наличии ключа должен сохраняться, получили %q", got)
+	}
+
+	// 3. Чистый старт без сохранённого агента и режима включает PreferredMode для agy (acp).
+	setupTestApp(t)
+	config.ProjectState.SetExecutionMode("mcp")
+	initActiveAgent("", false)
+	if got := ActiveAgentName(); got != "agy" {
+		t.Errorf("агент по умолчанию = %q, ожидали agy", got)
+	}
+	if got := config.ProjectState.GetExecutionMode(); got != "acp" {
+		t.Errorf("режим при чистом старте = %q, ожидали acp", got)
 	}
 }

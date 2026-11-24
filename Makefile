@@ -86,7 +86,7 @@ ifeq ($(ACTIVE_LANG),ru)
   MSG_STEP2_SKIP_PATCH       := Пропуск патча (уже пропатчен или не требуется)
   MSG_STEP2_CLAUDE_EXISTS    := Claude Code CLI уже установлен.
   MSG_STEP2_INSTALL_CLAUDE   := Установка Claude Code CLI...
-  MSG_STEP2_CONFIG_MCP       := Настройка MCP-сервера bro_bot для agy и claude...
+  MSG_STEP2_CONFIG_MCP       := Настройка MCP-сервера bro_bot для claude и очистка устаревших записей Gemini...
 
   MSG_STEP3_TITLE            := ==> [Шаг 3] Настройка systemd-сервиса $(BOT_NAME)...
   MSG_STEP3_CREATING         := Создаем $(SERVICE_FILE)...
@@ -156,7 +156,7 @@ else
   MSG_STEP2_SKIP_PATCH       := Skipping patch (already patched or not required)
   MSG_STEP2_CLAUDE_EXISTS    := Claude Code CLI is already installed.
   MSG_STEP2_INSTALL_CLAUDE   := Installing Claude Code CLI...
-  MSG_STEP2_CONFIG_MCP       := Configuring bro_bot MCP server for agy and claude...
+  MSG_STEP2_CONFIG_MCP       := Configuring bro_bot MCP server for claude and cleaning legacy Gemini entries...
 
   MSG_STEP3_TITLE            := ==> [Step 3] Configuring systemd service $(BOT_NAME)...
   MSG_STEP3_CREATING         := Creating $(SERVICE_FILE)...
@@ -291,18 +291,18 @@ step2-agents:
 		python3 -c '\''\
 import json, os\
 for path in [os.path.expanduser("~/.gemini/config/mcp_config.json"), os.path.expanduser("~/.gemini/antigravity-cli/mcp_config.json")]:\
-    os.makedirs(os.path.dirname(path), exist_ok=True)\
-    cfg = {}\
-    if os.path.exists(path):\
-        try:\
-            with open(path, "r") as f:\
-                cfg = json.load(f)\
-        except Exception:\
-            cfg = {}\
-    servers = cfg.setdefault("mcpServers", {})\
-    servers["bro_bot"] = {"command": "$(REPO_DIR)/bot", "args": ["mcp-serve"]}\
-    with open(path, "w") as f:\
-        json.dump(cfg, f, indent=2)\
+    if not os.path.exists(path):\
+        continue\
+    try:\
+        with open(path, "r") as f:\
+            cfg = json.load(f)\
+    except Exception:\
+        continue\
+    servers = cfg.get("mcpServers")\
+    if isinstance(servers, dict) and "bro_bot" in servers:\
+        del servers["bro_bot"]\
+        with open(path, "w") as f:\
+            json.dump(cfg, f, indent=2)\
 '\''; \
 	'
 

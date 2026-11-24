@@ -139,8 +139,8 @@ func handleMode(s ports.Session) error {
 
 	// Сначала собираем адаптер для нового режима (в api — с проверкой ключа),
 	// и только если это удалось, переключаем и сохраняем режим.
-	// Запасной режим здесь не подставляется: /mode mcp у grok — это ошибка.
-	res, err := switchActiveAgent(ActiveAgentName(), targetMode, false)
+	// Запасной режим здесь не подставляется: /mode mcp у agy или grok — это ошибка.
+	res, err := switchActiveAgent(ActiveAgentName(), targetMode, false, false)
 	if err != nil {
 		return s.Send("⚠️ "+html.EscapeString(ErrorText(err, lang)), ports.Rich())
 	}

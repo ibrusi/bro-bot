@@ -435,6 +435,15 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 	}
 }
 
+func isAskQuestionToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ask_question", "askquestion":
+		return true
+	default:
+		return false
+	}
+}
+
 // isLikelyErrorMessage определяет, является ли полученный текст сырой ошибкой CLI или API, а не планом задачи.
 func isLikelyErrorMessage(text string) bool {
 	trimmed := strings.TrimSpace(text)
@@ -543,7 +552,7 @@ func isStaleAgyResumedError(c agyResumedErrorCheck) bool {
 	if !strings.EqualFold(strings.TrimSpace(c.Agent), "agy") {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(c.Mode), "api") {
+	if !strings.EqualFold(strings.TrimSpace(c.Mode), "mcp") {
 		return false
 	}
 	if strings.TrimSpace(c.ResumedConvID) == "" {
@@ -935,7 +944,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 					}
 
 					// Фиксация вызова инструмента ask_question (накапливаем все вопросы шага)
-					if u.ToolName == "ask_question" || (u.ToolInfo != nil && u.ToolInfo.Name == "ask_question") {
+					if isAskQuestionToolName(u.ToolName) || (u.ToolInfo != nil && isAskQuestionToolName(u.ToolInfo.Name)) {
 						hasAskQuestionToolCall = true
 						var items []utils.ParsedQuestion
 						if u.ToolInfo != nil && u.ToolInfo.Parameters != nil {

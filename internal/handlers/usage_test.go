@@ -37,7 +37,7 @@ func TestUsageNeverLeaksServiceJSON(t *testing.T) {
 		agent string
 		mode  string
 	}{
-		{"agy", "mcp"},
+		{"agy", "acp"},
 		{"agy", "api"},
 		{"claude", "mcp"},
 		{"claude", "api"},
@@ -72,7 +72,7 @@ func TestUsageHeaderAndFooterMatchMode(t *testing.T) {
 	}{
 		{"claude", "mcp", "Claude Code (MCP)", "Model Context Protocol", "/tokens"},
 		{"claude", "api", "Claude API", "/tokens", "Model Context Protocol"},
-		{"agy", "mcp", "Google Antigravity (MCP)", "Model Context Protocol", "/tokens"},
+		{"agy", "acp", "Google Antigravity (ACP)", "Agent Client Protocol", "/tokens"},
 		{"agy", "api", "Gemini API", "/tokens", "Model Context Protocol"},
 	}
 
@@ -102,7 +102,7 @@ func TestUsageSourceTitle(t *testing.T) {
 		{"claude", "api", "Claude API"},
 		{"claude", "mcp", "Claude Code (MCP)"},
 		{"agy", "api", "Gemini API"},
-		{"agy", "mcp", "Google Antigravity (MCP)"},
+		{"agy", "acp", "Google Antigravity (ACP)"},
 		{"", "api", "API агента"},
 		{"неизвестный", "mcp", "MCP-канал"},
 	}

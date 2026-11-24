@@ -50,6 +50,7 @@ const (
 type agentChannel interface {
 	SendMessage(text string, silent bool) error
 	SendFile(ctx context.Context, path, caption string) error
+	SendFileContent(ctx context.Context, filename, content, caption string) error
 	ReportProgress(status string)
 	AskQuestions(items []utils.ParsedQuestion) error
 	TaskContext(taskID int) (string, error)
@@ -205,14 +206,23 @@ func executeChannelTool(ctx context.Context, ch agentChannel, toolName string, a
 
 	case mcp.ToolSendFile:
 		relPath := stringArg(args, "path")
-		if relPath == "" {
-			return botToolError("the path argument is required")
-		}
+		filename := stringArg(args, "filename")
+		content, hasContent := args["content"].(string)
 		caption := utils.TruncateString(stringArg(args, "caption"), maxSendFileCaptionRunes)
-		if err := ch.SendFile(ctx, relPath, caption); err != nil {
-			return botToolError("failed to send the file: " + err.Error())
+		switch {
+		case relPath != "":
+			if err := ch.SendFile(ctx, relPath, caption); err != nil {
+				return botToolError("failed to send the file: " + err.Error())
+			}
+			return ports.BotToolResult{Text: fmt.Sprintf("File %q has been sent to the user.", relPath)}
+		case filename != "" && hasContent:
+			if err := ch.SendFileContent(ctx, filename, content, caption); err != nil {
+				return botToolError("failed to send the file: " + err.Error())
+			}
+			return ports.BotToolResult{Text: fmt.Sprintf("File %q has been sent to the user.", filepath.Base(filename))}
+		default:
+			return botToolError("either path or filename + content arguments are required")
 		}
-		return ports.BotToolResult{Text: fmt.Sprintf("File %q has been sent to the user.", relPath)}
 
 	case mcp.ToolAskUser:
 		items := normalizeAskQuestionItems(args)
@@ -230,6 +240,9 @@ func executeChannelTool(ctx context.Context, ch agentChannel, toolName string, a
 
 	case mcp.ToolReportProgress:
 		status := stringArg(args, "status")
+		if status == "" {
+			status = stringArg(args, "message")
+		}
 		if status == "" {
 			return botToolError("the status argument is required")
 		}
@@ -253,7 +266,11 @@ func executeChannelTool(ctx context.Context, ch agentChannel, toolName string, a
 		} else if limit > 50 {
 			limit = 50
 		}
-		out, err := formatTasksListForAgent(stringArg(args, "project"), limit)
+		projFilter := stringArg(args, "project")
+		if projFilter == "*" || strings.EqualFold(projFilter, "all") {
+			projFilter = ""
+		}
+		out, err := formatTasksListForAgent(projFilter, limit)
 		if err != nil {
 			return botToolError(err.Error())
 		}
@@ -432,6 +449,13 @@ func (c *taskChannel) SendFile(ctx context.Context, relPath, caption string) err
 	return sendBridgeFile(ctx, c.m, c.chat, c.workDir, relPath, caption, fallbackCaption, view.ID)
 }
 
+func (c *taskChannel) SendFileContent(ctx context.Context, filename, content, caption string) error {
+	view := c.task.Snapshot()
+	base := filepath.Base(strings.TrimSpace(filename))
+	fallbackCaption := i18n.Tf(c.lang, "mcp.file_caption", view.ID, view.Project, base)
+	return sendBridgeMemoryFile(ctx, c.m, c.chat, filename, content, caption, fallbackCaption, view.ID)
+}
+
 func (c *taskChannel) ReportProgress(status string) {
 	c.task.AppendLog(i18n.Tf(c.lang, "mcp.progress_log", status))
 }
@@ -525,6 +549,12 @@ func (c *chatChannel) SendMessage(text string, silent bool) error {
 func (c *chatChannel) SendFile(ctx context.Context, relPath, caption string) error {
 	fallbackCaption := i18n.Tf(c.lang, "mcp.chat_file_caption", c.project, relPath)
 	return sendBridgeFile(ctx, c.m, c.chat, c.workDir, relPath, caption, fallbackCaption, 0)
+}
+
+func (c *chatChannel) SendFileContent(ctx context.Context, filename, content, caption string) error {
+	base := filepath.Base(strings.TrimSpace(filename))
+	fallbackCaption := i18n.Tf(c.lang, "mcp.chat_file_caption", c.project, base)
+	return sendBridgeMemoryFile(ctx, c.m, c.chat, filename, content, caption, fallbackCaption, 0)
 }
 
 func (c *chatChannel) ReportProgress(status string) {
@@ -642,6 +672,31 @@ func sendBridgeFile(ctx context.Context, m ports.Messenger, chat ports.ChatID, w
 		mimeType = "application/octet-stream"
 	}
 
+	return sendBridgeBytes(ctx, m, chat, filepath.Base(realFile), data, mimeType, caption, fallbackCaption, registerTaskID)
+}
+
+func sendBridgeMemoryFile(ctx context.Context, m ports.Messenger, chat ports.ChatID, filename, content, caption, fallbackCaption string, registerTaskID int) error {
+	if m == nil {
+		return errors.New("messenger is not configured")
+	}
+	base := filepath.Base(strings.TrimSpace(filename))
+	if base == "" || base == "." || base == ".." || base == string(filepath.Separator) {
+		return errors.New("invalid filename")
+	}
+	if len(content) == 0 {
+		return errors.New("file content is empty")
+	}
+	if len(content) > maxSendFileBytes {
+		return fmt.Errorf("file is too large (%d bytes, max %d bytes)", len(content), maxSendFileBytes)
+	}
+	mimeType := mime.TypeByExtension(filepath.Ext(base))
+	if mimeType == "" {
+		mimeType = "text/plain; charset=utf-8"
+	}
+	return sendBridgeBytes(ctx, m, chat, base, []byte(content), mimeType, caption, fallbackCaption, registerTaskID)
+}
+
+func sendBridgeBytes(ctx context.Context, m ports.Messenger, chat ports.ChatID, fileName string, data []byte, mimeType, caption, fallbackCaption string, registerTaskID int) error {
 	finalCaption := strings.TrimSpace(caption)
 	if finalCaption == "" {
 		finalCaption = fallbackCaption
@@ -649,7 +704,7 @@ func sendBridgeFile(ctx context.Context, m ports.Messenger, chat ports.ChatID, w
 	finalCaption = utils.TruncateString(finalCaption, maxSendFileCaptionRunes)
 
 	ref, err := m.SendDocument(ctx, chat, ports.Document{
-		FileName: filepath.Base(realFile),
+		FileName: fileName,
 		MIME:     mimeType,
 		Caption:  finalCaption,
 		Content:  data,
