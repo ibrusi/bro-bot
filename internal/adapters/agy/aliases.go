@@ -16,6 +16,8 @@ var modelAliases = models.NewAliases(map[string]string{
 	"orchestrator":                   defaultModel,
 	"orchestrator-neon":              "gemini-pro-orchestrator-neon",
 	"gemini-pro-orchestrator-neon":   "gemini-pro-orchestrator-neon",
+	"orchestrator-carbon":            "gemini-pro-orchestrator",
+	"gemini-pro-orchestrator":        "gemini-pro-orchestrator",
 	"orchestrator-argon":             "gemini-pro-orchestrator-g1-pro",
 	"g1-pro":                         "gemini-pro-orchestrator-g1-pro",
 	"gemini-pro-orchestrator-g1-pro": "gemini-pro-orchestrator-g1-pro",
@@ -27,6 +29,13 @@ var modelAliases = models.NewAliases(map[string]string{
 	"neon-high":     "gemini-4-neon-high",
 	"neon-xhigh":    "gemini-4-neon-xhigh",
 	"neon-low":      "gemini-4-neon-low",
+
+	// Gemini 4 Carbon
+	"carbon":          "gemini-4-carbon-medium",
+	"4-carbon":        "gemini-4-carbon-medium",
+	"gemini-4-carbon": "gemini-4-carbon-medium",
+	"carbon-high":     "gemini-4-carbon-high",
+	"carbon-low":      "gemini-4-carbon-low",
 
 	// Gemini 4 Argon
 	"argon":          "gemini-4-argon-medium",
@@ -99,8 +108,10 @@ var modelAliases = models.NewAliases(map[string]string{
 	"gpt-oss-120b-medium": "gpt-oss-120b-medium",
 },
 	models.AliasHint{Alias: "orchestrator", Title: "Orchestrator (Neon)"},
+	models.AliasHint{Alias: "orchestrator-carbon", Title: "Orchestrator (Carbon)"},
 	models.AliasHint{Alias: "orchestrator-argon", Title: "Orchestrator (Argon)"},
 	models.AliasHint{Alias: "neon", Title: "Gemini 4 Neon"},
+	models.AliasHint{Alias: "carbon", Title: "Gemini 4 Carbon"},
 	models.AliasHint{Alias: "argon", Title: "Gemini 4 Argon"},
 	models.AliasHint{Alias: "hydrogen", Title: "Gemini 4 Hydrogen"},
 	models.AliasHint{Alias: "flash", Title: "Gemini 3.8 Flash"},

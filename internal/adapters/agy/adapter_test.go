@@ -16,7 +16,10 @@ func TestResolveAgyModelTarget_AliasesAndEffort(t *testing.T) {
 	}{
 		{"empty model", "", effort.Auto, "", ""},
 		{"orchestrator alias", "orchestrator", effort.Auto, "gemini-pro-orchestrator-neon", ""},
+		{"orchestrator-carbon ignores effort", "orchestrator-carbon", effort.High, "gemini-pro-orchestrator", ""},
 		{"orchestrator ignores effort", "orchestrator-argon", effort.High, "gemini-pro-orchestrator-g1-pro", ""},
+		{"carbon alias", "carbon", effort.Auto, "gemini-4-carbon-medium", ""},
+		{"carbon with explicit high effort", "carbon", effort.High, "gemini-4-carbon-high", ""},
 		{"flash with explicit low effort", "gemini-3.8-flash-high", effort.Low, "gemini-3.8-flash-low", ""},
 		{"unknown model passes effort", "custom-experimental-model", effort.Medium, "custom-experimental-model", "medium"},
 	}

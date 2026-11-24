@@ -9,8 +9,10 @@ import (
 // agyCatalog — вывод `agy models` версии 1.3.3.
 var agyCatalog = []string{
 	"gemini-pro-orchestrator-neon",
+	"gemini-pro-orchestrator",
 	"gemini-pro-orchestrator-g1-pro",
 	"gemini-4-neon-xhigh", "gemini-4-neon-high", "gemini-4-neon-medium", "gemini-4-neon-low",
+	"gemini-4-carbon-high", "gemini-4-carbon-medium", "gemini-4-carbon-low",
 	"gemini-4-argon-high", "gemini-4-argon-medium", "gemini-4-argon-low",
 	"gemini-4-hydrogen-xhigh", "gemini-4-hydrogen-high", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-low",
 	"gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
@@ -31,6 +33,7 @@ func TestBuildAgyModelArgs(t *testing.T) {
 		{"base claude auto", "claude-opus-5-5", effort.Auto, []string{"--model", "claude-opus-5-5-medium"}},
 		{"base claude high", "claude-opus-5-5", effort.High, []string{"--model", "claude-opus-5-5-high"}},
 		{"base claude max clamps", "claude-opus-5-5", effort.Max, []string{"--model", "claude-opus-5-5-high"}},
+		{"base carbon auto", "gemini-4-carbon", effort.Auto, []string{"--model", "gemini-4-carbon-medium"}},
 		{"base pro auto", "gemini-3.1-pro", effort.Auto, []string{"--model", "gemini-3.1-pro-high"}},
 		{"base flash auto", "gemini-3.8-flash", effort.Auto, []string{"--model", "gemini-3.8-flash-medium"}},
 
@@ -42,6 +45,9 @@ func TestBuildAgyModelArgs(t *testing.T) {
 		{"standalone neon auto", "gemini-pro-orchestrator-neon", effort.Auto, []string{"--model", "gemini-pro-orchestrator-neon"}},
 		{"standalone neon medium", "gemini-pro-orchestrator-neon", effort.Medium, []string{"--model", "gemini-pro-orchestrator-neon"}},
 		{"standalone neon high", "gemini-pro-orchestrator-neon", effort.High, []string{"--model", "gemini-pro-orchestrator-neon"}},
+		{"standalone carbon auto", "gemini-pro-orchestrator", effort.Auto, []string{"--model", "gemini-pro-orchestrator"}},
+		{"standalone carbon medium", "gemini-pro-orchestrator", effort.Medium, []string{"--model", "gemini-pro-orchestrator"}},
+		{"standalone carbon high", "gemini-pro-orchestrator", effort.High, []string{"--model", "gemini-pro-orchestrator"}},
 		{"standalone catalog auto", "gemini-pro-orchestrator-g1-pro", effort.Auto, []string{"--model", "gemini-pro-orchestrator-g1-pro"}},
 		{"standalone catalog medium", "gemini-pro-orchestrator-g1-pro", effort.Medium, []string{"--model", "gemini-pro-orchestrator-g1-pro"}},
 		{"standalone catalog high", "gemini-pro-orchestrator-g1-pro", effort.High, []string{"--model", "gemini-pro-orchestrator-g1-pro"}},
@@ -51,6 +57,7 @@ func TestBuildAgyModelArgs(t *testing.T) {
 		{"variant same level", "gemini-3.1-pro-high", effort.High, []string{"--model", "gemini-3.1-pro-high"}},
 		{"missing level rounds down", "gemini-3.1-pro-high", effort.Medium, []string{"--model", "gemini-3.1-pro-low"}},
 		{"xhigh clamps to high", "gemini-3.8-flash-low", effort.XHigh, []string{"--model", "gemini-3.8-flash-high"}},
+		{"carbon xhigh clamps to high", "gemini-4-carbon-medium", effort.XHigh, []string{"--model", "gemini-4-carbon-high"}},
 		{"below floor takes lowest", "gpt-oss-120b-medium", effort.Low, []string{"--model", "gpt-oss-120b-medium"}},
 		{"above ceiling takes highest", "gpt-oss-120b-medium", effort.Max, []string{"--model", "gpt-oss-120b-medium"}},
 
@@ -82,7 +89,7 @@ func TestBuildAgyModelArgsEmptyCatalog(t *testing.T) {
 		t.Errorf("BuildAgyModelArgs без каталога = %v, expected %v", actual, expected)
 	}
 
-	for _, model := range []string{"gemini-pro-orchestrator-neon", "gemini-pro-orchestrator-g1-pro"} {
+	for _, model := range []string{"gemini-pro-orchestrator-neon", "gemini-pro-orchestrator", "gemini-pro-orchestrator-g1-pro"} {
 		for _, lvl := range []effort.Level{effort.Auto, effort.Medium} {
 			got := BuildAgyModelArgs(model, lvl, nil)
 			want := []string{"--model", model}
