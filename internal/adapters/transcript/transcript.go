@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Turn — одна реплика диалога: сообщение пользователя или ответ агента.
@@ -41,7 +42,7 @@ type contentBlock struct {
 	Text string `json:"text"`
 }
 
-// SessionFilePath возвращает путь к JSONL-файлу сессии claude/agy для рабочей
+// SessionFilePath возвращает путь к JSONL-файлу сессии claude для рабочей
 // директории проекта и ID разговора (совпадает со схемой хранения Claude Code:
 // ~/.claude/projects/<slug-от-абсолютного-пути>/<conversationID>.jsonl).
 func SessionFilePath(workDir, conversationID string) (string, error) {
@@ -54,6 +55,15 @@ func SessionFilePath(workDir, conversationID string) (string, error) {
 		return "", fmt.Errorf("transcript: resolve project path: %w", err)
 	}
 	return filepath.Join(home, ".claude", "projects", projectSlug(absWorkDir), conversationID+".jsonl"), nil
+}
+
+// AgySessionFilePath возвращает путь к JSONL-файлу транскрипта сессии Antigravity CLI (agy).
+func AgySessionFilePath(conversationID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("transcript: resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli", "brain", conversationID, ".system_generated", "logs", "transcript.jsonl"), nil
 }
 
 // projectSlug повторяет схему именования директорий Claude Code: все символы,
@@ -84,6 +94,11 @@ func ReadSession(workDir, conversationID string) ([]Turn, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if agyPath, agyErr := AgySessionFilePath(conversationID); agyErr == nil {
+				if turns, readErr := ReadAgySessionFile(agyPath); readErr == nil || !errors.Is(readErr, ErrSessionNotFound) {
+					return turns, readErr
+				}
+			}
 			return nil, ErrSessionNotFound
 		}
 		return nil, fmt.Errorf("transcript: open session file: %w", err)
@@ -161,4 +176,70 @@ func extractText(content json.RawMessage) string {
 		result += b.Text
 	}
 	return result
+}
+
+type agyTranscriptEntry struct {
+	Type      string `json:"type"`
+	Source    string `json:"source"`
+	CreatedAt string `json:"created_at"`
+	Content   string `json:"content"`
+}
+
+// ReadAgySessionFile читает JSONL-транскрипт agy по указанному пути и возвращает реплики пользователя и агента.
+func ReadAgySessionFile(path string) ([]Turn, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("transcript: open agy session file: %w", err)
+	}
+	defer f.Close()
+
+	var turns []Turn
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var entry agyTranscriptEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		switch entry.Type {
+		case "USER_INPUT":
+			text := extractAgyUserRequest(entry.Content)
+			if text != "" {
+				turns = append(turns, Turn{Role: "user", Text: text, Timestamp: entry.CreatedAt})
+			}
+		case "PLANNER_RESPONSE":
+			text := strings.TrimSpace(entry.Content)
+			if text != "" {
+				turns = append(turns, Turn{Role: "assistant", Text: text, Timestamp: entry.CreatedAt})
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("transcript: read agy session file: %w", err)
+	}
+	return turns, nil
+}
+
+func extractAgyUserRequest(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return ""
+	}
+	const startTag = "<USER_REQUEST>"
+	const endTag = "</USER_REQUEST>"
+	if sIdx := strings.Index(trimmed, startTag); sIdx != -1 {
+		rest := trimmed[sIdx+len(startTag):]
+		if eIdx := strings.Index(rest, endTag); eIdx != -1 {
+			return strings.TrimSpace(rest[:eIdx])
+		}
+		return strings.TrimSpace(rest)
+	}
+	return trimmed
 }

@@ -1,7 +1,12 @@
 package acp
 
 import (
+	"encoding/json"
+	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"bro-bot/internal/tools"
 )
@@ -14,11 +19,156 @@ type PermOption struct {
 
 // ToolCallPermission содержит метаданные вызова инструмента из session/request_permission.
 type ToolCallPermission struct {
-	Kind     string         `json:"kind"`
-	Name     string         `json:"name"`
-	Title    string         `json:"title"`
-	RawInput map[string]any `json:"rawInput"`
-	Args     map[string]any `json:"args"`
+	ToolCallID string         `json:"toolCallId"`
+	Kind       string         `json:"kind"`
+	Name       string         `json:"name"`
+	ToolName   string         `json:"toolName"`
+	Title      string         `json:"title"`
+	RawInput   map[string]any `json:"rawInput"`
+	Args       map[string]any `json:"args"`
+	Meta       map[string]any `json:"_meta"`
+}
+
+// MergeFrom дополняет пустые поля и отсутствующие ключи параметров из предыдущего снимка вызова.
+func (c *ToolCallPermission) MergeFrom(prev ToolCallPermission) {
+	if c.ToolCallID == "" {
+		c.ToolCallID = prev.ToolCallID
+	}
+	if c.Kind == "" {
+		c.Kind = prev.Kind
+	}
+	if c.Name == "" {
+		c.Name = prev.Name
+	}
+	if c.ToolName == "" {
+		c.ToolName = prev.ToolName
+	}
+	if c.Title == "" {
+		c.Title = prev.Title
+	}
+	c.RawInput = mergeAnyMaps(prev.RawInput, c.RawInput)
+	c.Args = mergeAnyMaps(prev.Args, c.Args)
+	c.Meta = mergeAnyMaps(prev.Meta, c.Meta)
+}
+
+func mergeAnyMaps(base, override map[string]any) map[string]any {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
+}
+
+// ToolCallRegistry накапливает метаданные tool_call/tool_call_update по toolCallId,
+// чтобы обогащать последующие tool_call_update и запросы session/request_permission.
+type ToolCallRegistry struct {
+	mu    sync.Mutex
+	calls map[string]ToolCallPermission
+}
+
+// Observe сохраняет метаданные вызова из session/update (tool_call / tool_call_update).
+func (r *ToolCallRegistry) Observe(raw json.RawMessage) {
+	if r == nil || len(raw) == 0 {
+		return
+	}
+	var wrapper struct {
+		Update struct {
+			SessionUpdate string         `json:"sessionUpdate"`
+			ToolCallID    string         `json:"toolCallId"`
+			Kind          string         `json:"kind"`
+			Name          string         `json:"name"`
+			ToolName      string         `json:"toolName"`
+			Title         string         `json:"title"`
+			RawInput      map[string]any `json:"rawInput"`
+			Args          map[string]any `json:"args"`
+			Meta          map[string]any `json:"_meta"`
+		} `json:"update"`
+	}
+	if json.Unmarshal(raw, &wrapper) != nil {
+		return
+	}
+	u := wrapper.Update
+	if (u.SessionUpdate != "tool_call" && u.SessionUpdate != "tool_call_update") || strings.TrimSpace(u.ToolCallID) == "" {
+		return
+	}
+	cur := ToolCallPermission{
+		ToolCallID: strings.TrimSpace(u.ToolCallID),
+		Kind:       strings.TrimSpace(u.Kind),
+		Name:       strings.TrimSpace(u.Name),
+		ToolName:   strings.TrimSpace(u.ToolName),
+		Title:      strings.TrimSpace(u.Title),
+		RawInput:   u.RawInput,
+		Args:       u.Args,
+		Meta:       u.Meta,
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.calls == nil {
+		r.calls = make(map[string]ToolCallPermission)
+	}
+	if prev, ok := r.calls[cur.ToolCallID]; ok {
+		cur.MergeFrom(prev)
+	}
+	r.calls[cur.ToolCallID] = cur
+}
+
+// Enrich дополняет ToolCallPermission кэшированными метаданными по toolCallId.
+func (r *ToolCallRegistry) Enrich(call ToolCallPermission) ToolCallPermission {
+	if r == nil || strings.TrimSpace(call.ToolCallID) == "" {
+		return call
+	}
+	r.mu.Lock()
+	prev, ok := r.calls[strings.TrimSpace(call.ToolCallID)]
+	r.mu.Unlock()
+	if !ok {
+		return call
+	}
+	call.MergeFrom(prev)
+	return call
+}
+
+// EnrichStepUpdate восполняет имя и параметры инструмента в StreamStepUpdate из накопленного реестра.
+func (r *ToolCallRegistry) EnrichStepUpdate(su *StreamStepUpdate) {
+	if r == nil || su == nil || su.StepType != "tool" || strings.TrimSpace(su.ToolCallID) == "" {
+		return
+	}
+	r.mu.Lock()
+	cached, ok := r.calls[strings.TrimSpace(su.ToolCallID)]
+	r.mu.Unlock()
+	if !ok {
+		return
+	}
+	params := mergeAnyMaps(cached.Args, cached.RawInput)
+	if su.ToolInfo != nil {
+		params = mergeAnyMaps(params, su.ToolInfo.Parameters)
+	}
+	u := sessionUpdate{
+		ToolCallID: su.ToolCallID,
+		Name:       cached.Name,
+		ToolName:   cached.ToolName,
+		Title:      cached.Title,
+		Kind:       cached.Kind,
+	}
+	label := toolLabel(u, params)
+	if label != "" && (su.ToolName == "" || su.ToolName == "tool" || su.ToolName == su.ToolCallID) {
+		su.ToolName = label
+	}
+	if su.ToolInfo == nil {
+		su.ToolInfo = &StreamToolInfo{}
+	}
+	if su.ToolInfo.Name == "" || su.ToolInfo.Name == "tool" || su.ToolInfo.Name == su.ToolCallID {
+		su.ToolInfo.Name = su.ToolName
+	}
+	if len(params) > 0 {
+		su.ToolInfo.Parameters = params
+	}
 }
 
 // PermissionParams — параметры запроса session/request_permission.
@@ -37,39 +187,81 @@ func ReadOnlyToolKind(kind string) bool {
 	}
 }
 
-// IsBotOrInteractiveTool разрешает безопасные инструменты bro_bot, поиск MCP-инструментов
-// и встроенный инструмент вопросов (ask_question / AskQuestion) в режимах /chat и /plan.
+func isInteractiveQuestionToolName(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "ask_question", "askquestion", "run ask_question",
+		"ask_user_question", "askuserquestion", "ask_user":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsInteractiveTurnTool сообщает, является ли инструмент вопросом или сообщением пользователю,
+// после которого пустой текстовый ответ модели считается штатным завершением хода.
+func IsInteractiveTurnTool(name string) bool {
+	if isInteractiveQuestionToolName(name) {
+		return true
+	}
+	canon := tools.NormalizeBotToolName(name)
+	switch canon {
+	case "ask_user", "telegram_send_message", "send_file":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSafeReadOnlyBuiltinName(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "read_file", "view_file", "list_dir", "find_by_name", "grep_search",
+		"glob", "read", "ls", "search", "web_search", "search_web",
+		"fetch_web_page", "read_url_content", "read_resource", "list_resources",
+		"command_status", "view_file_outline", "view_code_item", "enter_plan_mode",
+		"search_tool":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsBotOrInteractiveTool разрешает безопасные инструменты bro_bot, поиск MCP-инструментов,
+// безопасные встроенные инструменты чтения и инструмент вопросов в режимах /chat и /plan.
 func IsBotOrInteractiveTool(call ToolCallPermission) bool {
+	// Явный ServerName имеет наивысший приоритет: чужой MCP-сервер запрещён безусловно,
+	// даже если имя инструмента совпадает с интерактивным (например ask_user).
+	if srv := firstStringRecursive(0, []string{"ServerName", "server_name", "server", "mcpServer", "mcp_server"}, call.RawInput, call.Args, call.Meta); srv != "" {
+		return isBroBotServerName(srv)
+	}
+
 	name := strings.ToLower(strings.TrimSpace(call.Name))
+	toolName := strings.ToLower(strings.TrimSpace(call.ToolName))
 	title := strings.ToLower(strings.TrimSpace(call.Title))
 
-	if name == "ask_question" || name == "askquestion" ||
-		title == "ask_question" || title == "run ask_question" {
+	if isInteractiveQuestionToolName(name) || isInteractiveQuestionToolName(toolName) || isInteractiveQuestionToolName(title) {
 		return true
 	}
 
 	// Grok: поиск метаданных подключённых MCP-инструментов безопасен в ReadOnly.
-	if name == "search_tool" || title == "search_tool" || strings.HasPrefix(title, "search tools:") {
+	if name == "search_tool" || toolName == "search_tool" || title == "search_tool" || strings.HasPrefix(title, "search tools:") {
 		return true
 	}
 
-	// Проверяем RawInput и Args:
-	// - agy: name="call_mcp_tool", rawInput={"ServerName":"bro_bot","ToolName":"list_projects"}
-	// - grok: title="use_tool"/"bro_bot__...", rawInput={"tool_name":"bro_bot__list_projects"}
-	for _, m := range []map[string]any{call.RawInput, call.Args} {
-		if m == nil {
-			continue
-		}
-		if srv := firstString(m, "ServerName", "server_name", "server"); srv != "" {
-			// Если сервер указан явно, разрешаем только bro_bot и не падаем в угадывание по заголовку.
-			return isBroBotServerName(srv)
-		}
-		if tn := firstString(m, "ToolName", "tool_name", "tool"); tn != "" {
-			return IsBotMCPToolTitle(tn)
-		}
+	// Вызов субагента в ReadOnly разрешаем строго для read-only типа research.
+	if name == "invoke_subagent" || toolName == "invoke_subagent" {
+		subType := strings.ToLower(firstStringRecursive(0, []string{"TypeName", "type_name", "subagent_type", "type", "agent"}, call.RawInput, call.Args, call.Meta))
+		return subType == "research"
 	}
 
-	return IsBotMCPToolTitle(call.Name) || IsBotMCPToolTitle(call.Title)
+	if tn := firstStringRecursive(0, []string{"ToolName", "tool_name", "tool", "mcpToolName", "mcp_tool_name"}, call.RawInput, call.Args, call.Meta); tn != "" {
+		return IsBotMCPToolTitle(tn)
+	}
+
+	if IsBotMCPToolTitle(call.Name) || IsBotMCPToolTitle(call.ToolName) || IsBotMCPToolTitle(call.Title) {
+		return true
+	}
+
+	return isSafeReadOnlyBuiltinName(name) || isSafeReadOnlyBuiltinName(toolName) || isSafeReadOnlyBuiltinName(title)
 }
 
 func isBroBotServerName(s string) bool {
@@ -88,25 +280,49 @@ func firstString(m map[string]any, keys ...string) string {
 	return ""
 }
 
-// IsBotMCPToolTitle распознаёт вызовы MCP-инструментов самого bro-bot (bro_bot / bro-bot).
+func firstStringRecursive(depth int, keys []string, sources ...any) string {
+	if depth > 4 {
+		return ""
+	}
+	for _, src := range sources {
+		m, ok := src.(map[string]any)
+		if !ok || m == nil {
+			continue
+		}
+		if val := firstString(m, keys...); val != "" {
+			return val
+		}
+		for _, v := range m {
+			if nested, ok := v.(map[string]any); ok {
+				if val := firstStringRecursive(depth+1, keys, nested); val != "" {
+					return val
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// IsBotMCPToolTitle распознаёт вызовы MCP-инструментов самого bro-bot (bro_bot / bro-bot)
+// только по строгому белому списку инструментов моста.
 func IsBotMCPToolTitle(toolTitle string) bool {
 	lower := strings.ToLower(strings.TrimSpace(toolTitle))
 	if lower == "" {
 		return false
 	}
-	for _, prefix := range []string{
-		"mcp__bro_bot__", "mcp__bro-bot__",
-		"bro_bot__", "bro-bot__",
-		"bro_bot:", "bro_bot/", "bro-bot:", "bro-bot/",
-	} {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
-	}
 	if lower == "bro_bot" || lower == "bro-bot" {
 		return true
 	}
-	// Разбираем формат вида "bro_bot: ask_user" или суффикс после '__', '/', ':', ' '.
+	if tools.IsBotToolName(lower) {
+		return true
+	}
+	if normalized := tools.NormalizeBotToolName(lower); normalized != lower && tools.IsBotToolName(normalized) {
+		return true
+	}
+	if !strings.Contains(lower, "bro_bot") && !strings.Contains(lower, "bro-bot") {
+		return false
+	}
+	// Разбираем формат вида "bro_bot: ask_user" или суффикс после '__', '/', ':', ' ' при наличии bro_bot.
 	base := lower
 	for _, sep := range []string{"__", "/", ":", " "} {
 		if idx := strings.LastIndex(base, sep); idx != -1 {
@@ -126,11 +342,11 @@ func ChoosePermission(readOnly bool, call ToolCallPermission, options []PermOpti
 	var prefer []string
 	switch {
 	case readOnly && !allowedInReadOnly:
-		prefer = []string{"reject_once", "reject_always"}
+		prefer = []string{"reject_once", "reject_always", "reject", "deny_once", "deny_always", "deny"}
 	case readOnly:
-		prefer = []string{"allow_once", "allow_always"}
+		prefer = []string{"allow_once", "allow_always", "allow"}
 	default:
-		prefer = []string{"allow_always", "allow_once"}
+		prefer = []string{"allow_always", "allow_once", "allow"}
 	}
 	for _, kind := range prefer {
 		for _, opt := range options {
@@ -139,7 +355,65 @@ func ChoosePermission(readOnly bool, call ToolCallPermission, options []PermOpti
 			}
 		}
 	}
+	if readOnly && !allowedInReadOnly {
+		for _, opt := range options {
+			if opt.OptionID == "" {
+				continue
+			}
+			kl := strings.ToLower(opt.Kind + " " + opt.OptionID)
+			if strings.Contains(kl, "reject") || strings.Contains(kl, "deny") {
+				return opt.OptionID, true
+			}
+		}
+	}
 	return "", false
+}
+
+// WaitProcess дожидается завершения runDone и readDone, а затем завершения дочернего процесса
+// с льготным таймаутом перед принудительной остановкой.
+func WaitProcess(cmd *exec.Cmd, runDone, readDone <-chan struct{}, finishedOK *atomic.Bool, kill func() error) error {
+	if cmd == nil {
+		return nil
+	}
+	if runDone != nil {
+		<-runDone
+	}
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+
+	if readDone != nil {
+		select {
+		case <-readDone:
+		case <-timer.C:
+			if kill != nil {
+				_ = kill()
+			}
+			<-readDone
+			err := cmd.Wait()
+			if finishedOK != nil && finishedOK.Load() {
+				return nil
+			}
+			return err
+		}
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+	select {
+	case err := <-waitCh:
+		return err
+	case <-timer.C:
+		if kill != nil {
+			_ = kill()
+		}
+		err := <-waitCh
+		if finishedOK != nil && finishedOK.Load() {
+			return nil
+		}
+		return err
+	}
 }
 
 // PermissionResult формирует JSON-ответ на session/request_permission.

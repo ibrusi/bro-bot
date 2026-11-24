@@ -21,6 +21,7 @@ import (
 	"bro-bot/internal/adapters/cliproc"
 	"bro-bot/internal/mcp"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/storage"
 	"bro-bot/internal/utils"
 )
 
@@ -68,6 +69,7 @@ type acpTurnConfig struct {
 	ModelID         string
 	Effort          string
 	ReadOnly        bool
+	Timeout         time.Duration
 	MCPServer       acp.MCPServer
 }
 
@@ -148,7 +150,7 @@ func (a *AgyACPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 
 	modelID, effortVal := resolveAgyModelTarget(args.ModelName, args.Effort)
 	eventR, eventW := io.Pipe()
-	proc := &acpProcess{cmd: cmd, stdout: eventR, stdin: stdin}
+	proc := &acpProcess{cmd: cmd, stdout: eventR, stdin: stdin, runDone: make(chan struct{}), readDone: make(chan struct{})}
 	go drainACPSterr(stderr)
 	go proc.run(ctx, stdin, stdout, eventW, toolSrv, acpTurnConfig{
 		WorkDir:         workDir,
@@ -160,6 +162,7 @@ func (a *AgyACPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 		ModelID:         modelID,
 		Effort:          effortVal,
 		ReadOnly:        args.ReadOnly,
+		Timeout:         args.Timeout,
 		MCPServer:       mcpServer,
 	})
 	return proc, nil
@@ -180,14 +183,15 @@ func drainACPSterr(r io.Reader) {
 }
 
 func (p *acpProcess) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reader, events *io.PipeWriter, toolSrv *acp.ToolServer, cfg acpTurnConfig) {
+	defer close(p.runDone)
 	// Закрываем ToolServer после session/close, чтобы клиент успел прислать DELETE /mcp.
 	defer func() {
 		if toolSrv != nil {
 			_ = toolSrv.Close()
 		}
 	}()
-	defer events.Close()
 	defer stdin.Close()
+	defer events.Close()
 
 	conn := acp.NewConn(stdout, stdin)
 	var sessionID string
@@ -195,22 +199,37 @@ func (p *acpProcess) run(ctx context.Context, stdin io.WriteCloser, stdout io.Re
 	var acceptUpdates atomic.Bool
 	var answer strings.Builder
 	var sawTool bool
+	var sawInteractiveBotTool bool
+	var toolsReg acp.ToolCallRegistry
+	var usageMu sync.Mutex
+	var lastUpdateUsage *acp.StreamUsage
 
 	conn.OnNotify = func(msg acp.Message) {
 		if !acceptUpdates.Load() || msg.Method != "session/update" {
 			return
 		}
+		toolsReg.Observe(msg.Params)
 		step++
 		evt, ok := acp.TranslateUpdate(sessionID, msg.Params, step)
 		if !ok {
 			return
 		}
 		if evt.StepUpdate != nil {
+			if evt.StepUpdate.StepType == "tool" {
+				toolsReg.EnrichStepUpdate(evt.StepUpdate)
+				sawTool = true
+				if acp.IsInteractiveTurnTool(evt.StepUpdate.ToolName) {
+					sawInteractiveBotTool = true
+				}
+			}
 			if evt.StepUpdate.TextDelta != "" {
 				answer.WriteString(evt.StepUpdate.TextDelta)
 			}
-			if evt.StepUpdate.StepType == "tool" {
-				sawTool = true
+			if evt.StepUpdate.Usage != nil {
+				usageMu.Lock()
+				uCopy := *evt.StepUpdate.Usage
+				lastUpdateUsage = &uCopy
+				usageMu.Unlock()
 			}
 		}
 		p.writeEvent(events, evt)
@@ -222,20 +241,37 @@ func (p *acpProcess) run(ctx context.Context, stdin io.WriteCloser, stdout io.Re
 		}
 		var params acp.PermissionParams
 		_ = json.Unmarshal(msg.Params, &params)
+		params.ToolCall = toolsReg.Enrich(params.ToolCall)
 		optionID, ok := acp.ChoosePermission(cfg.ReadOnly, params.ToolCall, params.Options)
+		if !ok || (cfg.ReadOnly && !acp.ReadOnlyToolKind(params.ToolCall.Kind) && !acp.IsBotOrInteractiveTool(params.ToolCall)) {
+			log.Printf("agy-acp: permission readOnly=%v name=%q toolName=%q kind=%q title=%q -> ok=%v opt=%q",
+				cfg.ReadOnly, params.ToolCall.Name, params.ToolCall.ToolName, params.ToolCall.Kind, params.ToolCall.Title, ok, optionID)
+		}
 		_ = conn.Reply(msg.ID, acp.PermissionResult(optionID, ok))
 	}
 
-	readErr := make(chan error, 1)
-	go func() { readErr <- conn.ReadLoop() }()
+	go func() {
+		defer close(p.readDone)
+		_ = conn.ReadLoop()
+	}()
 
 	started := time.Now()
 	finish := func(status, errText string, usage *acp.StreamUsage) {
-		if answer.Len() == 0 && !sawTool && status == "SUCCESS" {
-			status = "ERROR"
-			if errText == "" {
-				errText = "agy returned an empty answer"
+		if status == "SUCCESS" && answer.Len() == 0 {
+			if cfg.ReadOnly && !sawInteractiveBotTool {
+				status = "ERROR"
+				if errText == "" {
+					errText = "agy returned an empty answer"
+				}
+			} else if !sawTool {
+				status = "ERROR"
+				if errText == "" {
+					errText = "agy returned an empty answer"
+				}
 			}
+		}
+		if status == "SUCCESS" {
+			p.finishedOK.Store(true)
 		}
 		p.writeEvent(events, acp.StreamEvent{
 			Event:          "result",
@@ -273,7 +309,13 @@ func (p *acpProcess) run(ctx context.Context, stdin io.WriteCloser, stdout io.Re
 	}
 	p.writeEvent(events, acp.StreamEvent{Event: "init", ConversationID: sessionID})
 
-	if cfg.ModelID != "" {
+	var baseUsage storage.ConversationUsageSummary
+	var hasBaseUsage bool
+	if !fresh && sessionID != "" {
+		baseUsage, hasBaseUsage = storage.ExtractConversationUsage(sessionID)
+	}
+
+	if cfg.ModelID != "" || cfg.Effort != "" {
 		if err := applyAgyModelAndEffort(ctx, conn, sessionID, cfg.ModelID, cfg.Effort); err != nil {
 			log.Printf("agy-acp: model %s (effort %q): %v", cfg.ModelID, cfg.Effort, err)
 		}
@@ -283,12 +325,27 @@ func (p *acpProcess) run(ctx context.Context, stdin io.WriteCloser, stdout io.Re
 	if fresh && cfg.ConversationID != "" {
 		prompt = "The previous Antigravity session could not be resumed. Continue from this message only.\n\n" + prompt
 	}
+	promptCtx := ctx
+	var promptCancel context.CancelFunc
+	if cfg.Timeout > 0 {
+		promptCtx, promptCancel = context.WithTimeout(ctx, cfg.Timeout)
+	}
+
 	acceptUpdates.Store(true)
-	raw, err := conn.Call(ctx, "session/prompt", map[string]any{
+	raw, err := conn.Call(promptCtx, "session/prompt", map[string]any{
 		"sessionId": sessionID,
 		"prompt":    []map[string]string{{"type": "text", "text": prompt}},
 	})
 	acceptUpdates.Store(false)
+	if promptCancel != nil {
+		timedOutByCfg := errors.Is(promptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+		promptCancel()
+		if err != nil && timedOutByCfg {
+			_ = conn.Notify("session/cancel", map[string]any{"sessionId": sessionID})
+			finish("ERROR", context.DeadlineExceeded.Error(), nil)
+			return
+		}
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -312,12 +369,69 @@ func (p *acpProcess) run(ctx context.Context, stdin io.WriteCloser, stdout io.Re
 	default:
 		status, errText = "ERROR", promptRes.StopReason
 	}
-	finish(status, errText, acp.ParseUsage(raw))
 
-	closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	_, _ = conn.Call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
-	cancel()
-	_ = readErr
+	usage := acp.ParseUsage(raw)
+	if usage == nil || (usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CacheReadTokens == 0) {
+		if afterUsage, ok := storage.ExtractConversationUsage(sessionID); ok {
+			dbUsage := diffAgyUsage(baseUsage, hasBaseUsage, afterUsage)
+			if dbUsage != nil {
+				usage = dbUsage
+			}
+		}
+	}
+	if usage == nil {
+		usageMu.Lock()
+		if lastUpdateUsage != nil {
+			uCopy := *lastUpdateUsage
+			usage = &uCopy
+		}
+		usageMu.Unlock()
+	}
+	finish(status, errText, usage)
+
+	if ctx.Err() == nil {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, _ = conn.Call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+		cancel()
+	}
+}
+
+func diffAgyUsage(base storage.ConversationUsageSummary, hasBase bool, after storage.ConversationUsageSummary) *acp.StreamUsage {
+	in := after.Total.InputTokens
+	out := after.Total.OutputTokens
+	think := after.Total.ThinkingTokens
+	cache := after.Total.CacheReadTokens
+	total := after.Total.TotalTokens
+	if hasBase {
+		if in >= base.Total.InputTokens {
+			in -= base.Total.InputTokens
+		}
+		if out >= base.Total.OutputTokens {
+			out -= base.Total.OutputTokens
+		}
+		if think >= base.Total.ThinkingTokens {
+			think -= base.Total.ThinkingTokens
+		}
+		if cache >= base.Total.CacheReadTokens {
+			cache -= base.Total.CacheReadTokens
+		}
+		if total >= base.Total.TotalTokens {
+			total -= base.Total.TotalTokens
+		}
+	}
+	if total == 0 && (in > 0 || out > 0 || think > 0) {
+		total = in + out + think
+	}
+	if in == 0 && out == 0 && think == 0 && cache == 0 && total == 0 {
+		return nil
+	}
+	return &acp.StreamUsage{
+		InputTokens:     in,
+		OutputTokens:    out,
+		ThinkingTokens:  think,
+		CacheReadTokens: cache,
+		TotalTokens:     total,
+	}
 }
 
 func buildAgyAppendPrompt(cfg acpTurnConfig) string {
@@ -374,18 +488,19 @@ func openAgySession(ctx context.Context, conn *acp.Conn, cfg acpTurnConfig) (id 
 }
 
 func applyAgyModelAndEffort(ctx context.Context, conn *acp.Conn, sessionID, modelID, effortVal string) error {
-	if _, err := conn.Call(ctx, "session/set_model", map[string]any{
-		"sessionId": sessionID,
-		"modelId":   modelID,
-	}); err == nil {
-		return nil
-	}
-	if _, err := conn.Call(ctx, "session/set_config_option", map[string]any{
-		"sessionId": sessionID,
-		"configId":  "model",
-		"value":     modelID,
-	}); err != nil {
-		return err
+	if modelID != "" {
+		if _, err := conn.Call(ctx, "session/set_model", map[string]any{
+			"sessionId": sessionID,
+			"modelId":   modelID,
+		}); err != nil {
+			if _, err2 := conn.Call(ctx, "session/set_config_option", map[string]any{
+				"sessionId": sessionID,
+				"configId":  "model",
+				"value":     modelID,
+			}); err2 != nil {
+				return err2
+			}
+		}
 	}
 	if effortVal != "" {
 		thought := effortVal
@@ -411,10 +526,13 @@ func (p *acpProcess) writeEvent(w io.Writer, evt acp.StreamEvent) {
 
 // acpProcess инкапсулирует один ход agy acp как стандартный ports.AgentProcess.
 type acpProcess struct {
-	cmd      *exec.Cmd
-	stdout   io.Reader
-	stdin    io.WriteCloser
-	killOnce sync.Once
+	cmd        *exec.Cmd
+	stdout     io.Reader
+	stdin      io.WriteCloser
+	runDone    chan struct{}
+	readDone   chan struct{}
+	finishedOK atomic.Bool
+	killOnce   sync.Once
 }
 
 func (p *acpProcess) Stdout() io.Reader { return p.stdout }
@@ -422,10 +540,7 @@ func (p *acpProcess) Stdout() io.Reader { return p.stdout }
 func (p *acpProcess) Stdin() io.WriteCloser { return nopCloser{} }
 
 func (p *acpProcess) Wait() error {
-	if p.cmd == nil {
-		return nil
-	}
-	return p.cmd.Wait()
+	return acp.WaitProcess(p.cmd, p.runDone, p.readDone, &p.finishedOK, p.Kill)
 }
 
 func (p *acpProcess) Kill() error {

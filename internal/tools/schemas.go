@@ -7,6 +7,37 @@ import (
 	"github.com/google/generative-ai-go/genai"
 )
 
+var botToolPrefixes = []string{
+	"mcp__bro_bot__",
+	"mcp__bro-bot__",
+	"mcp_bro_bot_",
+	"mcp_bro-bot_",
+	"bro_bot__",
+	"bro-bot__",
+	"bro_bot:",
+	"bro_bot/",
+	"bro_bot_",
+	"bro-bot:",
+	"bro-bot/",
+	"bro-bot_",
+}
+
+// NormalizeBotToolName приводит имя MCP-инструмента bro-bot (с любым провайдерным префиксом)
+// к его каноническому имени из реестра моста.
+func NormalizeBotToolName(name string) string {
+	target := strings.ToLower(strings.TrimSpace(name))
+	if target == "" {
+		return ""
+	}
+	for _, prefix := range botToolPrefixes {
+		if strings.HasPrefix(target, prefix) {
+			target = strings.TrimPrefix(target, prefix)
+			break
+		}
+	}
+	return strings.TrimSpace(target)
+}
+
 // IsBotToolName сообщает, является ли имя инструмента одним из инструментов моста bro-bot.
 func IsBotToolName(name string) bool {
 	target := strings.ToLower(strings.TrimSpace(name))

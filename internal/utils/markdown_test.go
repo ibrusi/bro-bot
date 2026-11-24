@@ -700,4 +700,23 @@ func TestExtractAskQuestionItems(t *testing.T) {
 	if len(single) != 1 || !single[0].MultiSelect || len(single[0].Options) != 2 {
 		t.Errorf("unexpected single question items: %+v", single)
 	}
+
+	objectOpts := ExtractAskQuestionItems(map[string]interface{}{
+		"questions": []interface{}{
+			map[string]interface{}{
+				"question":    "Какую БД?",
+				"multiSelect": true,
+				"options": []interface{}{
+					map[string]interface{}{"label": "SQLite", "description": "встроенная"},
+					map[string]interface{}{"label": "Postgres"},
+				},
+			},
+		},
+	})
+	if len(objectOpts) != 1 || !objectOpts[0].MultiSelect || len(objectOpts[0].Options) != 2 {
+		t.Fatalf("unexpected objectOpts: %+v", objectOpts)
+	}
+	if objectOpts[0].Options[0] != "SQLite — встроенная" || objectOpts[0].Options[1] != "Postgres" {
+		t.Errorf("unexpected object options formatting: %+v", objectOpts[0].Options)
+	}
 }

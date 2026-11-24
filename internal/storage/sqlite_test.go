@@ -2,7 +2,10 @@ package storage
 
 import (
 	"context"
+	"database/sql"
+	"encoding/binary"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -691,5 +694,62 @@ func TestTaskPendingQuestionsPersistence(t *testing.T) {
 	cleared, _ := s.GetTask(ctx, taskID)
 	if len(cleared.PendingQuestions) != 0 || cleared.CurrentQuestionIndex != 0 {
 		t.Errorf("expected cleared pending questions, got idx=%d len=%d", cleared.CurrentQuestionIndex, len(cleared.PendingQuestions))
+	}
+}
+
+func encodeTestVarint(v uint64) []byte {
+	var buf [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(buf[:], v)
+	return append([]byte(nil), buf[:n]...)
+}
+
+func encodeTestAgyUsageMeta(in, out, cache, think uint64) []byte {
+	var inner []byte
+	inner = append(inner, 0x10)
+	inner = append(inner, encodeTestVarint(in)...)
+	inner = append(inner, 0x18)
+	inner = append(inner, encodeTestVarint(out)...)
+	inner = append(inner, 0x28)
+	inner = append(inner, encodeTestVarint(cache)...)
+	inner = append(inner, 0x50)
+	inner = append(inner, encodeTestVarint(think)...)
+
+	var outer []byte
+	outer = append(outer, 0x4a)
+	outer = append(outer, encodeTestVarint(uint64(len(inner)))...)
+	outer = append(outer, inner...)
+	return outer
+}
+
+func TestExtractConversationUsageFromPath(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "conv.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE steps (idx INTEGER, step_type INTEGER, metadata BLOB);`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO steps (idx, step_type, metadata) VALUES (1, 15, ?), (2, 10, NULL), (3, 15, ?)`,
+		encodeTestAgyUsageMeta(1000, 120, 400, 30),
+		encodeTestAgyUsageMeta(2500, 300, 800, 50),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, ok := ExtractConversationUsageFromPath(dbPath)
+	if !ok {
+		t.Fatalf("expected ExtractConversationUsageFromPath ok=true")
+	}
+	if summary.Steps != 2 {
+		t.Errorf("Steps = %d, want 2", summary.Steps)
+	}
+	if summary.Total.InputTokens != 3500 || summary.Total.OutputTokens != 420 || summary.Total.CacheReadTokens != 1200 || summary.Total.ThinkingTokens != 80 || summary.Total.TotalTokens != 3920 {
+		t.Errorf("unexpected Total: %+v", summary.Total)
+	}
+	if summary.LastStep.InputTokens != 2500 || summary.LastStep.OutputTokens != 300 || summary.LastStep.TotalTokens != 2800 {
+		t.Errorf("unexpected LastStep: %+v", summary.LastStep)
 	}
 }

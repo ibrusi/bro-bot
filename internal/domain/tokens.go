@@ -3,6 +3,7 @@ package domain
 import (
 	"bro-bot/internal/i18n"
 	"bro-bot/internal/storage"
+	"bro-bot/internal/tools"
 	"bro-bot/internal/utils"
 	"context"
 	"encoding/json"
@@ -245,6 +246,7 @@ type StreamStepUpdate struct {
 	StepIndex       int             `json:"step_index"`
 	State           string          `json:"state"`
 	StepType        string          `json:"step_type"`
+	ToolCallID      string          `json:"tool_call_id,omitempty"`
 	ToolName        string          `json:"tool_name"`
 	ToolInfo        *StreamToolInfo `json:"tool_info"`
 	TextDelta       string          `json:"text_delta"`
@@ -369,17 +371,26 @@ func (m TaskTokenMetrics) FormatCompletionSummary(lang string) string {
 	return bldr.String()
 }
 
-// TokenTracker управляет метриками токенов текущей задачи, последнего запуска и всей сессии бота.
-type TokenTracker struct {
-	sync.RWMutex
-	currentTask       *TaskTokenMetrics
+type taskTokenState struct {
+	metrics           *TaskTokenMetrics
 	stepUsages        map[int]UsageStats
+	unnamedStepSeq    int
+	liveUsage         *UsageStats
+	dbStepDelta       *UsageStats
 	accumulatedSteps  UsageStats
 	stepDurationTotal float64
-	lastTask          *TaskTokenMetrics
-	totalTasksRun     int
-	sessionUsage      UsageStats
-	totalDuration     float64
+}
+
+// TokenTracker управляет метриками токенов активных задач, последнего запуска и всей сессии бота.
+type TokenTracker struct {
+	sync.RWMutex
+	tasks         map[int]*taskTokenState
+	activeTaskID  int
+	hasActiveTask bool
+	lastTask      *TaskTokenMetrics
+	totalTasksRun int
+	sessionUsage  UsageStats
+	totalDuration float64
 
 	// Метрики диалогового режима учитываются отдельно, чтобы не портить статистику задач.
 	chatUsage     UsageStats
@@ -393,34 +404,130 @@ var GlobalTokenTracker = NewTokenTracker()
 
 func NewTokenTracker() *TokenTracker {
 	return &TokenTracker{
+		tasks: make(map[int]*taskTokenState),
+	}
+}
+
+func (t *TokenTracker) ensureMapLocked() {
+	if t.tasks == nil {
+		t.tasks = make(map[int]*taskTokenState)
+	}
+}
+
+func (t *TokenTracker) newTaskState(project, model, agent, prompt string) *taskTokenState {
+	if agent == "" {
+		agent = "agy"
+	}
+	return &taskTokenState{
+		metrics: &TaskTokenMetrics{
+			Project:   project,
+			Model:     model,
+			Agent:     agent,
+			Prompt:    prompt,
+			StartedAt: time.Now(),
+			Usage:     UsageStats{},
+		},
 		stepUsages: make(map[int]UsageStats),
 	}
 }
 
-// StartTaskWithAgent инициализирует отслеживание новой задачи с указанием агента.
-func (t *TokenTracker) StartTaskWithAgent(project, model, agent, prompt string) {
+func (t *TokenTracker) startTaskWithAgentLocked(taskID int, project, model, agent, prompt string) {
+	t.ensureMapLocked()
+	t.tasks[taskID] = t.newTaskState(project, model, agent, prompt)
+	t.activeTaskID = taskID
+	t.hasActiveTask = true
+}
+
+func (t *TokenTracker) stateForTaskLocked(taskID int, allowLegacyFallback bool) *taskTokenState {
+	if t.tasks == nil {
+		return nil
+	}
+	if st, ok := t.tasks[taskID]; ok && st != nil && st.metrics != nil {
+		return st
+	}
+	if allowLegacyFallback {
+		if st, ok := t.tasks[0]; ok && st != nil && st.metrics != nil {
+			return st
+		}
+		if t.hasActiveTask {
+			if st, ok := t.tasks[t.activeTaskID]; ok && st != nil && st.metrics != nil {
+				return st
+			}
+		}
+	}
+	return nil
+}
+
+func (t *TokenTracker) activeStateLocked() *taskTokenState {
+	if t.tasks == nil {
+		return nil
+	}
+	if t.hasActiveTask {
+		if st, ok := t.tasks[t.activeTaskID]; ok && st != nil && st.metrics != nil {
+			return st
+		}
+	}
+	for id, st := range t.tasks {
+		if st != nil && st.metrics != nil {
+			t.activeTaskID = id
+			t.hasActiveTask = true
+			return st
+		}
+	}
+	return nil
+}
+
+func (t *TokenTracker) pickNextActiveLocked(removedID int) {
+	if t.activeTaskID != removedID {
+		return
+	}
+	bestID := 0
+	found := false
+	for id, st := range t.tasks {
+		if st != nil && st.metrics != nil && (!found || id > bestID) {
+			bestID = id
+			found = true
+		}
+	}
+	t.activeTaskID = bestID
+	t.hasActiveTask = found
+}
+
+// StartTaskWithAgentForID инициализирует отслеживание конкретной задачи с указанием агента.
+func (t *TokenTracker) StartTaskWithAgentForID(taskID int, project, model, agent, prompt string) {
 	t.Lock()
 	defer t.Unlock()
+	t.startTaskWithAgentLocked(taskID, project, model, agent, prompt)
+}
 
-	if agent == "" {
-		agent = "agy"
-	}
-	t.currentTask = &TaskTokenMetrics{
-		Project:   project,
-		Model:     model,
-		Agent:     agent,
-		Prompt:    prompt,
-		StartedAt: time.Now(),
-		Usage:     UsageStats{},
-	}
-	t.stepUsages = make(map[int]UsageStats)
-	t.accumulatedSteps = UsageStats{}
-	t.stepDurationTotal = 0
+// StartTaskWithAgent инициализирует отслеживание новой задачи с указанием агента.
+func (t *TokenTracker) StartTaskWithAgent(project, model, agent, prompt string) {
+	t.StartTaskWithAgentForID(0, project, model, agent, prompt)
 }
 
 // StartTask инициализирует отслеживание новой задачи (по умолчанию агент agy).
 func (t *TokenTracker) StartTask(project, model, prompt string) {
-	t.StartTaskWithAgent(project, model, "agy", prompt)
+	t.StartTaskWithAgentForID(0, project, model, "agy", prompt)
+}
+
+// StartTaskIfNotActiveWithAgentForID инициализирует отслеживание задачи taskID, если она ещё не отслеживается.
+func (t *TokenTracker) StartTaskIfNotActiveWithAgentForID(taskID int, project, model, agent, prompt string) {
+	t.Lock()
+	defer t.Unlock()
+
+	t.ensureMapLocked()
+	if st, ok := t.tasks[taskID]; ok && st != nil && st.metrics != nil {
+		if model != "" && st.metrics.Model == "" {
+			st.metrics.Model = model
+		}
+		if agent != "" && st.metrics.Agent == "" {
+			st.metrics.Agent = agent
+		}
+		t.activeTaskID = taskID
+		t.hasActiveTask = true
+		return
+	}
+	t.startTaskWithAgentLocked(taskID, project, model, agent, prompt)
 }
 
 // StartTaskIfNotActiveWithAgent инициализирует отслеживание, если текущая задача не установлена.
@@ -428,42 +535,65 @@ func (t *TokenTracker) StartTaskIfNotActiveWithAgent(project, model, agent, prom
 	t.Lock()
 	defer t.Unlock()
 
-	if t.currentTask != nil {
+	if t.hasActiveTask && t.tasks[t.activeTaskID] != nil {
 		return
 	}
-
-	if agent == "" {
-		agent = "agy"
-	}
-	t.currentTask = &TaskTokenMetrics{
-		Project:   project,
-		Model:     model,
-		Agent:     agent,
-		Prompt:    prompt,
-		StartedAt: time.Now(),
-		Usage:     UsageStats{},
-	}
-	t.stepUsages = make(map[int]UsageStats)
-	t.accumulatedSteps = UsageStats{}
-	t.stepDurationTotal = 0
+	t.startTaskWithAgentLocked(0, project, model, agent, prompt)
 }
 
 // StartTaskIfNotActive инициализирует отслеживание, если текущая задача не установлена.
-// Полезно при возобновлении задачи, которая была приостановлена (и currentTask == nil).
+// Полезно при возобновлении задачи, которая была приостановлена (и слот ещё не активен).
 func (t *TokenTracker) StartTaskIfNotActive(project, model, prompt string) {
 	t.StartTaskIfNotActiveWithAgent(project, model, "agy", prompt)
 }
 
-// StartNextStep сохраняет накопленные метрики предыдущего шага в рамках одной задачи (followups).
+// StartNextStepForID сохраняет накопленные метрики предыдущего шага в рамках задачи taskID.
+func (t *TokenTracker) StartNextStepForID(taskID int, model string) {
+	t.Lock()
+	defer t.Unlock()
+
+	st := t.stateForTaskLocked(taskID, false)
+	if st == nil || st.metrics == nil {
+		return
+	}
+	if model != "" {
+		st.metrics.Model = model
+	}
+	st.stepUsages = make(map[int]UsageStats)
+	st.unnamedStepSeq = 0
+	st.liveUsage = nil
+	st.dbStepDelta = nil
+}
+
+// StartNextStep сохраняет накопленные метрики предыдущего шага в рамках текущей задачи.
 func (t *TokenTracker) StartNextStep(model string) {
 	t.Lock()
 	defer t.Unlock()
 
-	if t.currentTask == nil {
+	st := t.activeStateLocked()
+	if st == nil || st.metrics == nil {
 		return
 	}
-	t.currentTask.Model = model
-	t.stepUsages = make(map[int]UsageStats)
+	if model != "" {
+		st.metrics.Model = model
+	}
+	st.stepUsages = make(map[int]UsageStats)
+	st.unnamedStepSeq = 0
+	st.liveUsage = nil
+	st.dbStepDelta = nil
+}
+
+// SetConversationIDForID сохраняет ID сессии для задачи taskID.
+func (t *TokenTracker) SetConversationIDForID(taskID int, convID string) {
+	t.Lock()
+	defer t.Unlock()
+
+	if convID == "" {
+		return
+	}
+	if st := t.stateForTaskLocked(taskID, false); st != nil && st.metrics != nil {
+		st.metrics.ConversationID = convID
+	}
 }
 
 // SetConversationID сохраняет ID сессии agy для текущей задачи.
@@ -471,8 +601,21 @@ func (t *TokenTracker) SetConversationID(convID string) {
 	t.Lock()
 	defer t.Unlock()
 
-	if t.currentTask != nil && convID != "" {
-		t.currentTask.ConversationID = convID
+	if convID == "" {
+		return
+	}
+	if st := t.activeStateLocked(); st != nil && st.metrics != nil {
+		st.metrics.ConversationID = convID
+	}
+}
+
+// RecordToolCallForID увеличивает счётчик вызовов инструментов задачи taskID.
+func (t *TokenTracker) RecordToolCallForID(taskID int) {
+	t.Lock()
+	defer t.Unlock()
+
+	if st := t.stateForTaskLocked(taskID, false); st != nil && st.metrics != nil {
+		st.metrics.ToolCallsCount++
 	}
 }
 
@@ -481,83 +624,383 @@ func (t *TokenTracker) RecordToolCall() {
 	t.Lock()
 	defer t.Unlock()
 
-	if t.currentTask != nil {
-		t.currentTask.ToolCallsCount++
+	if st := t.activeStateLocked(); st != nil && st.metrics != nil {
+		st.metrics.ToolCallsCount++
 	}
 }
 
-// RecordStepUsage сохраняет метрики конкретного шага агента.
+// RecordStepUsageForID сохраняет метрики конкретного шага задачи taskID.
+// Для потоков без step_index (stepIndex <= 0) каждый вызов накапливается под уникальным индексом.
+func (t *TokenTracker) RecordStepUsageForID(taskID int, stepIndex int, usage UsageStats) {
+	t.Lock()
+	defer t.Unlock()
+
+	st := t.stateForTaskLocked(taskID, false)
+	if st == nil || st.metrics == nil {
+		return
+	}
+	t.recordStepUsageOnStateLocked(st, stepIndex, usage)
+}
+
+// RecordStepUsage сохраняет метрики конкретного шага текущей задачи.
 func (t *TokenTracker) RecordStepUsage(stepIndex int, usage UsageStats) {
 	t.Lock()
 	defer t.Unlock()
 
-	if t.currentTask == nil {
+	st := t.activeStateLocked()
+	if st == nil || st.metrics == nil {
 		return
 	}
-	t.stepUsages[stepIndex] = usage
-	t.currentTask.LastStepUsage = usage
-	t.recalculateCurrentUsage()
+	t.recordStepUsageOnStateLocked(st, stepIndex, usage)
 }
 
-// RecordResultUsage фиксирует итоговые метрики шага из agy result.
+func (t *TokenTracker) recordStepUsageOnStateLocked(st *taskTokenState, stepIndex int, usage UsageStats) {
+	if st.stepUsages == nil {
+		st.stepUsages = make(map[int]UsageStats)
+	}
+	key := stepIndex
+	if key <= 0 {
+		st.unnamedStepSeq--
+		key = st.unnamedStepSeq
+	}
+	st.stepUsages[key] = usage
+	st.metrics.LastStepUsage = usage
+	recalculateStateLocked(st)
+}
+
+// RecordLiveSnapshotUsageForID обновляет оперативный снимок токенов (ACP usage_update) без двойного счёта.
+func (t *TokenTracker) RecordLiveSnapshotUsageForID(taskID int, usage UsageStats) {
+	t.Lock()
+	defer t.Unlock()
+
+	st := t.stateForTaskLocked(taskID, false)
+	if st == nil || st.metrics == nil {
+		return
+	}
+	uCopy := usage
+	st.liveUsage = &uCopy
+	if hasDetailedUsage(usage) || !hasDetailedUsage(st.metrics.LastStepUsage) {
+		st.metrics.LastStepUsage = usage
+	}
+	recalculateStateLocked(st)
+}
+
+// SyncFromAgyDB считывает актуальную статистику шага из локальной БД agy (без удержания блокировки трекера).
+func (t *TokenTracker) SyncFromAgyDB(taskID int, convID string, baseTotal UsageStats) {
+	if convID == "" {
+		return
+	}
+	summary, ok := storage.ExtractConversationUsage(convID)
+	if !ok || summary.Steps == 0 {
+		return
+	}
+
+	delta := UsageStats{
+		InputTokens:     clampNonNegativeInt64(summary.Total.InputTokens - baseTotal.InputTokens),
+		OutputTokens:    clampNonNegativeInt64(summary.Total.OutputTokens - baseTotal.OutputTokens),
+		ThinkingTokens:  clampNonNegativeInt64(summary.Total.ThinkingTokens - baseTotal.ThinkingTokens),
+		CacheReadTokens: clampNonNegativeInt64(summary.Total.CacheReadTokens - baseTotal.CacheReadTokens),
+		TotalTokens:     clampNonNegativeInt64(summary.Total.TotalTokens - baseTotal.TotalTokens),
+	}
+	if delta.TotalTokens == 0 && (delta.InputTokens > 0 || delta.OutputTokens > 0) {
+		delta.TotalTokens = delta.InputTokens + delta.OutputTokens
+	}
+	lastStep := UsageStats{
+		InputTokens:     summary.LastStep.InputTokens,
+		OutputTokens:    summary.LastStep.OutputTokens,
+		ThinkingTokens:  summary.LastStep.ThinkingTokens,
+		CacheReadTokens: summary.LastStep.CacheReadTokens,
+		TotalTokens:     summary.LastStep.TotalTokens,
+	}
+
+	t.Lock()
+	defer t.Unlock()
+
+	st := t.stateForTaskLocked(taskID, false)
+	if st == nil || st.metrics == nil {
+		return
+	}
+	if st.metrics.ConversationID == "" {
+		st.metrics.ConversationID = convID
+	}
+	if delta.InputTokens > 0 || delta.OutputTokens > 0 || delta.ThinkingTokens > 0 || delta.CacheReadTokens > 0 || delta.TotalTokens > 0 {
+		dCopy := delta
+		st.dbStepDelta = &dCopy
+	}
+	if lastStep.InputTokens > 0 || lastStep.OutputTokens > 0 || lastStep.CacheReadTokens > 0 || lastStep.TotalTokens > 0 {
+		st.metrics.LastStepUsage = lastStep
+	}
+	recalculateStateLocked(st)
+}
+
+// RecordResultUsageForID фиксирует итоговые метрики завершённого шага задачи taskID.
+func (t *TokenTracker) RecordResultUsageForID(taskID int, usage UsageStats, durationSeconds float64, numTurns int) {
+	t.Lock()
+	defer t.Unlock()
+
+	st := t.stateForTaskLocked(taskID, false)
+	if st == nil || st.metrics == nil {
+		return
+	}
+	t.recordResultUsageOnStateLocked(st, usage, durationSeconds, numTurns)
+}
+
+// RecordResultUsage фиксирует итоговые метрики шага из результата работы агента.
 func (t *TokenTracker) RecordResultUsage(usage UsageStats, durationSeconds float64, numTurns int) {
 	t.Lock()
 	defer t.Unlock()
 
-	if t.currentTask == nil {
+	st := t.activeStateLocked()
+	if st == nil || st.metrics == nil {
 		return
 	}
-
-	// Добавляем зафиксированные итоги текущего шага к задаче
-	t.accumulatedSteps.Add(usage)
-	t.stepDurationTotal += durationSeconds
-	t.currentTask.Turns += numTurns
-	t.stepUsages = make(map[int]UsageStats)
-
-	t.currentTask.Usage = t.accumulatedSteps
-	t.currentTask.DurationSeconds = t.stepDurationTotal
+	t.recordResultUsageOnStateLocked(st, usage, durationSeconds, numTurns)
 }
 
-// recalculateCurrentUsage обновляет суммарную нагрузку с учётом промежуточных шагов.
-func (t *TokenTracker) recalculateCurrentUsage() {
-	total := t.accumulatedSteps
-	for _, u := range t.stepUsages {
-		total.Add(u)
+func (t *TokenTracker) recordResultUsageOnStateLocked(st *taskTokenState, usage UsageStats, durationSeconds float64, numTurns int) {
+	effectiveUsage := usage
+	if isZeroUsage(effectiveUsage) {
+		effectiveUsage = provisionalStepUsage(st)
 	}
-	t.currentTask.Usage = total
-	if t.stepDurationTotal > 0 {
-		t.currentTask.DurationSeconds = t.stepDurationTotal
+	if effectiveUsage.TotalTokens == 0 && (effectiveUsage.InputTokens > 0 || effectiveUsage.OutputTokens > 0) {
+		effectiveUsage.TotalTokens = effectiveUsage.InputTokens + effectiveUsage.OutputTokens
+	}
+
+	st.accumulatedSteps.Add(effectiveUsage)
+	st.stepDurationTotal += durationSeconds
+	st.metrics.Turns += numTurns
+	if numTurns <= 1 && !isZeroUsage(effectiveUsage) &&
+		(isZeroUsage(st.metrics.LastStepUsage) || (!hasDetailedUsage(st.metrics.LastStepUsage) && hasDetailedUsage(effectiveUsage))) {
+		st.metrics.LastStepUsage = effectiveUsage
+	}
+	st.stepUsages = make(map[int]UsageStats)
+	st.unnamedStepSeq = 0
+	st.liveUsage = nil
+	st.dbStepDelta = nil
+
+	st.metrics.Usage = st.accumulatedSteps
+	if st.stepDurationTotal > 0 {
+		st.metrics.DurationSeconds = st.stepDurationTotal
 	}
 }
 
-// FinishTask завершает задачу и сохраняет метрики в историю.
-func (t *TokenTracker) FinishTask(prURL string) TaskTokenMetrics {
+func clampNonNegativeInt64(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+func isZeroUsage(u UsageStats) bool {
+	return u.TotalTokens == 0 && u.InputTokens == 0 && u.OutputTokens == 0 && u.ThinkingTokens == 0 && u.CacheReadTokens == 0
+}
+
+func hasDetailedUsage(u UsageStats) bool {
+	return u.InputTokens > 0 || u.OutputTokens > 0
+}
+
+func usageMagnitude(u UsageStats) int64 {
+	m := u.InputTokens + u.OutputTokens + u.ThinkingTokens
+	if u.TotalTokens > m {
+		return u.TotalTokens
+	}
+	return m
+}
+
+func pickRicherUsage(a, b UsageStats) UsageStats {
+	if isZeroUsage(a) {
+		return b
+	}
+	if isZeroUsage(b) {
+		return a
+	}
+	aDet, bDet := hasDetailedUsage(a), hasDetailedUsage(b)
+	if aDet != bDet {
+		if aDet {
+			return a
+		}
+		return b
+	}
+	if usageMagnitude(b) > usageMagnitude(a) {
+		return b
+	}
+	return a
+}
+
+func provisionalStepUsage(st *taskTokenState) UsageStats {
+	var stepSum UsageStats
+	for _, u := range st.stepUsages {
+		stepSum.Add(u)
+	}
+	best := stepSum
+	if st.dbStepDelta != nil {
+		best = pickRicherUsage(best, *st.dbStepDelta)
+	}
+	if st.liveUsage != nil {
+		best = pickRicherUsage(best, *st.liveUsage)
+	}
+	return best
+}
+
+// recalculateStateLocked обновляет суммарную нагрузку задачи с учётом промежуточных данных текущего шага.
+func recalculateStateLocked(st *taskTokenState) {
+	total := st.accumulatedSteps
+	total.Add(provisionalStepUsage(st))
+	st.metrics.Usage = total
+	if st.stepDurationTotal > 0 {
+		st.metrics.DurationSeconds = st.stepDurationTotal
+	}
+}
+
+// SnapshotForID возвращает копию текущих метрик задачи taskID (или nil, если задача не отслеживается).
+func (t *TokenTracker) SnapshotForID(taskID int) *TaskTokenMetrics {
+	t.RLock()
+	defer t.RUnlock()
+
+	st := t.stateForTaskLocked(taskID, false)
+	if st == nil || st.metrics == nil {
+		return nil
+	}
+	cp := *st.metrics
+	return &cp
+}
+
+// DetachTaskForID снимает задачу с активного трекинга (например при /pause) без учёта в завершённой истории
+// и возвращает снимок накопленных метрик для сохранения.
+func (t *TokenTracker) DetachTaskForID(taskID int) *TaskTokenMetrics {
 	t.Lock()
 	defer t.Unlock()
 
-	if t.currentTask == nil {
+	st := t.stateForTaskLocked(taskID, false)
+	if st == nil || st.metrics == nil {
+		return nil
+	}
+	cp := *st.metrics
+	delete(t.tasks, taskID)
+	t.pickNextActiveLocked(taskID)
+	return &cp
+}
+
+// HydrateFromTasks восстанавливает активные/ожидающие/поставленные на паузу задачи после перезапуска бота.
+func (t *TokenTracker) HydrateFromTasks(tasks []*TaskSession) {
+	type item struct {
+		id      int
+		status  TaskStatus
+		metrics TaskTokenMetrics
+	}
+	var items []item
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		view := task.Snapshot()
+		if view.TokenMetrics == nil {
+			continue
+		}
+		switch view.Status {
+		case TaskStatusPlanning, TaskStatusRunning, TaskStatusWaitingInput, TaskStatusWaitingApproval, TaskStatusPaused:
+		default:
+			continue
+		}
+		mCopy := *view.TokenMetrics
+		if mCopy.Project == "" {
+			mCopy.Project = view.Project
+		}
+		if mCopy.Model == "" {
+			mCopy.Model = view.Model
+		}
+		if mCopy.Agent == "" {
+			mCopy.Agent = view.Agent
+		}
+		if mCopy.ConversationID == "" {
+			mCopy.ConversationID = view.ConversationID
+		}
+		if mCopy.StartedAt.IsZero() {
+			mCopy.StartedAt = view.StartedAt
+		}
+		items = append(items, item{id: view.ID, status: view.Status, metrics: mCopy})
+	}
+	if len(items) == 0 {
+		return
+	}
+
+	t.Lock()
+	defer t.Unlock()
+	t.ensureMapLocked()
+
+	for _, it := range items {
+		if existing, ok := t.tasks[it.id]; ok && existing != nil && existing.metrics != nil {
+			continue
+		}
+		mCopy := it.metrics
+		t.tasks[it.id] = &taskTokenState{
+			metrics:           &mCopy,
+			stepUsages:        make(map[int]UsageStats),
+			accumulatedSteps:  mCopy.Usage,
+			stepDurationTotal: mCopy.DurationSeconds,
+		}
+		if it.status != TaskStatusPaused || !t.hasActiveTask {
+			t.activeTaskID = it.id
+			t.hasActiveTask = true
+		}
+	}
+}
+
+// FinishTaskForID завершает отслеживание задачи taskID и переносит её метрики в общую статистику сессии.
+func (t *TokenTracker) FinishTaskForID(taskID int, prURL string) TaskTokenMetrics {
+	t.Lock()
+	defer t.Unlock()
+
+	st := t.stateForTaskLocked(taskID, false)
+	if st == nil || st.metrics == nil {
 		if t.lastTask != nil {
 			return *t.lastTask
 		}
 		return TaskTokenMetrics{}
 	}
+	return t.completeTaskStateLocked(taskID, st, prURL, true)
+}
 
-	t.currentTask.FinishedAt = time.Now()
-	t.currentTask.PRURL = prURL
-	if t.currentTask.DurationSeconds <= 0 {
-		t.currentTask.DurationSeconds = t.currentTask.FinishedAt.Sub(t.currentTask.StartedAt).Seconds()
+// FinishTask завершает активную задачу и сохраняет метрики в историю.
+func (t *TokenTracker) FinishTask(prURL string) TaskTokenMetrics {
+	t.Lock()
+	defer t.Unlock()
+
+	st := t.activeStateLocked()
+	if st == nil || st.metrics == nil {
+		if t.lastTask != nil {
+			return *t.lastTask
+		}
+		return TaskTokenMetrics{}
 	}
+	return t.completeTaskStateLocked(t.activeTaskID, st, prURL, true)
+}
 
-	completed := *t.currentTask
-	t.lastTask = &completed
-	t.currentTask = nil
-	t.stepUsages = make(map[int]UsageStats)
+// CancelTaskForID прерывает отслеживание задачи taskID с сохранением накопленных метрик в сессию.
+func (t *TokenTracker) CancelTaskForID(taskID int) {
+	t.Lock()
+	defer t.Unlock()
 
-	t.totalTasksRun++
-	t.sessionUsage.Add(completed.Usage)
-	t.totalDuration += completed.EffectiveDuration()
+	st := t.stateForTaskLocked(taskID, false)
+	if st == nil || st.metrics == nil {
+		return
+	}
+	t.completeTaskStateLocked(taskID, st, "", false)
+}
 
-	return completed
+// CancelAllTasks прерывает все отслеживаемые задачи с сохранением метрик в сессию.
+func (t *TokenTracker) CancelAllTasks() {
+	t.Lock()
+	defer t.Unlock()
+
+	for id, st := range t.tasks {
+		if st != nil && st.metrics != nil {
+			t.completeTaskStateLocked(id, st, "", false)
+		}
+	}
+	t.tasks = make(map[int]*taskTokenState)
+	t.activeTaskID = 0
+	t.hasActiveTask = false
 }
 
 // CancelTask прерывает текущую задачу с сохранением метрик в сессию.
@@ -565,23 +1008,40 @@ func (t *TokenTracker) CancelTask() {
 	t.Lock()
 	defer t.Unlock()
 
-	if t.currentTask == nil {
+	st := t.activeStateLocked()
+	if st == nil || st.metrics == nil {
 		return
 	}
+	t.completeTaskStateLocked(t.activeTaskID, st, "", false)
+}
 
-	t.currentTask.FinishedAt = time.Now()
-	if t.currentTask.DurationSeconds <= 0 {
-		t.currentTask.DurationSeconds = t.currentTask.FinishedAt.Sub(t.currentTask.StartedAt).Seconds()
+func (t *TokenTracker) completeTaskStateLocked(taskID int, st *taskTokenState, prURL string, setPR bool) TaskTokenMetrics {
+	st.metrics.FinishedAt = time.Now()
+	if setPR {
+		st.metrics.PRURL = prURL
+	}
+	if st.metrics.DurationSeconds <= 0 && !st.metrics.StartedAt.IsZero() {
+		st.metrics.DurationSeconds = st.metrics.FinishedAt.Sub(st.metrics.StartedAt).Seconds()
 	}
 
-	completed := *t.currentTask
+	completed := *st.metrics
 	t.lastTask = &completed
-	t.currentTask = nil
-	t.stepUsages = make(map[int]UsageStats)
+	delete(t.tasks, taskID)
+	t.pickNextActiveLocked(taskID)
 
 	t.totalTasksRun++
 	t.sessionUsage.Add(completed.Usage)
 	t.totalDuration += completed.EffectiveDuration()
+	return completed
+}
+
+// GetLiveStatusSnippetForID возвращает компактную строчку токенов для задачи taskID.
+func (t *TokenTracker) GetLiveStatusSnippetForID(taskID int, lang string) string {
+	t.RLock()
+	defer t.RUnlock()
+
+	st := t.stateForTaskLocked(taskID, false)
+	return formatLiveStatusSnippet(st, lang)
 }
 
 // GetLiveStatusSnippet возвращает компактную строчку для живого обновления статуса.
@@ -589,43 +1049,100 @@ func (t *TokenTracker) GetLiveStatusSnippet(lang string) string {
 	t.RLock()
 	defer t.RUnlock()
 
-	if t.currentTask == nil {
-		return ""
-	}
-
-	total := t.currentTask.Usage.TotalTokens
-	out := t.currentTask.Usage.OutputTokens
-	dur := t.currentTask.EffectiveDuration()
-	cache := t.currentTask.Usage.CacheReadTokens
-
-	if total == 0 && dur < 1.0 {
-		return ""
-	}
-
-	var tps float64
-	if dur > 0 && out > 0 {
-		tps = float64(out) / dur
-	}
-
-	cacheStr := "0"
-	if cache > 0 {
-		cacheStr = formatCompact(cache)
-	}
-
-	return i18n.Tf(lang, "tokens.live_snippet", formatCompact(total), tps, cacheStr)
+	return formatLiveStatusSnippet(t.activeStateLocked(), lang)
 }
 
-// GetCurrentTaskStatusBlock возвращает блок статистики токенов для команды /status.
-func (t *TokenTracker) GetCurrentTaskStatusBlock(lang string) string {
-	t.RLock()
-	defer t.RUnlock()
-
-	if t.currentTask == nil {
+func formatLiveStatusSnippet(st *taskTokenState, lang string) string {
+	if st == nil || st.metrics == nil {
 		return ""
 	}
+	u := st.metrics.Usage
+	if u.TotalTokens == 0 && u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 {
+		return ""
+	}
+	dur := st.metrics.EffectiveDuration()
+	var tps float64
+	if dur > 0 && u.OutputTokens > 0 {
+		tps = float64(u.OutputTokens) / dur
+	}
+	cacheStr := "0"
+	if u.CacheReadTokens > 0 {
+		cacheStr = formatCompact(u.CacheReadTokens)
+	}
+	return i18n.Tf(lang, "tokens.live_snippet", formatCompact(u.TotalTokens), tps, cacheStr)
+}
 
-	u := t.currentTask.Usage
-	dur := t.currentTask.EffectiveDuration()
+// GetCurrentTaskStatusBlock возвращает блок статистики токенов для активной задачи команды /status.
+func (t *TokenTracker) GetCurrentTaskStatusBlock(lang string) string {
+	t.RLock()
+	st := t.activeStateLocked()
+	var mCopy *TaskTokenMetrics
+	if st != nil && st.metrics != nil {
+		cp := *st.metrics
+		mCopy = &cp
+	}
+	t.RUnlock()
+	return formatTaskStatusBlock(mCopy, lang)
+}
+
+// GetTaskStatusBlock возвращает блок статистики токенов для конкретной задачи команды /status.
+func (t *TokenTracker) GetTaskStatusBlock(task *TaskSession, lang string) string {
+	if task == nil {
+		return t.GetCurrentTaskStatusBlock(lang)
+	}
+	view := task.Snapshot()
+
+	var metrics *TaskTokenMetrics
+	t.RLock()
+	if st := t.stateForTaskLocked(view.ID, view.IsActive); st != nil && st.metrics != nil {
+		cp := *st.metrics
+		metrics = &cp
+	}
+	t.RUnlock()
+
+	if metrics == nil && view.TokenMetrics != nil {
+		cp := *view.TokenMetrics
+		metrics = &cp
+	}
+
+	if (metrics == nil || isZeroUsage(metrics.Usage)) && view.ConversationID != "" {
+		if summary, ok := storage.ExtractConversationUsage(view.ConversationID); ok && summary.Steps > 0 {
+			if metrics == nil {
+				metrics = &TaskTokenMetrics{
+					Project:        view.Project,
+					Model:          view.Model,
+					Agent:          view.Agent,
+					ConversationID: view.ConversationID,
+					StartedAt:      view.StartedAt,
+					FinishedAt:     view.FinishedAt,
+				}
+			}
+			metrics.Usage = UsageStats{
+				InputTokens:     summary.Total.InputTokens,
+				OutputTokens:    summary.Total.OutputTokens,
+				ThinkingTokens:  summary.Total.ThinkingTokens,
+				CacheReadTokens: summary.Total.CacheReadTokens,
+				TotalTokens:     summary.Total.TotalTokens,
+			}
+			metrics.LastStepUsage = UsageStats{
+				InputTokens:     summary.LastStep.InputTokens,
+				OutputTokens:    summary.LastStep.OutputTokens,
+				ThinkingTokens:  summary.LastStep.ThinkingTokens,
+				CacheReadTokens: summary.LastStep.CacheReadTokens,
+				TotalTokens:     summary.LastStep.TotalTokens,
+			}
+		}
+	}
+
+	return formatTaskStatusBlock(metrics, lang)
+}
+
+func formatTaskStatusBlock(m *TaskTokenMetrics, lang string) string {
+	if m == nil {
+		return ""
+	}
+	u := m.Usage
+	dur := m.EffectiveDuration()
 	var tps float64
 	if dur > 0 && u.OutputTokens > 0 {
 		tps = float64(u.OutputTokens) / dur
@@ -651,7 +1168,6 @@ func (t *TokenTracker) GetCurrentTaskStatusBlock(lang string) string {
 	}
 
 	bldr.WriteString(i18n.Tf(lang, "tokens.task_block_speed", tps))
-
 	return bldr.String()
 }
 
@@ -741,8 +1257,8 @@ func (t *TokenTracker) GetTokensCommandMessage(lang string) string {
 	var bldr strings.Builder
 
 	// 1. Активная задача, если есть
-	if t.currentTask != nil {
-		cur := *t.currentTask
+	if st := t.activeStateLocked(); st != nil && st.metrics != nil {
+		cur := *st.metrics
 		dur := cur.EffectiveDuration()
 		durStr := FormatDurationHuman(time.Duration(dur * float64(time.Second)))
 		tps := cur.TokensPerSecond()
@@ -885,6 +1401,8 @@ func ModelContextWindow(model string) int64 {
 		return 200_000
 	case strings.Contains(m, "gpt-oss") || strings.Contains(m, "120b"):
 		return 131_072
+	case strings.Contains(m, "grok"):
+		return 256_000
 	case strings.Contains(m, "gemini"):
 		return 1_048_576
 	default:
@@ -991,7 +1509,23 @@ func resolveStepUsageForContext(metrics TaskTokenMetrics, convID string, windowL
 	return
 }
 
-// GetContextCommandMessage формирует подробный отчёт об использовании контекстного окна agy.
+func (t *TokenTracker) lookupTaskMetricsForContext(taskID int, taskProj string, taskMetrics *TaskTokenMetrics, taskIsActive bool) (metrics TaskTokenMetrics, hasMetrics bool) {
+	t.RLock()
+	defer t.RUnlock()
+
+	if st := t.stateForTaskLocked(taskID, taskIsActive); st != nil && st.metrics != nil {
+		return *st.metrics, true
+	}
+	if taskMetrics != nil {
+		return *taskMetrics, true
+	}
+	if t.lastTask != nil && t.lastTask.Project == taskProj {
+		return *t.lastTask, true
+	}
+	return TaskTokenMetrics{}, false
+}
+
+// GetContextCommandMessage формирует подробный отчёт об использовании контекстного окна агента.
 func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProject, defaultModel, lang string) string {
 	var (
 		taskID       int
@@ -1001,6 +1535,9 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		taskConvID   string
 		taskMetrics  *TaskTokenMetrics
 		taskIsActive bool
+		taskStarted  time.Time
+		taskFinished time.Time
+		taskAgent    string
 	)
 	if task != nil {
 		task.mu.Lock()
@@ -1017,35 +1554,57 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		taskConvID = task.ConversationID
 		taskMetrics = task.TokenMetrics
 		taskIsActive = task.isActiveLocked()
+		taskStarted = task.StartedAt
+		taskFinished = task.FinishedAt
+		taskAgent = task.Agent
 		task.mu.Unlock()
 	}
-
-	t.RLock()
-	defer t.RUnlock()
 
 	var bldr strings.Builder
 
 	// 1. Если передана конкретная задача или есть активная задача
 	if task != nil {
-		var metrics TaskTokenMetrics
-		var hasMetrics bool
-
-		if taskIsActive && t.currentTask != nil {
-			metrics = *t.currentTask
-			hasMetrics = true
-		} else if taskMetrics != nil {
-			metrics = *taskMetrics
-			hasMetrics = true
-		} else if t.lastTask != nil && t.lastTask.Project == taskProj {
-			metrics = *t.lastTask
-			hasMetrics = true
-		}
+		metrics, hasMetrics := t.lookupTaskMetricsForContext(taskID, taskProj, taskMetrics, taskIsActive)
 
 		if taskConvID == "" && metrics.ConversationID != "" {
 			taskConvID = metrics.ConversationID
 		}
 		if metrics.Model != "" {
 			taskMod = metrics.Model
+		}
+
+		// Если в памяти/БД метрики нулевые или нет LastStepUsage, пробуем прочитать из локальной БД agy (без блокировки трекера).
+		if taskConvID != "" && (!hasMetrics || isZeroUsage(metrics.Usage) || (metrics.LastStepUsage.InputTokens == 0 && metrics.LastStepUsage.OutputTokens == 0)) {
+			if summary, ok := storage.ExtractConversationUsage(taskConvID); ok && summary.Steps > 0 {
+				if isZeroUsage(metrics.Usage) {
+					metrics.Usage = UsageStats{
+						InputTokens:     summary.Total.InputTokens,
+						OutputTokens:    summary.Total.OutputTokens,
+						ThinkingTokens:  summary.Total.ThinkingTokens,
+						CacheReadTokens: summary.Total.CacheReadTokens,
+						TotalTokens:     summary.Total.TotalTokens,
+					}
+					if metrics.StartedAt.IsZero() {
+						metrics.StartedAt = taskStarted
+					}
+					if metrics.FinishedAt.IsZero() {
+						metrics.FinishedAt = taskFinished
+					}
+					if metrics.Agent == "" {
+						metrics.Agent = taskAgent
+					}
+				}
+				if metrics.LastStepUsage.InputTokens == 0 && metrics.LastStepUsage.OutputTokens == 0 {
+					metrics.LastStepUsage = UsageStats{
+						InputTokens:     summary.LastStep.InputTokens,
+						OutputTokens:    summary.LastStep.OutputTokens,
+						ThinkingTokens:  summary.LastStep.ThinkingTokens,
+						CacheReadTokens: summary.LastStep.CacheReadTokens,
+						TotalTokens:     summary.LastStep.TotalTokens,
+					}
+				}
+				hasMetrics = true
+			}
 		}
 
 		windowLimit := ModelContextWindow(taskMod)
@@ -1132,10 +1691,8 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 		}
 		if taskConvID != "" {
 			agentName := metrics.Agent
-			if agentName == "" && task != nil {
-				task.mu.Lock()
-				agentName = task.Agent
-				task.mu.Unlock()
+			if agentName == "" {
+				agentName = taskAgent
 			}
 			if agentName == "" {
 				agentName = "agy"
@@ -1148,8 +1705,15 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 	}
 
 	// 2. Если задача не указана и нет активной, но есть последняя завершённая
+	t.RLock()
+	var lastCopy *TaskTokenMetrics
 	if t.lastTask != nil {
-		last := *t.lastTask
+		cp := *t.lastTask
+		lastCopy = &cp
+	}
+	t.RUnlock()
+	if lastCopy != nil {
+		last := *lastCopy
 		mod := last.Model
 		if mod == "" {
 			mod = defaultModel
@@ -1262,12 +1826,12 @@ func (t *TokenTracker) GetContextCommandMessage(task *TaskSession, defaultProjec
 	return bldr.String()
 }
 
-// formatToolAction возвращает понятное описание действия инструмента.
+// FormatToolAction возвращает понятное описание действия инструмента.
 func FormatToolAction(name string, info *StreamToolInfo) string {
 	if info == nil || info.Parameters == nil {
 		return fmt.Sprintf("🔧 %s", name)
 	}
-	normalized := strings.TrimPrefix(strings.ToLower(name), "mcp__bro_bot__")
+	normalized := tools.NormalizeBotToolName(name)
 	switch normalized {
 	case "run_command":
 		if cmd, ok := info.Parameters["CommandLine"].(string); ok && cmd != "" {

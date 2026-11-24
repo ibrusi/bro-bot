@@ -278,3 +278,148 @@ func TestConnRoundTripAndEncodeEvent(t *testing.T) {
 		t.Fatalf("EncodeEvent: err=%v data=%q", err, data)
 	}
 }
+
+func TestPermissionsBotPrefixesForeignServersSubagentAndFallback(t *testing.T) {
+	opts := []PermOption{
+		{OptionID: "allow_once", Kind: "allow_once"},
+		{OptionID: "allow_always", Kind: "allow_always"},
+		{OptionID: "reject_once", Kind: "reject_once"},
+	}
+
+	cases := []struct {
+		name     string
+		readOnly bool
+		call     ToolCallPermission
+		opts     []PermOption
+		wantID   string
+		wantOK   bool
+	}{
+		{
+			name:     "mcp_bro_bot_ask_user single-underscore allowed",
+			readOnly: true,
+			call:     ToolCallPermission{Kind: "other", Name: "mcp_bro_bot_ask_user", Title: "ask_user"},
+			opts:     opts,
+			wantID:   "allow_once",
+			wantOK:   true,
+		},
+		{
+			name:     "bare bot tool list_projects allowed",
+			readOnly: true,
+			call:     ToolCallPermission{Kind: "other", Name: "list_projects"},
+			opts:     opts,
+			wantID:   "allow_once",
+			wantOK:   true,
+		},
+		{
+			name:     "bro_bot unknown destructive suffix rejected",
+			readOnly: true,
+			call:     ToolCallPermission{Kind: "other", Name: "mcp_bro_bot_rm_rf", Title: "bro_bot_rm_rf"},
+			opts:     opts,
+			wantID:   "reject_once",
+			wantOK:   true,
+		},
+		{
+			name:     "foreign server in nested _meta rejected even with ask_user name",
+			readOnly: true,
+			call: ToolCallPermission{
+				Kind: "other",
+				Name: "ask_user",
+				Meta: map[string]any{"mcp": map[string]any{"server_name": "slack"}},
+			},
+			opts:   opts,
+			wantID: "reject_once",
+			wantOK: true,
+		},
+		{
+			name:     "foreign slash server title send_file rejected",
+			readOnly: true,
+			call:     ToolCallPermission{Kind: "other", Name: "slack: send_file"},
+			opts:     opts,
+			wantID:   "reject_once",
+			wantOK:   true,
+		},
+		{
+			name:     "invoke_subagent research allowed in ReadOnly",
+			readOnly: true,
+			call:     ToolCallPermission{Kind: "other", Name: "invoke_subagent", RawInput: map[string]any{"TypeName": "research"}},
+			opts:     opts,
+			wantID:   "allow_once",
+			wantOK:   true,
+		},
+		{
+			name:     "invoke_subagent self rejected in ReadOnly",
+			readOnly: true,
+			call:     ToolCallPermission{Kind: "other", Name: "invoke_subagent", RawInput: map[string]any{"TypeName": "self"}},
+			opts:     opts,
+			wantID:   "reject_once",
+			wantOK:   true,
+		},
+		{
+			name:     "safe builtin read_file with empty kind allowed",
+			readOnly: true,
+			call:     ToolCallPermission{Name: "read_file"},
+			opts:     opts,
+			wantID:   "allow_once",
+			wantOK:   true,
+		},
+		{
+			name:     "ChoosePermission deny fallback without reject_once kind",
+			readOnly: true,
+			call:     ToolCallPermission{Kind: "execute", Name: "run_command"},
+			opts:     []PermOption{{OptionID: "allow", Kind: "allow_once"}, {OptionID: "deny_btn", Kind: "deny_custom"}},
+			wantID:   "deny_btn",
+			wantOK:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ChoosePermission(tc.readOnly, tc.call, tc.opts)
+			if ok != tc.wantOK || got != tc.wantID {
+				t.Fatalf("ChoosePermission = (%q, %v), want (%q, %v)", got, ok, tc.wantID, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestToolCallRegistryAndTranslateUsageAndActiveUpdate(t *testing.T) {
+	var reg ToolCallRegistry
+	first := []byte(`{"update":{"sessionUpdate":"tool_call","toolCallId":"q-1","name":"mcp_bro_bot_ask_user","kind":"other","status":"pending"}}`)
+	reg.Observe(first)
+	second := []byte(`{"update":{"sessionUpdate":"tool_call_update","toolCallId":"q-1","status":"in_progress","rawInput":{"question":"Pick option?","options":["A","B"]}}}`)
+	reg.Observe(second)
+
+	evt, ok := TranslateUpdate("s1", second, 2)
+	if !ok || evt.StepUpdate == nil {
+		t.Fatalf("expected ACTIVE tool_call_update with rawInput to be preserved, got ok=%v", ok)
+	}
+	reg.EnrichStepUpdate(evt.StepUpdate)
+	if evt.StepUpdate.ToolCallID != "q-1" {
+		t.Errorf("ToolCallID = %q, want q-1", evt.StepUpdate.ToolCallID)
+	}
+	if evt.StepUpdate.ToolName != "mcp__bro_bot__ask_user" {
+		t.Errorf("ToolName = %q, want mcp__bro_bot__ask_user", evt.StepUpdate.ToolName)
+	}
+	if len(evt.StepUpdate.ToolInfo.Parameters) == 0 {
+		t.Errorf("expected parameters preserved")
+	}
+
+	enrichedPerm := reg.Enrich(ToolCallPermission{ToolCallID: "q-1", Kind: "other"})
+	if !IsBotOrInteractiveTool(enrichedPerm) {
+		t.Errorf("expected enriched permission from ToolCallRegistry to allow bro_bot ask_user")
+	}
+
+	usageEvt, ok := TranslateUpdate("s1", []byte(`{"update":{"sessionUpdate":"usage_update","used":4200,"size":200000,"usage":{"inputTokens":3000,"outputTokens":200,"cacheReadTokens":1000}}}`), 3)
+	if !ok || usageEvt.StepUpdate == nil || usageEvt.StepUpdate.Usage == nil {
+		t.Fatalf("expected usage_update event, got ok=%v", ok)
+	}
+	u := usageEvt.StepUpdate.Usage
+	if u.InputTokens != 3000 || u.OutputTokens != 200 || u.CacheReadTokens != 1000 || u.TotalTokens != 3200 {
+		t.Errorf("unexpected usage_update translation: %+v", u)
+	}
+
+	usedOnly, ok := TranslateUpdate("s1", []byte(`{"update":{"sessionUpdate":"usage_update","used":1234,"size":100000}}`), 4)
+	if !ok || usedOnly.StepUpdate == nil || usedOnly.StepUpdate.Usage == nil || usedOnly.StepUpdate.Usage.TotalTokens != 1234 {
+		t.Fatalf("expected used fallback usage, got %+v ok=%v", usedOnly, ok)
+	}
+}

@@ -179,6 +179,133 @@ func TestAgyACPCleansToolServerWhenStartFails(t *testing.T) {
 	}
 }
 
+func TestAgyACPEffortEmptyReadOnlyGuardAndLingeringExit(t *testing.T) {
+	t.Run("sets thought_level alongside set_model and finishes even when process lingers", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		dir := t.TempDir()
+		metaFile := filepath.Join(dir, "meta")
+		t.Setenv("META_FILE", metaFile)
+
+		lingeringScript := filepath.Join(dir, "agy-linger")
+		scriptBody := `#!/usr/bin/env python3
+import json, os, sys, time
+meta_file = os.environ["META_FILE"]
+notes = []
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    msg = json.loads(line)
+    m, mid, p = msg.get("method"), msg.get("id"), msg.get("params") or {}
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
+    elif m == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "s-effort"}})
+    elif m == "session/set_model":
+        notes.append("model=" + str(p.get("modelId", "")))
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+    elif m == "session/set_config_option":
+        notes.append(str(p.get("configId", "")) + "=" + str(p.get("value", "")))
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+    elif m == "session/prompt":
+        send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s-effort", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Plan OK"}}}})
+        send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+    elif m == "session/close":
+        open(meta_file, "w").write("\n".join(notes))
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        # Эмулируем зависание CLI после session/close, но закрываем поток при закрытии stdin
+        time.sleep(10)
+        break
+`
+		if err := os.WriteFile(lingeringScript, []byte(scriptBody), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		prev := agyBin
+		agyBin = lingeringScript
+		t.Cleanup(func() { agyBin = prev })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		proc, err := NewAgyACPAdapter().ExecuteTask(ctx, ports.ExecuteArgs{
+			Prompt:    "Make plan",
+			WorkDir:   dir,
+			ModelName: "custom-model",
+			Effort:    effort.High,
+			ReadOnly:  true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer proc.Close()
+		out, _ := io.ReadAll(proc.Stdout())
+		if waitErr := proc.Wait(); waitErr != nil {
+			t.Fatalf("expected Wait() to kill lingering successful process and return nil, got %v", waitErr)
+		}
+		if !strings.Contains(string(out), `"status":"SUCCESS"`) {
+			t.Fatalf("expected SUCCESS result, got %s", out)
+		}
+		metaBytes, _ := os.ReadFile(metaFile)
+		metaStr := string(metaBytes)
+		if !strings.Contains(metaStr, "model=custom-model") || !strings.Contains(metaStr, "thought_level=high") {
+			t.Errorf("expected both model and thought_level set, got:\n%s", metaStr)
+		}
+	})
+
+	t.Run("ReadOnly returns ERROR if only read tool ran and final answer is empty", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		dir := t.TempDir()
+		emptyScript := filepath.Join(dir, "agy-empty")
+		scriptBody := `#!/usr/bin/env python3
+import json, sys
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    msg = json.loads(line)
+    m, mid = msg.get("method"), msg.get("id")
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
+    elif m == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "s-empty"}})
+    elif m == "session/prompt":
+        send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s-empty", "update": {"sessionUpdate": "tool_call", "toolCallId": "r1", "name": "read_file", "kind": "read", "status": "completed"}}})
+        send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+    elif m == "session/close":
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        break
+`
+		if err := os.WriteFile(emptyScript, []byte(scriptBody), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		prev := agyBin
+		agyBin = emptyScript
+		t.Cleanup(func() { agyBin = prev })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		proc, err := NewAgyACPAdapter().ExecuteTask(ctx, ports.ExecuteArgs{
+			Prompt:   "Plan please",
+			WorkDir:  dir,
+			ReadOnly: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer proc.Close()
+		out, _ := io.ReadAll(proc.Stdout())
+		_ = proc.Wait()
+		if !strings.Contains(string(out), `"status":"ERROR"`) {
+			t.Fatalf("expected ReadOnly empty answer after read_file to fail as ERROR, got:\n%s", out)
+		}
+	})
+}
+
 const fakeAgyACPScript = "#!/usr/bin/env python3\n" + `
 import json, os, sys, urllib.request
 

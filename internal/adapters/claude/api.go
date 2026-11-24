@@ -492,9 +492,13 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 		readBuf := make([]byte, 4096)
 
 		var (
-			blockStates  = make(map[int]*claudeBlockState)
-			blockIndices []int
-			stopReason   string
+			blockStates             = make(map[int]*claudeBlockState)
+			blockIndices            []int
+			stopReason              string
+			turnInputTokens         int64
+			turnOutputTokens        int64
+			turnCacheReadTokens     int64
+			turnCacheCreationTokens int64
 		)
 
 		for {
@@ -623,13 +627,19 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 						if message, ok := rawEvt["message"].(map[string]interface{}); ok {
 							if usage, ok := message["usage"].(map[string]interface{}); ok {
 								if inp, ok := usage["input_tokens"].(float64); ok {
-									totalInputTokens += int64(inp)
+									v := int64(inp)
+									turnInputTokens += v
+									totalInputTokens += v
 								}
 								if cached, ok := usage["cache_read_input_tokens"].(float64); ok {
-									totalCacheReadTokens += int64(cached)
+									v := int64(cached)
+									turnCacheReadTokens += v
+									totalCacheReadTokens += v
 								}
 								if created, ok := usage["cache_creation_input_tokens"].(float64); ok {
-									totalCacheCreationTokens += int64(created)
+									v := int64(created)
+									turnCacheCreationTokens += v
+									totalCacheCreationTokens += v
 								}
 							}
 						}
@@ -642,7 +652,9 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 						}
 						if usage, ok := rawEvt["usage"].(map[string]interface{}); ok {
 							if out, ok := usage["output_tokens"].(float64); ok {
-								totalOutputTokens += int64(out)
+								v := int64(out)
+								turnOutputTokens += v
+								totalOutputTokens += v
 							}
 						}
 					}
@@ -654,6 +666,25 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 			}
 		}
 		_ = resp.Body.Close()
+
+		if turnInputTokens > 0 || turnOutputTokens > 0 || turnCacheReadTokens > 0 || turnCacheCreationTokens > 0 {
+			usageEvt := map[string]interface{}{
+				"type":       "assistant",
+				"session_id": p.sessionID,
+				"message": map[string]interface{}{
+					"role": "assistant",
+					"usage": map[string]interface{}{
+						"input_tokens":                turnInputTokens,
+						"output_tokens":               turnOutputTokens,
+						"cache_read_input_tokens":     turnCacheReadTokens,
+						"cache_creation_input_tokens": turnCacheCreationTokens,
+					},
+				},
+			}
+			if usageBytes, err := json.Marshal(usageEvt); err == nil {
+				_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(usageBytes))
+			}
+		}
 
 		// Проверяем, есть ли вызовы инструментов для выполнения
 		var turnContentBlocks []map[string]interface{}

@@ -141,7 +141,7 @@ func (a *Adapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (port
 	started = true
 
 	eventR, eventW := io.Pipe()
-	proc := &process{cmd: cmd, stdout: eventR, stdin: stdin}
+	proc := &process{cmd: cmd, stdout: eventR, stdin: stdin, runDone: make(chan struct{}), readDone: make(chan struct{})}
 	go drainStderr(stderr)
 	go proc.run(ctx, stdin, stdout, eventW, toolSrv, turnConfig{
 		WorkDir:         workDir,
@@ -155,6 +155,7 @@ func (a *Adapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (port
 		HasEffort:       hasEffort,
 		ReadOnly:        args.ReadOnly,
 		Yolo:            yolo,
+		Timeout:         args.Timeout,
 		MCPServer:       mcpServer,
 	})
 	return proc, nil
@@ -183,6 +184,7 @@ type turnConfig struct {
 	HasEffort       bool
 	ReadOnly        bool
 	Yolo            bool
+	Timeout         time.Duration
 	MCPServer       acp.MCPServer
 }
 
@@ -220,14 +222,15 @@ func pickAuthMethod(methods []acp.AuthMethod) (string, bool) {
 }
 
 func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reader, events *io.PipeWriter, toolSrv *acp.ToolServer, cfg turnConfig) {
+	defer close(p.runDone)
 	// Закрываем ToolServer после session/close, чтобы клиент успел прислать DELETE /mcp.
 	defer func() {
 		if toolSrv != nil {
 			_ = toolSrv.Close()
 		}
 	}()
-	defer events.Close()
 	defer stdin.Close()
+	defer events.Close()
 
 	conn := acp.NewConn(stdout, stdin)
 	var sessionID string
@@ -235,22 +238,37 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 	var acceptUpdates atomic.Bool
 	var answer strings.Builder
 	var sawTool bool
+	var sawInteractiveBotTool bool
+	var toolsReg acp.ToolCallRegistry
+	var usageMu sync.Mutex
+	var lastUpdateUsage *acp.StreamUsage
 
 	conn.OnNotify = func(msg acp.Message) {
 		if !acceptUpdates.Load() || msg.Method != "session/update" {
 			return
 		}
+		toolsReg.Observe(msg.Params)
 		step++
 		evt, ok := acp.TranslateUpdate(sessionID, msg.Params, step)
 		if !ok {
 			return
 		}
 		if evt.StepUpdate != nil {
+			if evt.StepUpdate.StepType == "tool" {
+				toolsReg.EnrichStepUpdate(evt.StepUpdate)
+				sawTool = true
+				if acp.IsInteractiveTurnTool(evt.StepUpdate.ToolName) {
+					sawInteractiveBotTool = true
+				}
+			}
 			if evt.StepUpdate.TextDelta != "" {
 				answer.WriteString(evt.StepUpdate.TextDelta)
 			}
-			if evt.StepUpdate.StepType == "tool" {
-				sawTool = true
+			if evt.StepUpdate.Usage != nil {
+				usageMu.Lock()
+				uCopy := *evt.StepUpdate.Usage
+				lastUpdateUsage = &uCopy
+				usageMu.Unlock()
 			}
 		}
 		p.writeEvent(events, evt)
@@ -262,20 +280,37 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 		}
 		var params acp.PermissionParams
 		_ = json.Unmarshal(msg.Params, &params)
+		params.ToolCall = toolsReg.Enrich(params.ToolCall)
 		optionID, ok := acp.ChoosePermission(cfg.ReadOnly, params.ToolCall, params.Options)
+		if !ok || (cfg.ReadOnly && !acp.ReadOnlyToolKind(params.ToolCall.Kind) && !acp.IsBotOrInteractiveTool(params.ToolCall)) {
+			log.Printf("grok-acp: permission readOnly=%v name=%q toolName=%q kind=%q title=%q -> ok=%v opt=%q",
+				cfg.ReadOnly, params.ToolCall.Name, params.ToolCall.ToolName, params.ToolCall.Kind, params.ToolCall.Title, ok, optionID)
+		}
 		_ = conn.Reply(msg.ID, acp.PermissionResult(optionID, ok))
 	}
 
-	readErr := make(chan error, 1)
-	go func() { readErr <- conn.ReadLoop() }()
+	go func() {
+		defer close(p.readDone)
+		_ = conn.ReadLoop()
+	}()
 
 	started := time.Now()
 	finish := func(status, errText string, usage *acp.StreamUsage) {
-		if answer.Len() == 0 && !sawTool && status == "SUCCESS" {
-			status = "ERROR"
-			if errText == "" {
-				errText = "grok returned an empty answer"
+		if status == "SUCCESS" && answer.Len() == 0 {
+			if cfg.ReadOnly && !sawInteractiveBotTool {
+				status = "ERROR"
+				if errText == "" {
+					errText = "grok returned an empty answer"
+				}
+			} else if !sawTool {
+				status = "ERROR"
+				if errText == "" {
+					errText = "grok returned an empty answer"
+				}
 			}
+		}
+		if status == "SUCCESS" {
+			p.finishedOK.Store(true)
 		}
 		p.writeEvent(events, acp.StreamEvent{
 			Event:          "result",
@@ -338,12 +373,27 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 	if fresh && cfg.ConversationID != "" {
 		prompt = "The previous Grok session could not be resumed. Continue from this message only.\n\n" + prompt
 	}
+	promptCtx := ctx
+	var promptCancel context.CancelFunc
+	if cfg.Timeout > 0 {
+		promptCtx, promptCancel = context.WithTimeout(ctx, cfg.Timeout)
+	}
+
 	acceptUpdates.Store(true)
-	raw, err := conn.Call(ctx, "session/prompt", map[string]any{
+	raw, err := conn.Call(promptCtx, "session/prompt", map[string]any{
 		"sessionId": sessionID,
 		"prompt":    []map[string]string{{"type": "text", "text": prompt}},
 	})
 	acceptUpdates.Store(false)
+	if promptCancel != nil {
+		timedOutByCfg := errors.Is(promptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+		promptCancel()
+		if err != nil && timedOutByCfg {
+			_ = conn.Notify("session/cancel", map[string]any{"sessionId": sessionID})
+			finish("ERROR", context.DeadlineExceeded.Error(), nil)
+			return
+		}
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -366,12 +416,22 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 	default:
 		status, errText = "ERROR", promptRes.StopReason
 	}
-	finish(status, errText, acp.ParseUsage(raw))
+	usage := acp.ParseUsage(raw)
+	if usage == nil {
+		usageMu.Lock()
+		if lastUpdateUsage != nil {
+			uCopy := *lastUpdateUsage
+			usage = &uCopy
+		}
+		usageMu.Unlock()
+	}
+	finish(status, errText, usage)
 
-	closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	_, _ = conn.Call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
-	cancel()
-	_ = readErr
+	if ctx.Err() == nil {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, _ = conn.Call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+		cancel()
+	}
 }
 
 func mergeSystemRules(botInstr, sysPrompt string) string {
@@ -467,10 +527,13 @@ func truncate(s string, n int) string {
 // process — ход ACP, видимый боту как обычный процесс агента.
 // Stdin наружу не отдаётся: туда пишет только протокол, произвольный текст его ломает.
 type process struct {
-	cmd      *exec.Cmd
-	stdout   io.Reader
-	stdin    io.WriteCloser
-	killOnce sync.Once
+	cmd        *exec.Cmd
+	stdout     io.Reader
+	stdin      io.WriteCloser
+	runDone    chan struct{}
+	readDone   chan struct{}
+	finishedOK atomic.Bool
+	killOnce   sync.Once
 }
 
 func (p *process) Stdout() io.Reader { return p.stdout }
@@ -478,10 +541,7 @@ func (p *process) Stdout() io.Reader { return p.stdout }
 func (p *process) Stdin() io.WriteCloser { return nopCloser{} }
 
 func (p *process) Wait() error {
-	if p.cmd == nil {
-		return nil
-	}
-	return p.cmd.Wait()
+	return acp.WaitProcess(p.cmd, p.runDone, p.readDone, &p.finishedOK, p.Kill)
 }
 
 func (p *process) Kill() error {

@@ -6,7 +6,10 @@ import (
 	"bro-bot/internal/domain"
 	"bro-bot/internal/effort"
 	"bro-bot/internal/i18n"
+	"bro-bot/internal/mcp"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/storage"
+	"bro-bot/internal/tools"
 	"bro-bot/internal/utils"
 	"bufio"
 	"bytes"
@@ -20,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Пайплайн выполнения задачи: запуск шагов агента, разбор потока событий,
@@ -36,6 +40,7 @@ func runAgentPipeline(m ports.Messenger, chat ports.ChatID, workDir, projectName
 		t.StartedAt = time.Now()
 	})
 
+	persistTaskTokenSnapshot(task)
 	syncLegacySession(task)
 	runAgentTaskPipeline(m, chat, task, workDir, config.ProjectsRoot)
 }
@@ -75,7 +80,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 	if taskAgent == "" {
 		taskAgent = fallbackAgent
 	}
-	domain.GlobalTokenTracker.StartTaskIfNotActiveWithAgent(projectName, trackModel, taskAgent, trackPrompt)
+	domain.GlobalTokenTracker.StartTaskIfNotActiveWithAgentForID(taskID, projectName, trackModel, taskAgent, trackPrompt)
 
 	// ЭТАП 1: Планирование (если требуется и ещё не утверждён)
 	view2 := task.Snapshot()
@@ -107,6 +112,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			return
 		}
 
+		persistTaskTokenSnapshot(task)
 		syncLegacySession(task)
 
 		pendingSection := ""
@@ -141,6 +147,9 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		// autoContinues — сколько раз подряд шаг планирования продолжен автоматически
 		// после выхода агента с прерванными фоновыми задачами.
 		autoContinues := 0
+		emptyRetries := 0
+		waitingAnswersRetries := 0
+		var approvedPlanText string
 		for {
 			var (
 				cancelled   bool
@@ -159,6 +168,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 				return
 			}
 
+			persistTaskTokenSnapshot(task)
 			syncLegacySession(task)
 
 			res := executeStepForTask(m, chat, task, workDir, planningPrompt, activeModel, lang)
@@ -168,6 +178,10 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 				checkAndStartQueuedTask(m, projectName, projectsRoot)
 				return
 			}
+			if res.Outcome == StepOutcomePaused || stepView.Status == domain.TaskStatusPaused {
+				pausePipelineCleanly(m, task, projectName, projectsRoot)
+				return
+			}
 			st := stepView.Status
 
 			if res.Outcome == StepOutcomeWaitingInput || st == domain.TaskStatusWaitingInput {
@@ -175,8 +189,14 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 				if !ok {
 					return
 				}
+				task.Update(func(t *domain.TaskSession) {
+					t.ResetOutputLocked()
+				})
 				planningPrompt = answer
 				autoContinues = 0
+				emptyRetries = 0
+				waitingAnswersRetries = 0
+				domain.GlobalTokenTracker.StartNextStepForID(taskID, activeModel)
 				continue
 			}
 
@@ -202,29 +222,84 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 					t.ResetOutputLocked()
 				})
 				planningPrompt = prompt
-				domain.GlobalTokenTracker.StartNextStep(activeModel)
+				domain.GlobalTokenTracker.StartNextStepForID(taskID, activeModel)
 				continue
 			}
 
+			candidatePlan := strings.TrimSpace(utils.SanitizePlanText(stepView.Output))
+			if isLikelyErrorMessage(candidatePlan) {
+				handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, errors.New(candidatePlan), lang)
+				return
+			}
+			if candidatePlan == "" {
+				if emptyRetries == 0 {
+					emptyRetries++
+					task.Update(func(t *domain.TaskSession) {
+						t.ResetOutputLocked()
+					})
+					planningPrompt = i18n.T(lang, "plan.empty_retry_prompt")
+					domain.GlobalTokenTracker.StartNextStepForID(taskID, activeModel)
+					continue
+				}
+				handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, errors.New(i18n.T(lang, "plan.empty_error")), lang)
+				return
+			}
+			if isWaitingForAnswersStub(candidatePlan) {
+				if waitingAnswersRetries == 0 {
+					waitingAnswersRetries++
+					task.Update(func(t *domain.TaskSession) {
+						t.ResetOutputLocked()
+					})
+					planningPrompt = i18n.T(lang, "plan.waiting_answers_retry_prompt")
+					domain.GlobalTokenTracker.StartNextStepForID(taskID, activeModel)
+					continue
+				}
+				fallbackQ := i18n.T(lang, "plan.waiting_answers_fallback")
+				task.Update(func(t *domain.TaskSession) {
+					t.Status = domain.TaskStatusWaitingInput
+					t.PendingQuestions = []domain.QuestionItem{{Question: fallbackQ}}
+					t.CurrentQuestionIndex = 0
+					t.QuestionAcceptAllTxt = false
+					t.LastQuestion = fallbackQ
+					t.QuestionOptions = nil
+					t.QuestionAskedAt = time.Now()
+					t.ResetOutputLocked()
+				})
+				persistTaskTokenSnapshot(task)
+				syncLegacySession(task)
+
+				msgText := formatTaskQuestionMessage(task.Snapshot(), true, lang)
+				menu := buildQuestionMarkup(task, lang)
+				if m != nil && chat != "" {
+					qRef, _ := m.Send(context.Background(), chat, msgText, ports.RichWith(menu))
+					if qRef.ID != "" {
+						domain.GlobalTaskManager.RegisterMessageTask(qRef, taskID)
+					}
+				}
+				answer, ok := waitForTaskInput(m, chat, task, projectName, projectsRoot, taskID, lang)
+				if !ok {
+					return
+				}
+				planningPrompt = answer
+				autoContinues = 0
+				emptyRetries = 0
+				waitingAnswersRetries = 0
+				domain.GlobalTokenTracker.StartNextStepForID(taskID, activeModel)
+				continue
+			}
+
+			approvedPlanText = candidatePlan
 			break
 		}
 
-		planText := strings.TrimSpace(utils.SanitizePlanText(task.Snapshot().Output))
-		if isLikelyErrorMessage(planText) {
-			handleTaskStepError(m, chat, task, projectName, projectsRoot, taskID, errors.New(planText), lang)
-			return
-		}
-		if planText == "" {
-			planText = i18n.T(lang, "plan.empty_fallback")
-		}
 		task.Update(func(t *domain.TaskSession) {
-			t.Plan = planText
+			t.Plan = approvedPlanText
 			t.Status = domain.TaskStatusWaitingApproval
 			t.ResetOutputLocked()
 			t.RecentLogs = nil
 			t.ReleasePipelineLocked()
 		})
-
+		persistTaskTokenSnapshot(task)
 		syncLegacySession(task)
 
 		sendPlanForApproval(m, chat, task, lang)
@@ -258,6 +333,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			return
 		}
 
+		persistTaskTokenSnapshot(task)
 		syncLegacySession(task)
 
 		res := executeStepForTask(m, chat, task, workDir, currentPrompt, activeModel, lang)
@@ -265,6 +341,10 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		stepView := task.Snapshot()
 		if stepView.Status == domain.TaskStatusCancelled || res.Outcome == StepOutcomeCancelled {
 			checkAndStartQueuedTask(m, projectName, projectsRoot)
+			return
+		}
+		if res.Outcome == StepOutcomePaused || stepView.Status == domain.TaskStatusPaused {
+			pausePipelineCleanly(m, task, projectName, projectsRoot)
 			return
 		}
 		st := stepView.Status
@@ -276,6 +356,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			}
 			currentPrompt = answer
 			autoContinues = 0
+			domain.GlobalTokenTracker.StartNextStepForID(taskID, activeModel)
 			continue
 		}
 
@@ -298,7 +379,7 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 				return
 			}
 			currentPrompt = prompt
-			domain.GlobalTokenTracker.StartNextStep(activeModel)
+			domain.GlobalTokenTracker.StartNextStepForID(taskID, activeModel)
 			continue
 		}
 
@@ -330,9 +411,10 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 		})
 
 		if completed {
+			persistTaskTokenSnapshot(task)
 			syncLegacySession(task)
 
-			metrics := domain.GlobalTokenTracker.FinishTask(prURL)
+			metrics := domain.GlobalTokenTracker.FinishTaskForID(taskID, prURL)
 			task.Update(func(t *domain.TaskSession) {
 				t.TokenMetrics = &metrics
 			})
@@ -429,19 +511,53 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			t.RecentLogs = nil
 		})
 
-		domain.GlobalTokenTracker.StartNextStep(activeModel)
+		domain.GlobalTokenTracker.StartNextStepForID(taskID, activeModel)
 
 		_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.followups_taken", taskID, len(followups)), ports.Rich())
 	}
 }
 
 func isAskQuestionToolName(name string) bool {
+	if tools.NormalizeBotToolName(name) == mcp.ToolAskUser {
+		return true
+	}
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "ask_question", "askquestion":
+	case "ask_question", "askquestion", "ask_user_question", "askuserquestion":
 		return true
 	default:
 		return false
 	}
+}
+
+var (
+	planHeadingRx      = regexp.MustCompile(`(?m)^\s*#{1,4}\s+\S`)
+	planNumberedStepRx = regexp.MustCompile(`(?m)^\s*\d+[.)]\s+\S`)
+	planFileRefRx      = regexp.MustCompile(`(?i)(?:internal/|cmd/|pkg/|[a-z0-9_.-]+\.(?:go|ts|tsx|js|py|md|json|yaml|yml|sql)\b|go\.mod)`)
+)
+
+// isWaitingForAnswersStub распознаёт пустую заглушку вида «жду ответы на вопросы»,
+// когда агент написал в текст о заданных вопросах, но не передал реальные вопросы и не составил план.
+func isWaitingForAnswersStub(planText string) bool {
+	trimmed := strings.TrimSpace(planText)
+	if trimmed == "" || utf8.RuneCountInString(trimmed) >= 900 {
+		return false
+	}
+	if planHeadingRx.MatchString(trimmed) || len(planNumberedStepRx.FindAllString(trimmed, 2)) >= 2 || planFileRefRx.MatchString(trimmed) {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	markers := []string{
+		"жду ответ", "жду ваших ответ", "жду ответа на вопрос", "задал вопрос",
+		"вопросы отправлены", "ответьте на вопрос", "wait for your answer",
+		"waiting for answer", "waiting for your answer", "waiting for responses",
+		"please answer the question",
+	}
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // isLikelyErrorMessage определяет, является ли полученный текст сырой ошибкой CLI или API, а не планом задачи.
@@ -552,7 +668,8 @@ func isStaleAgyResumedError(c agyResumedErrorCheck) bool {
 	if !strings.EqualFold(strings.TrimSpace(c.Agent), "agy") {
 		return false
 	}
-	if !strings.EqualFold(strings.TrimSpace(c.Mode), "mcp") {
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	if mode != "mcp" && mode != "acp" {
 		return false
 	}
 	if strings.TrimSpace(c.ResumedConvID) == "" {
@@ -722,6 +839,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		t.LiveMsg = &statusRef
 	})
 
+	persistTaskTokenSnapshot(task)
 	syncLegacySession(task)
 
 	view5 := task.Snapshot()
@@ -738,6 +856,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		task.Update(func(t *domain.TaskSession) {
 			t.Status = domain.TaskStatusPaused
 		})
+		persistTaskTokenSnapshot(task)
 		syncLegacySession(task)
 		_ = sendAgentConflictDialogWithMessenger(m, chat, task)
 		return StepResult{Outcome: StepOutcomeError, Error: err}
@@ -780,12 +899,26 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	stepCtx, stepCancel := context.WithTimeout(context.Background(), timeout+2*time.Minute)
 	defer stepCancel()
 
+	var baseAgyUsage domain.UsageStats
+	if strings.EqualFold(taskAgent, "agy") && convID != "" {
+		if summary, ok := storage.ExtractConversationUsage(convID); ok {
+			baseAgyUsage = domain.UsageStats{
+				InputTokens:     summary.Total.InputTokens,
+				OutputTokens:    summary.Total.OutputTokens,
+				ThinkingTokens:  summary.Total.ThinkingTokens,
+				CacheReadTokens: summary.Total.CacheReadTokens,
+				TotalTokens:     summary.Total.TotalTokens,
+			}
+		}
+	}
+
 	framework, frameworkErr := agentFrameworkFor(taskAgent)
 	if frameworkErr != nil {
 		_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.agent_start_failed", taskID, ErrorText(frameworkErr, lang)), ports.Rich())
 		task.Update(func(t *domain.TaskSession) {
 			t.Status = domain.TaskStatusFailed
 		})
+		persistTaskTokenSnapshot(task)
 		syncLegacySession(task)
 		return StepResult{Outcome: StepOutcomeError, Error: frameworkErr}
 	}
@@ -795,6 +928,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		task.Update(func(t *domain.TaskSession) {
 			t.Status = domain.TaskStatusFailed
 		})
+		persistTaskTokenSnapshot(task)
 		syncLegacySession(task)
 		return StepResult{Outcome: StepOutcomeError, Error: err}
 	}
@@ -807,6 +941,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 		_ = agentProcess.Kill()
 		return StepResult{Outcome: StepOutcomeCancelled}
 	}
+	persistTaskTokenSnapshot(task)
 	syncLegacySession(task)
 
 	// Привязываем PID процесса к тому же каналу (дополнительно к ChannelToken).
@@ -819,7 +954,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 
 	stopLiveUpdate := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
 
 		for {
@@ -831,45 +966,11 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 				if liveView.Status != domain.TaskStatusRunning && liveView.Status != domain.TaskStatusWaitingInput && liveView.Status != domain.TaskStatusPlanning {
 					return
 				}
-				var lastLine string
-				if len(liveView.RecentLogs) > 0 {
-					lastLine = liveView.RecentLogs[len(liveView.RecentLogs)-1]
+				if strings.EqualFold(taskAgent, "agy") && liveView.ConversationID != "" {
+					domain.GlobalTokenTracker.SyncFromAgyDB(taskID, liveView.ConversationID, baseAgyUsage)
 				}
-				followupsCount := len(liveView.PendingFollowups)
-				taskStatus := liveView.Status
-				dur := liveView.Duration
-
-				tokenSnippet := domain.GlobalTokenTracker.GetLiveStatusSnippet(lang)
-
 				if statusRef.ID != "" {
-					queueInfo := ""
-					if followupsCount > 0 {
-						queueInfo = i18n.Tf(lang, "pipeline.live_queue", followupsCount)
-					}
-					statusPrefix := i18n.T(lang, "pipeline.live_prefix_running")
-					if taskStatus == domain.TaskStatusPlanning {
-						statusPrefix = i18n.T(lang, "pipeline.live_prefix_planning")
-					}
-					var bldr strings.Builder
-					bldr.WriteString(i18n.Tf(lang, "pipeline.live_header",
-						statusPrefix,
-						taskID,
-						html.EscapeString(projectName),
-						runLabel,
-						domain.FormatDuration(dur, lang),
-						queueInfo,
-					))
-					if lastLine != "" {
-						bldr.WriteString(i18n.Tf(lang, "pipeline.live_action", html.EscapeString(utils.TruncateString(lastLine, 80))))
-					} else {
-						bldr.WriteString(i18n.T(lang, "pipeline.live_action_init"))
-					}
-					if tokenSnippet != "" {
-						bldr.WriteString(tokenSnippet + "\n\n")
-					}
-					bldr.WriteString(i18n.Tf(lang, "pipeline.live_footer", taskID, taskID, taskID))
-
-					_ = m.Edit(context.Background(), statusRef, bldr.String(), ports.Rich())
+					_ = m.Edit(context.Background(), statusRef, renderLiveStatusText(taskID, projectName, runLabel, lang, liveView), ports.Rich())
 				}
 			}
 		}
@@ -886,10 +987,11 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	var hasAskQuestionToolCall bool
 	var stepPRURL string
 	type trackedAskStep struct {
-		stepIndex int
-		items     []utils.ParsedQuestion
+		key   string
+		items []utils.ParsedQuestion
 	}
 	var trackedAsks []trackedAskStep
+	seenActiveToolIDs := make(map[string]bool)
 
 	go func() {
 		for scanner.Scan() {
@@ -912,7 +1014,7 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 				if convID != "" {
 					domain.GlobalTaskManager.SetTaskConversationID(taskID, convID)
 					domain.GlobalTaskManager.SetTaskAgent(taskID, taskAgent)
-					domain.GlobalTokenTracker.SetConversationID(convID)
+					domain.GlobalTokenTracker.SetConversationIDForID(taskID, convID)
 				}
 
 				if evt.StepUpdate != nil {
@@ -924,12 +1026,22 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 						background.ObserveAgentActivity()
 					}
 					if u.Usage != nil {
-						domain.GlobalTokenTracker.RecordStepUsage(u.StepIndex, *u.Usage)
+						if u.StepType == "usage" {
+							domain.GlobalTokenTracker.RecordLiveSnapshotUsageForID(taskID, *u.Usage)
+						} else {
+							domain.GlobalTokenTracker.RecordStepUsageForID(taskID, u.StepIndex, *u.Usage)
+						}
 					}
 					if u.StepType == "tool" && u.State == "ACTIVE" {
-						domain.GlobalTokenTracker.RecordToolCall()
-						desc := domain.FormatToolAction(u.ToolName, u.ToolInfo)
-						task.AppendLog(desc)
+						isRepeat := u.ToolCallID != "" && seenActiveToolIDs[u.ToolCallID]
+						if !isRepeat {
+							if u.ToolCallID != "" {
+								seenActiveToolIDs[u.ToolCallID] = true
+							}
+							domain.GlobalTokenTracker.RecordToolCallForID(taskID)
+							desc := domain.FormatToolAction(u.ToolName, u.ToolInfo)
+							task.AppendLog(desc)
+						}
 					} else if u.StepType == "agent_response" && u.TextDelta != "" {
 						if strings.TrimSpace(u.TextDelta) != "" {
 							sawTurnOutput = true
@@ -943,8 +1055,8 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 						})
 					}
 
-					// Фиксация вызова инструмента ask_question (накапливаем все вопросы шага)
-					if isAskQuestionToolName(u.ToolName) || (u.ToolInfo != nil && isAskQuestionToolName(u.ToolInfo.Name)) {
+					// Фиксация вызова инструмента ask_question (накапливаем все вопросы шага, отсекая неудавшиеся вызовы).
+					if u.State != "FAILED" && (isAskQuestionToolName(u.ToolName) || (u.ToolInfo != nil && isAskQuestionToolName(u.ToolInfo.Name))) {
 						hasAskQuestionToolCall = true
 						var items []utils.ParsedQuestion
 						if u.ToolInfo != nil && u.ToolInfo.Parameters != nil {
@@ -961,9 +1073,13 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 							items = []utils.ParsedQuestion{{Question: strings.TrimSpace(u.TextDelta)}}
 						}
 						if len(items) > 0 {
+							key := strings.TrimSpace(u.ToolCallID)
+							if key == "" {
+								key = fmt.Sprintf("step:%d", u.StepIndex)
+							}
 							updated := false
 							for idx := range trackedAsks {
-								if trackedAsks[idx].stepIndex == u.StepIndex {
+								if trackedAsks[idx].key == key {
 									trackedAsks[idx].items = items
 									updated = true
 									break
@@ -971,8 +1087,8 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 							}
 							if !updated {
 								trackedAsks = append(trackedAsks, trackedAskStep{
-									stepIndex: u.StepIndex,
-									items:     items,
+									key:   key,
+									items: items,
 								})
 							}
 						}
@@ -987,7 +1103,9 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 						resultError = res.Error
 					}
 					if res.Usage != nil {
-						domain.GlobalTokenTracker.RecordResultUsage(*res.Usage, res.DurationSeconds, res.NumTurns)
+						domain.GlobalTokenTracker.RecordResultUsageForID(taskID, *res.Usage, res.DurationSeconds, res.NumTurns)
+					} else {
+						domain.GlobalTokenTracker.RecordResultUsageForID(taskID, domain.UsageStats{}, res.DurationSeconds, res.NumTurns)
 					}
 					if res.Response != "" {
 						if strings.TrimSpace(res.Response) != "" {
@@ -1044,19 +1162,32 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	task.DetachProcess()
 
 	view6 := task.Snapshot()
+	if strings.EqualFold(taskAgent, "agy") && view6.ConversationID != "" {
+		domain.GlobalTokenTracker.SyncFromAgyDB(taskID, view6.ConversationID, baseAgyUsage)
+	}
+	persistTaskTokenSnapshot(task)
+	if statusRef.ID != "" {
+		_ = m.Edit(context.Background(), statusRef, renderLiveStatusText(taskID, projectName, runLabel, lang, view6), ports.Rich())
+	}
+
 	isCancelled := (view6.Status == domain.TaskStatusCancelled)
+	isPaused := (view6.Status == domain.TaskStatusPaused)
 	lastPR := view6.LastPRURL
 	fullResp := strings.TrimSpace(view6.Output)
+	persistTaskTokenSnapshot(task)
 	syncLegacySession(task)
 
 	if isCancelled {
 		return StepResult{Outcome: StepOutcomeCancelled, PRURL: lastPR}
 	}
+	if isPaused {
+		return StepResult{Outcome: StepOutcomePaused, PRURL: lastPR}
+	}
 	// Если PR создан именно на ЭТОМ шаге выполнения, шаг считается успешно завершённым.
 	if !isPlanning && stepPRURL != "" {
 		return StepResult{Outcome: StepOutcomeSuccess, PRURL: lastPR, HasResult: hasResult, ResultStatus: resultStatus}
 	}
-	if stepTimedOut || stepCtx.Err() == context.DeadlineExceeded {
+	if stepTimedOut || stepCtx.Err() == context.DeadlineExceeded || strings.Contains(strings.ToLower(resultError), "deadline exceeded") {
 		return StepResult{Outcome: StepOutcomeTimeout, Error: waitErr, PRURL: lastPR}
 	}
 
@@ -1168,8 +1299,8 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 			t.QuestionOptions = append([]string(nil), qOpts...)
 			t.QuestionAskedAt = time.Now()
 		})
+		persistTaskTokenSnapshot(task)
 		syncLegacySession(task)
-		domain.GlobalTaskManager.SaveTask(task)
 
 		msgText := formatTaskQuestionMessage(task.Snapshot(), isPlanning, lang)
 		menu := buildQuestionMarkup(task, lang)
@@ -1220,6 +1351,71 @@ func continueIncompleteStep(m ports.Messenger, chat ports.ChatID, task *domain.T
 	return i18n.T(lang, promptKey), true
 }
 
+func renderLiveStatusText(taskID int, projectName, runLabel, lang string, liveView domain.TaskView) string {
+	var lastLine string
+	if len(liveView.RecentLogs) > 0 {
+		lastLine = liveView.RecentLogs[len(liveView.RecentLogs)-1]
+	}
+	queueInfo := ""
+	if len(liveView.PendingFollowups) > 0 {
+		queueInfo = i18n.Tf(lang, "pipeline.live_queue", len(liveView.PendingFollowups))
+	}
+	statusPrefix := i18n.T(lang, "pipeline.live_prefix_running")
+	if liveView.Status == domain.TaskStatusPlanning {
+		statusPrefix = i18n.T(lang, "pipeline.live_prefix_planning")
+	}
+	tokenSnippet := domain.GlobalTokenTracker.GetLiveStatusSnippetForID(taskID, lang)
+
+	var bldr strings.Builder
+	bldr.WriteString(i18n.Tf(lang, "pipeline.live_header",
+		statusPrefix,
+		taskID,
+		html.EscapeString(projectName),
+		runLabel,
+		domain.FormatDuration(liveView.Duration, lang),
+		queueInfo,
+	))
+	if lastLine != "" {
+		bldr.WriteString(i18n.Tf(lang, "pipeline.live_action", html.EscapeString(utils.TruncateString(lastLine, 80))))
+	} else {
+		bldr.WriteString(i18n.T(lang, "pipeline.live_action_init"))
+	}
+	if tokenSnippet != "" {
+		bldr.WriteString(tokenSnippet + "\n\n")
+	}
+	bldr.WriteString(i18n.Tf(lang, "pipeline.live_footer", taskID, taskID, taskID))
+	return bldr.String()
+}
+
+func persistTaskTokenSnapshot(task *domain.TaskSession) {
+	if task == nil {
+		return
+	}
+	taskID := task.Snapshot().ID
+	snap := domain.GlobalTokenTracker.SnapshotForID(taskID)
+	if snap == nil {
+		return
+	}
+	task.Update(func(t *domain.TaskSession) {
+		t.TokenMetrics = snap
+	})
+	domain.GlobalTaskManager.SaveTaskMetrics(taskID, snap)
+	domain.GlobalTaskManager.SaveTask(task)
+}
+
+func pausePipelineCleanly(m ports.Messenger, task *domain.TaskSession, projectName, projectsRoot string) {
+	persistTaskTokenSnapshot(task)
+	taskID := task.Snapshot().ID
+	domain.GlobalTokenTracker.DetachTaskForID(taskID)
+	task.Update(func(t *domain.TaskSession) {
+		t.ReleasePipelineLocked()
+	})
+	persistTaskTokenSnapshot(task)
+	syncLegacySession(task)
+	domain.GlobalTaskManager.SaveTask(task)
+	checkAndStartQueuedTask(m, projectName, projectsRoot)
+}
+
 // pauseTaskForResume переводит задачу в паузу с сохранённой сессией агента и возвращает
 // её идентификатор и имя агента — для сообщения о том, как продолжить.
 func pauseTaskForResume(task *domain.TaskSession) (convID, agent string) {
@@ -1232,6 +1428,7 @@ func pauseTaskForResume(task *domain.TaskSession) (convID, agent string) {
 		}
 		t.ReleasePipelineLocked()
 	})
+	persistTaskTokenSnapshot(task)
 	syncLegacySession(task)
 	return convID, agent
 }
@@ -1304,6 +1501,7 @@ func handleTaskStepError(m ports.Messenger, chat ports.ChatID, task *domain.Task
 		t.ReleasePipelineLocked()
 	})
 
+	persistTaskTokenSnapshot(task)
 	syncLegacySession(task)
 
 	errText := i18n.T(lang, "pipeline.error_unknown")
@@ -1349,6 +1547,7 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 			t.ResetOutputLocked()
 			t.StartedAt = time.Now()
 		})
+		persistTaskTokenSnapshot(task)
 		syncLegacySession(task)
 
 		_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "pipeline.answer_received", taskID), ports.Rich())
@@ -1363,6 +1562,7 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 			}
 			t.ReleasePipelineLocked()
 		})
+		persistTaskTokenSnapshot(task)
 		syncLegacySession(task)
 
 		if !isCancelled {
@@ -1377,6 +1577,7 @@ func waitForTaskInput(m ports.Messenger, chat ports.ChatID, task *domain.TaskSes
 			}
 			t.ReleasePipelineLocked()
 		})
+		persistTaskTokenSnapshot(task)
 		syncLegacySession(task)
 
 		resumeMenu := buildResumeMarkup(taskID, lang)
@@ -1406,6 +1607,7 @@ const (
 	StepOutcomeWaitingInput
 	StepOutcomeTimeout
 	StepOutcomeCancelled
+	StepOutcomePaused
 	StepOutcomeError
 	// StepOutcomeIncomplete — процесс агента вышел, прервав свои фоновые задачи:
 	// работа не доведена до конца, хотя ошибки и таймаута не было.

@@ -2434,3 +2434,74 @@ func TestNoChangesValidationLogic(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanningAndQuestionSafetyGuards(t *testing.T) {
+	t.Run("isAskQuestionToolName handles ACP/MCP/Claude variants", func(t *testing.T) {
+		for _, yes := range []string{"ask_question", "AskQuestion", "AskUserQuestion", "mcp_bro_bot_ask_user", "mcp__bro_bot__ask_user"} {
+			if !isAskQuestionToolName(yes) {
+				t.Errorf("isAskQuestionToolName(%q) = false, want true", yes)
+			}
+		}
+		for _, no := range []string{"read_file", "mcp_bro_bot_list_tasks", "run_command"} {
+			if isAskQuestionToolName(no) {
+				t.Errorf("isAskQuestionToolName(%q) = true, want false", no)
+			}
+		}
+	})
+
+	t.Run("isWaitingForAnswersStub detects stub but preserves real plans", func(t *testing.T) {
+		if !isWaitingForAnswersStub("Я подготовил вопросы. Жду ответы на вопросы.") {
+			t.Errorf("expected stub to be detected")
+		}
+		realPlan := "## План реализации\n1. Обновить `internal/handlers/pipeline.go`.\n2. Добавить тесты.\n\nПосле этого жду ответы на вопросы по опциям."
+		if isWaitingForAnswersStub(realPlan) {
+			t.Errorf("real structured plan must not trigger stub detector")
+		}
+	})
+
+	t.Run("handleApprovePlanWithVariant preserves WaitingApproval on conflict or busy project", func(t *testing.T) {
+		mt := setupTestApp(t)
+		t1 := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("proj1", "m", "claude", "task1", testChatID, true)
+		t1.Update(func(ts *domain.TaskSession) {
+			ts.Status = domain.TaskStatusWaitingApproval
+			ts.Plan = "## Plan\n1. Step"
+			ts.ConversationID = "claude-sess-1"
+		})
+		// Активен agy -> конфликт агентов НЕ должен менять статус t1 на running.
+		if err := handleApprovePlanWithVariant(mt.Messenger, testChatID, t1.Snapshot().ID, ""); err != nil {
+			t.Fatalf("handleApprovePlanWithVariant conflict: %v", err)
+		}
+		if got := t1.Snapshot().Status; got != domain.TaskStatusWaitingApproval {
+			t.Errorf("expected status WaitingApproval preserved on conflict, got %s", got)
+		}
+
+		// Занятый проект другим таском -> также сохраняет WaitingApproval.
+		t2 := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("proj2", "m", "agy", "other", testChatID, false)
+		t2.Update(func(ts *domain.TaskSession) { ts.Status = domain.TaskStatusRunning })
+		t3 := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("proj2", "m", "agy", "plan", testChatID, true)
+		t3.Update(func(ts *domain.TaskSession) {
+			ts.Status = domain.TaskStatusWaitingApproval
+			ts.Plan = "## Plan\n1. Step"
+		})
+		if err := handleApprovePlanWithVariant(mt.Messenger, testChatID, t3.Snapshot().ID, ""); err != nil {
+			t.Fatalf("handleApprovePlanWithVariant busy: %v", err)
+		}
+		if got := t3.Snapshot().Status; got != domain.TaskStatusWaitingApproval {
+			t.Errorf("expected status WaitingApproval preserved when project busy, got %s", got)
+		}
+	})
+
+	t.Run("onQuestionChoice ignores stale callbacks on completed task", func(t *testing.T) {
+		mt := setupTestApp(t)
+		task := domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("proj3", "m", "agy", "done", testChatID, false)
+		task.Update(func(ts *domain.TaskSession) {
+			ts.Status = domain.TaskStatusCompleted
+			ts.PendingQuestions = []domain.QuestionItem{{Question: "Q?", Options: []string{"A", "B"}}}
+		})
+		cbMock := &mock.Session{CB: &ports.CallbackQuery{ID: "c-stale", Action: "q_choice", Payload: fmt.Sprintf("%d:0:0", task.Snapshot().ID)}}
+		_ = onQuestionChoice(adminSession(mt, cbMock))
+		if len(cbMock.Edits) > 0 {
+			t.Errorf("stale callback must not edit completed task message")
+		}
+	})
+}

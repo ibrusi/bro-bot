@@ -607,21 +607,96 @@ func (s *SQLiteStorage) GetMetrics(ctx context.Context, taskID int) (*TokenMetri
 	return &m, nil
 }
 
-// ExtractConversationLastStepUsage читает метрики последнего шага агента напрямую из БД agy.
-func ExtractConversationLastStepUsage(convID string) (inputTokens, outputTokens, thinkingTokens, cacheReadTokens, totalTokens int64, ok bool) {
+// StepUsageSnapshot хранит раскладку токенов одного шага или суммы шагов сессии agy.
+type StepUsageSnapshot struct {
+	InputTokens     int64
+	OutputTokens    int64
+	ThinkingTokens  int64
+	CacheReadTokens int64
+	TotalTokens     int64
+}
+
+// ConversationUsageSummary содержит суммарные метрики по всем шагам и последний шаг разговора agy.
+type ConversationUsageSummary struct {
+	Total    StepUsageSnapshot
+	LastStep StepUsageSnapshot
+	Steps    int
+}
+
+func agyConversationDBPath(convID string) string {
 	if convID == "" {
-		return 0, 0, 0, 0, 0, false
+		return ""
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return 0, 0, 0, 0, 0, false
+		return ""
 	}
-	dbPath := filepath.Join(home, ".gemini", "antigravity-cli", "conversations", convID+".db")
-	if _, err := os.Stat(dbPath); err != nil {
-		return 0, 0, 0, 0, 0, false
-	}
+	return filepath.Join(home, ".gemini", "antigravity-cli", "conversations", convID+".db")
+}
 
-	convDB, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+func openAgyReadOnlyDB(dbPath string) (*sql.DB, error) {
+	if dbPath == "" {
+		return nil, os.ErrNotExist
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, err
+	}
+	return sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=busy_timeout(200)")
+}
+
+// ExtractConversationUsage читает и суммирует метрики всех шагов агента напрямую из БД agy.
+func ExtractConversationUsage(convID string) (ConversationUsageSummary, bool) {
+	return ExtractConversationUsageFromPath(agyConversationDBPath(convID))
+}
+
+// ExtractConversationUsageFromPath читает и суммирует метрики шагов агента из указанного файла БД agy.
+func ExtractConversationUsageFromPath(dbPath string) (ConversationUsageSummary, bool) {
+	var summary ConversationUsageSummary
+	convDB, err := openAgyReadOnlyDB(dbPath)
+	if err != nil {
+		return summary, false
+	}
+	defer convDB.Close()
+
+	rows, err := convDB.Query("SELECT metadata FROM steps WHERE step_type = 15 AND metadata IS NOT NULL ORDER BY idx ASC")
+	if err != nil {
+		return summary, false
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var meta []byte
+		if err := rows.Scan(&meta); err != nil || len(meta) == 0 {
+			continue
+		}
+		inp, out, think, cache, total, ok := parseUsageFromStepMetadata(meta)
+		if !ok || (inp == 0 && out == 0 && think == 0 && cache == 0 && total == 0) {
+			continue
+		}
+		snap := StepUsageSnapshot{
+			InputTokens:     inp,
+			OutputTokens:    out,
+			ThinkingTokens:  think,
+			CacheReadTokens: cache,
+			TotalTokens:     total,
+		}
+		summary.Steps++
+		summary.LastStep = snap
+		summary.Total.InputTokens += inp
+		summary.Total.OutputTokens += out
+		summary.Total.ThinkingTokens += think
+		summary.Total.CacheReadTokens += cache
+		summary.Total.TotalTokens += total
+	}
+	if summary.Steps == 0 || rows.Err() != nil {
+		return summary, false
+	}
+	return summary, true
+}
+
+// ExtractConversationLastStepUsage читает метрики последнего шага агента напрямую из БД agy.
+func ExtractConversationLastStepUsage(convID string) (inputTokens, outputTokens, thinkingTokens, cacheReadTokens, totalTokens int64, ok bool) {
+	convDB, err := openAgyReadOnlyDB(agyConversationDBPath(convID))
 	if err != nil {
 		return 0, 0, 0, 0, 0, false
 	}

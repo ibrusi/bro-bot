@@ -289,6 +289,7 @@ func TestModelContextWindow(t *testing.T) {
 		{"haiku", 200_000},
 		{"claude-haiku-5-5", 200_000},
 		{"gpt-oss-120b-medium", 131_072},
+		{"grok-4.7", 256_000},
 		{"120b", 131_072},
 		{"unknown-model", 1_048_576},
 	}
@@ -700,5 +701,69 @@ func TestFormatToolAction_APIModeTools(t *testing.T) {
 				t.Errorf("FormatToolAction(%s) = %q, expected %q", tc.name, got, tc.expected)
 			}
 		})
+	}
+}
+
+func TestTokenTrackerMultiTaskClaudeAndHydration(t *testing.T) {
+	tracker := NewTokenTracker()
+
+	// Параллельные задачи #1 и #2 не затирают друг друга.
+	tracker.StartTaskWithAgentForID(1, "proj-a", "gemini-3.1-pro-high", "agy", "first")
+	tracker.StartTaskWithAgentForID(2, "proj-b", "claude-sonnet-4-6", "claude", "second")
+
+	// В режиме 0 токенов live-сниппет не показывает пустые нули.
+	if snip := tracker.GetLiveStatusSnippetForID(1, "ru"); snip != "" {
+		t.Errorf("expected empty snippet for 0 usage, got %q", snip)
+	}
+
+	// Claude streaming без step_index (0) должен суммироваться по ходам, а не перезаписывать.
+	tracker.RecordStepUsageForID(2, 0, UsageStats{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100})
+	tracker.RecordStepUsageForID(2, 0, UsageStats{InputTokens: 2000, OutputTokens: 250, TotalTokens: 2250})
+
+	// Zero-usage RecordResultUsageForID не должен затирать накопленные шаги.
+	tracker.RecordResultUsageForID(2, UsageStats{}, 5.0, 2)
+	snap2 := tracker.SnapshotForID(2)
+	if snap2 == nil || snap2.Usage.TotalTokens != 3350 {
+		t.Fatalf("expected preserved sum 3350 after zero result usage, got %+v", snap2)
+	}
+
+	// ACP usage_update snapshot не должен удваиваться и перезаписывается финальным результатом.
+	tracker.RecordLiveSnapshotUsageForID(1, UsageStats{TotalTokens: 500})
+	tracker.RecordLiveSnapshotUsageForID(1, UsageStats{TotalTokens: 900})
+	if snip := tracker.GetLiveStatusSnippetForID(1, "ru"); !strings.Contains(snip, "900") {
+		t.Errorf("expected updated 900 in live snippet, got %q", snip)
+	}
+	tracker.RecordResultUsageForID(1, UsageStats{InputTokens: 800, OutputTokens: 150, CacheReadTokens: 200, TotalTokens: 950}, 3.0, 1)
+	snap1 := tracker.SnapshotForID(1)
+	if snap1 == nil || snap1.Usage.TotalTokens != 950 || snap1.LastStepUsage.TotalTokens != 950 {
+		t.Fatalf("expected Task #1 Usage and LastStepUsage backfilled to 950, got %+v", snap1)
+	}
+
+	// Detach + Hydrate восстанавливает метрики после паузы/рестарта без сброса.
+	detached := tracker.DetachTaskForID(1)
+	if detached == nil || detached.Usage.TotalTokens != 950 {
+		t.Fatalf("expected detached metrics 950, got %+v", detached)
+	}
+	restarted := NewTokenTracker()
+	sess := &TaskSession{
+		ID:           1,
+		Project:      "proj-a",
+		Model:        "gemini-3.1-pro-high",
+		Agent:        "agy",
+		Status:       TaskStatusPaused,
+		TokenMetrics: detached,
+	}
+	restarted.HydrateFromTasks([]*TaskSession{sess})
+	if got := restarted.SnapshotForID(1); got == nil || got.Usage.TotalTokens != 950 {
+		t.Fatalf("expected hydrated metrics 950, got %+v", got)
+	}
+
+	// FormatToolAction должен нормализовать одиночное подчёркивание mcp_bro_bot_ask_user.
+	act := FormatToolAction("mcp_bro_bot_ask_user", &StreamToolInfo{
+		Name:       "mcp_bro_bot_ask_user",
+		Parameters: map[string]interface{}{"question": "Pick DB?"},
+	})
+	if !strings.Contains(act, "ask_user") {
+		t.Errorf("expected normalized ask_user action, got %q", act)
 	}
 }
