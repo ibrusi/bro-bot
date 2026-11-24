@@ -103,7 +103,7 @@ func handleStatus(s ports.Session) error {
 	isActiveFocus := (activeTask != nil && activeTask.Snapshot().ID == targetID)
 	msg := domain.FormatTaskDetails(target, isActiveFocus, lang)
 
-	if tokenBlock := domain.GlobalTokenTracker.GetCurrentTaskStatusBlock(lang); tokenBlock != "" {
+	if tokenBlock := domain.GlobalTokenTracker.GetTaskStatusBlock(target, lang); tokenBlock != "" {
 		msg += "\n\n" + tokenBlock
 	}
 	report := system.CollectResourceReport(false)
@@ -264,12 +264,16 @@ func handleCancel(s ports.Session) error {
 	}
 
 	syncLegacySession(domain.GlobalTaskManager.GetActiveTask())
-	domain.GlobalTokenTracker.CancelTask()
+	domain.GlobalTokenTracker.CancelTaskForID(targetID)
 
 	view := task.Snapshot()
 	checkAndStartQueuedTask(s.Messenger(), view.Project, config.ProjectsRoot)
 
 	return s.Send(i18n.Tf(lang, "task.cancelled", view.ID, html.EscapeString(view.Project)), ports.Rich())
+}
+
+func isQuestionInteractiveStatus(st domain.TaskStatus) bool {
+	return st == domain.TaskStatusWaitingInput || st == domain.TaskStatusPaused
 }
 
 // onQuestionChoice — обработчик кнопки q_choice.
@@ -306,6 +310,10 @@ func onQuestionChoice(s ports.Session) error {
 
 	view3 := task.Snapshot()
 	status := view3.Status
+	if !isQuestionInteractiveStatus(status) {
+		_ = s.Respond(i18n.T(lang, "task.toast_not_waiting"))
+		return s.Send(i18n.Tf(lang, "task.not_waiting_status", taskID, i18n.TaskStatusTitle(string(status), lang)), nil)
+	}
 	isPlanning := view3.RequiresPlan && !view3.PlanApproved
 	var chosenText string
 	totalQ := len(view3.PendingQuestions)
@@ -379,13 +387,21 @@ func onQuestionToggle(s ports.Session) error {
 	}
 
 	var toggled bool
+	var wrongStatus bool
 	task.Update(func(t *domain.TaskSession) {
+		if !isQuestionInteractiveStatus(t.Status) {
+			wrongStatus = true
+			return
+		}
 		if qIdx >= 0 && qIdx < len(t.PendingQuestions) && optIdx >= 0 && optIdx < len(t.PendingQuestions[qIdx].Options) {
 			t.CurrentQuestionIndex = qIdx
 			domain.ToggleQuestionOption(&t.PendingQuestions[qIdx], optIdx)
 			toggled = true
 		}
 	})
+	if wrongStatus {
+		return s.Respond(i18n.T(lang, "task.toast_not_waiting"))
+	}
 	if !toggled {
 		return s.Respond(i18n.T(lang, "task.toast_option_missing"))
 	}
@@ -420,12 +436,20 @@ func onQuestionSubmit(s ports.Session) error {
 
 	var selected string
 	var valid bool
+	var wrongStatus bool
 	task.Update(func(t *domain.TaskSession) {
+		if !isQuestionInteractiveStatus(t.Status) {
+			wrongStatus = true
+			return
+		}
 		if qIdx >= 0 && qIdx < len(t.PendingQuestions) {
 			valid = true
 			selected = domain.FormatSelectedOptions(t.PendingQuestions[qIdx])
 		}
 	})
+	if wrongStatus {
+		return s.Respond(i18n.T(lang, "task.toast_not_waiting"))
+	}
 	if !valid {
 		return s.Respond(i18n.T(lang, "task.toast_option_missing"))
 	}
@@ -476,7 +500,12 @@ func onQuestionBack(s ports.Session) error {
 	}
 
 	var curIdx int
+	var wrongStatus bool
 	task.Update(func(t *domain.TaskSession) {
+		if !isQuestionInteractiveStatus(t.Status) {
+			wrongStatus = true
+			return
+		}
 		if t.QuestionAcceptAllTxt {
 			t.QuestionAcceptAllTxt = false
 		} else if t.CurrentQuestionIndex > 0 {
@@ -487,6 +516,9 @@ func onQuestionBack(s ports.Session) error {
 		}
 		curIdx = t.CurrentQuestionIndex
 	})
+	if wrongStatus {
+		return s.Respond(i18n.T(lang, "task.toast_not_waiting"))
+	}
 
 	domain.GlobalTaskManager.SaveTask(task)
 	_ = s.Respond(i18n.Tf(lang, "task.toast_question_switched", curIdx+1))
@@ -508,9 +540,17 @@ func onQuestionAllText(s ports.Session) error {
 		return s.Respond(i18n.T(lang, "task.toast_not_found"))
 	}
 
+	var wrongStatus bool
 	task.Update(func(t *domain.TaskSession) {
+		if !isQuestionInteractiveStatus(t.Status) {
+			wrongStatus = true
+			return
+		}
 		t.QuestionAcceptAllTxt = true
 	})
+	if wrongStatus {
+		return s.Respond(i18n.T(lang, "task.toast_not_waiting"))
+	}
 	_ = s.Respond(i18n.T(lang, "task.toast_send_all_text"))
 
 	updatedView := task.Snapshot()
@@ -655,6 +695,8 @@ func onQuestionPause(s ports.Session) error {
 	}
 
 	_ = s.Respond(i18n.Tf(lang, "task.toast_paused", taskID))
+	persistTaskTokenSnapshot(task)
+	domain.GlobalTokenTracker.DetachTaskForID(taskID)
 	syncLegacySession(task)
 
 	if cb := s.Callback(); cb != nil && cb.MessageText != "" {
@@ -705,12 +747,20 @@ func onQuestionResume(s ports.Session) error {
 		menu := buildQuestionMarkup(task, lang)
 		isPlan := view5.RequiresPlan && !view5.PlanApproved
 		promptMsg := formatTaskQuestionMessage(view5, isPlan, lang)
-		return s.Send(promptMsg, ports.RichWith(menu))
+		qRef, err := s.Messenger().Send(context.Background(), s.Chat(), promptMsg, ports.RichWith(menu))
+		if qRef.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(qRef, taskID)
+		}
+		return err
 	}
 
 	if lastQ != "" {
-		return s.Send(i18n.Tf(lang, "task.question_pending",
+		qRef, err := s.Messenger().Send(context.Background(), s.Chat(), i18n.Tf(lang, "task.question_pending",
 			taskID, html.EscapeString(lastQ), taskID), ports.Rich())
+		if qRef.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(qRef, taskID)
+		}
+		return err
 	}
 
 	// Если вопроса не было (например, пауза по таймауту выполнения шага) — возобновляем выполнение
@@ -724,7 +774,11 @@ func onQuestionResume(s ports.Session) error {
 	resStatus := resumedView3.Status
 
 	if resStatus == domain.TaskStatusQueued {
-		return s.Send(i18n.Tf(lang, "task.queued_project", taskID, html.EscapeString(proj)), ports.Rich())
+		qRef, err := s.Messenger().Send(context.Background(), s.Chat(), i18n.Tf(lang, "task.queued_project", taskID, html.EscapeString(proj)), ports.Rich())
+		if qRef.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(qRef, taskID)
+		}
+		return err
 	}
 
 	view6 := task.Snapshot()
@@ -733,9 +787,14 @@ func onQuestionResume(s ports.Session) error {
 		tAgent = "agy"
 	}
 
+	domain.GlobalTokenTracker.StartTaskIfNotActiveWithAgentForID(taskID, proj, view6.Model, tAgent, view6.CurrentPrompt)
 	workDir := filepath.Join(config.ProjectsRoot, proj)
 	go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
-	return s.Send(i18n.Tf(lang, "task.resumed_from_session", taskID, html.EscapeString(proj), html.EscapeString(tAgent)), ports.Rich())
+	ref, err := s.Messenger().Send(context.Background(), s.Chat(), i18n.Tf(lang, "task.resumed_from_session", taskID, html.EscapeString(proj), html.EscapeString(tAgent)), ports.Rich())
+	if ref.ID != "" {
+		domain.GlobalTaskManager.RegisterMessageTask(ref, taskID)
+	}
+	return err
 }
 
 // onTaskAgentRestart — обработчик кнопки task_agent_restart.
@@ -750,6 +809,12 @@ func onTaskAgentRestart(s ports.Session) error {
 	task := domain.GlobalTaskManager.GetTask(taskID)
 	if task == nil {
 		return s.Respond(i18n.T(lang, "task.toast_not_found"))
+	}
+
+	preView := task.Snapshot()
+	if domain.GlobalTaskManager.HasOtherRunningTaskInProject(preView.Project, taskID) {
+		_ = s.Respond(i18n.T(lang, "task.toast_project_busy"))
+		return s.Send(i18n.Tf(lang, "task.project_busy", html.EscapeString(preView.Project)), ports.Rich())
 	}
 
 	_ = s.Respond(i18n.Tf(lang, "task.toast_restarting_with", ActiveAgentName()))
@@ -782,7 +847,7 @@ func onTaskAgentRestart(s ports.Session) error {
 	domain.GlobalTaskManager.SaveTask(task)
 
 	if cb := s.Callback(); cb != nil && cb.MessageText != "" {
-		_ = s.Edit(i18n.Tf(lang, "task.restart_edit", cb.MessageText, html.EscapeString(ActiveAgentName())), ports.Rich())
+		_ = s.Edit(i18n.Tf(lang, "task.restart_edit", html.EscapeString(cb.MessageText), html.EscapeString(ActiveAgentName())), ports.Rich())
 	}
 
 	workDir := filepath.Join(config.ProjectsRoot, proj)
@@ -827,7 +892,7 @@ func onTaskAgentSwitch(s ports.Session) error {
 	syncLegacySession(resumedTask)
 
 	if cb := s.Callback(); cb != nil && cb.MessageText != "" {
-		_ = s.Edit(i18n.Tf(lang, "task.switch_edit", cb.MessageText, html.EscapeString(targetAgent)), ports.Rich())
+		_ = s.Edit(i18n.Tf(lang, "task.switch_edit", html.EscapeString(cb.MessageText), html.EscapeString(targetAgent)), ports.Rich())
 	}
 
 	resumedView4 := resumedTask.Snapshot()
@@ -873,6 +938,8 @@ func handlePause(s ports.Session) error {
 		return s.Send(i18n.Tf(lang, "task.cannot_pause", targetID, i18n.TaskStatusTitle(string(st), lang)), ports.Rich())
 	}
 
+	persistTaskTokenSnapshot(task)
+	domain.GlobalTokenTracker.DetachTaskForID(targetID)
 	syncLegacySession(task)
 	view9 := task.Snapshot()
 	projectName := view9.Project
@@ -953,15 +1020,27 @@ func handleResume(s ports.Session) error {
 		menu := buildQuestionMarkup(task, lang)
 		if hasStructuredQ {
 			isPlan := view10.RequiresPlan && !view10.PlanApproved
-			return s.Send(formatTaskQuestionMessage(view10, isPlan, lang), ports.RichWith(menu))
+			qRef, err := s.Messenger().Send(context.Background(), s.Chat(), formatTaskQuestionMessage(view10, isPlan, lang), ports.RichWith(menu))
+			if qRef.ID != "" {
+				domain.GlobalTaskManager.RegisterMessageTask(qRef, targetID)
+			}
+			return err
 		}
-		return s.Send(i18n.Tf(lang, "task.question_waiting_short", targetID, targetID), ports.RichWith(menu))
+		qRef, err := s.Messenger().Send(context.Background(), s.Chat(), i18n.Tf(lang, "task.question_waiting_short", targetID, targetID), ports.RichWith(menu))
+		if qRef.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(qRef, targetID)
+		}
+		return err
 	}
 
 	if status == domain.TaskStatusPaused && answer == "" && hasStructuredQ {
 		menu := buildQuestionMarkup(task, lang)
 		isPlan := view10.RequiresPlan && !view10.PlanApproved
-		return s.Send(formatTaskQuestionMessage(view10, isPlan, lang), ports.RichWith(menu))
+		qRef, err := s.Messenger().Send(context.Background(), s.Chat(), formatTaskQuestionMessage(view10, isPlan, lang), ports.RichWith(menu))
+		if qRef.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(qRef, targetID)
+		}
+		return err
 	}
 
 	resumedTask, err := domain.GlobalTaskManager.ResumeTask(targetID, answer)
@@ -975,12 +1054,25 @@ func handleResume(s ports.Session) error {
 	proj := resumedView6.Project
 
 	if resStatus == domain.TaskStatusQueued {
-		return s.Send(i18n.Tf(lang, "task.queued_after_current", targetID, html.EscapeString(proj)), ports.Rich())
+		qRef, err := s.Messenger().Send(context.Background(), s.Chat(), i18n.Tf(lang, "task.queued_after_current", targetID, html.EscapeString(proj)), ports.Rich())
+		if qRef.ID != "" {
+			domain.GlobalTaskManager.RegisterMessageTask(qRef, targetID)
+		}
+		return err
 	}
 
+	rAgent := resumedView6.Agent
+	if rAgent == "" {
+		rAgent = ActiveAgentName()
+	}
+	domain.GlobalTokenTracker.StartTaskIfNotActiveWithAgentForID(targetID, proj, resumedView6.Model, rAgent, resumedView6.CurrentPrompt)
 	workDir := filepath.Join(config.ProjectsRoot, proj)
 	go runAgentTaskPipeline(s.Messenger(), s.Chat(), resumedTask, workDir, config.ProjectsRoot)
-	return s.Send(i18n.Tf(lang, "task.resumed", targetID, html.EscapeString(proj)), ports.Rich())
+	ref, err := s.Messenger().Send(context.Background(), s.Chat(), i18n.Tf(lang, "task.resumed", targetID, html.EscapeString(proj)), ports.Rich())
+	if ref.ID != "" {
+		domain.GlobalTaskManager.RegisterMessageTask(ref, targetID)
+	}
+	return err
 }
 
 // handleRetryTaskByID выполняет сброс сессии и перезапуск задачи по её ID.
@@ -990,6 +1082,11 @@ func handleRetryTaskByID(s ports.Session, targetID int) error {
 	task := domain.GlobalTaskManager.GetTask(targetID)
 	if task == nil {
 		return s.Send(i18n.Tf(lang, "task.not_found_short", targetID), ports.Rich())
+	}
+
+	preView := task.Snapshot()
+	if domain.GlobalTaskManager.HasOtherRunningTaskInProject(preView.Project, targetID) {
+		return s.Send(i18n.Tf(lang, "task.project_busy", html.EscapeString(preView.Project)), ports.Rich())
 	}
 
 	// Проверка статуса и сброс задачи — одним куском: между ними задачу нельзя
@@ -1257,7 +1354,7 @@ func createTaskInProject(s ports.Session, targetProj, targetAgent, prompt string
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
 
-	domain.GlobalTokenTracker.StartTaskWithAgent(targetProj, curMod, targetAgent, prompt)
+	domain.GlobalTokenTracker.StartTaskWithAgentForID(taskID, targetProj, curMod, targetAgent, prompt)
 	workDir := filepath.Join(config.ProjectsRoot, targetProj)
 
 	go runAgentTaskPipeline(s.Messenger(), s.Chat(), task, workDir, config.ProjectsRoot)
@@ -1542,9 +1639,9 @@ func checkAndStartQueuedTask(m ports.Messenger, project, root string) {
 	_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, startKey,
 		nextID, html.EscapeString(project), html.EscapeString(utils.TruncateString(prompt, 80))), ports.Rich())
 
-	domain.GlobalTokenTracker.StartTaskWithAgent(project, model, tAgent, prompt)
+	domain.GlobalTokenTracker.StartTaskIfNotActiveWithAgentForID(nextID, project, model, tAgent, prompt)
 	workDir := filepath.Join(root, project)
-	go runAgentTaskPipeline(m, chat, nextTask, workDir, config.ProjectsRoot)
+	go runAgentTaskPipeline(m, chat, nextTask, workDir, root)
 }
 
 func syncLegacySession(task *domain.TaskSession) {

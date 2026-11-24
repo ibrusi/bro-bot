@@ -177,7 +177,7 @@ func onPlanCancel(s ports.Session) error {
 		return s.Send("❌ "+ErrorText(err, lang), ports.Rich())
 	}
 	syncLegacySession(domain.GlobalTaskManager.GetActiveTask())
-	domain.GlobalTokenTracker.CancelTask()
+	domain.GlobalTokenTracker.CancelTaskForID(id)
 	project := task.Snapshot().Project
 	checkAndStartQueuedTask(s.Messenger(), project, config.ProjectsRoot)
 	return s.Send(i18n.Tf(lang, "task.cancelled_rich", id, html.EscapeString(project)), ports.Rich())
@@ -282,6 +282,20 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 		variantInstruction = i18n.Tf(lang, "pipeline.implementation_variant", variant)
 	}
 
+	preView := task.Snapshot()
+	if preView.Status != domain.TaskStatusWaitingApproval {
+		statusTitle := i18n.TaskStatusTitle(string(preView.Status), lang)
+		_, err := m.Send(context.Background(), chat, i18n.Tf(lang, "plan.not_waiting_approval", taskID, statusTitle), nil)
+		return err
+	}
+	if domain.GlobalTaskManager.HasOtherRunningTaskInProject(preView.Project, taskID) {
+		_, err := m.Send(context.Background(), chat, i18n.Tf(lang, "task.project_busy", html.EscapeString(preView.Project)), ports.Rich())
+		return err
+	}
+	if HasAgentConflict(task, ActiveAgentName()) {
+		return sendAgentConflictDialogWithMessenger(m, chat, task)
+	}
+
 	// Проверка статуса, утверждение плана и запись промпта — одним куском: иначе план
 	// можно утвердить дважды или запустить задачу со старым промптом.
 	var (
@@ -289,6 +303,7 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 		statusTitle   string
 		projectName   string
 		modelName     string
+		taskAgent     string
 		initialPrompt string
 	)
 	task.Update(func(t *domain.TaskSession) {
@@ -305,6 +320,7 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 
 		projectName = t.Project
 		modelName = t.Model
+		taskAgent = t.Agent
 		initialPrompt = t.InitialPrompt
 		t.CurrentPrompt = buildImplementationPrompt(t.InitialPrompt, utils.SanitizePlanText(t.Plan), variantInstruction, lang)
 	})
@@ -314,17 +330,17 @@ func handleApprovePlanWithVariant(m ports.Messenger, chat ports.ChatID, taskID i
 		return err
 	}
 
+	if taskAgent == "" {
+		taskAgent = ActiveAgentName()
+	}
+
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
 
-	if HasAgentConflict(task, ActiveAgentName()) {
-		domain.GlobalTaskManager.SaveTask(task)
-		return sendAgentConflictDialogWithMessenger(m, chat, task)
-	}
-
 	_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "plan.approved", taskID, html.EscapeString(projectName)), ports.Rich())
 
-	domain.GlobalTokenTracker.StartTaskWithAgent(projectName, modelName, ActiveAgentName(), initialPrompt)
+	domain.GlobalTokenTracker.StartTaskIfNotActiveWithAgentForID(taskID, projectName, modelName, taskAgent, initialPrompt)
+	domain.GlobalTokenTracker.StartNextStepForID(taskID, modelName)
 	workDir := filepath.Join(config.ProjectsRoot, projectName)
 	go runAgentTaskPipeline(m, chat, task, workDir, config.ProjectsRoot)
 
@@ -339,6 +355,15 @@ func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback
 		return &domain.TaskNotFoundError{ID: taskID}
 	}
 
+	preView := task.Snapshot()
+	if domain.GlobalTaskManager.HasOtherRunningTaskInProject(preView.Project, taskID) {
+		_, err := m.Send(context.Background(), chat, i18n.Tf(lang, "task.project_busy", html.EscapeString(preView.Project)), ports.Rich())
+		return err
+	}
+	if HasAgentConflict(task, ActiveAgentName()) {
+		return sendAgentConflictDialogWithMessenger(m, chat, task)
+	}
+
 	var projectName string
 	task.Update(func(t *domain.TaskSession) {
 		t.Status = domain.TaskStatusPlanning
@@ -351,11 +376,6 @@ func handleRevisePlan(m ports.Messenger, chat ports.ChatID, taskID int, feedback
 
 	syncLegacySession(task)
 	_, _ = domain.GlobalTaskManager.SetActiveTask(taskID)
-
-	if HasAgentConflict(task, ActiveAgentName()) {
-		domain.GlobalTaskManager.SaveTask(task)
-		return sendAgentConflictDialogWithMessenger(m, chat, task)
-	}
 
 	_, _ = m.Send(context.Background(), chat, i18n.Tf(lang, "plan.revising", taskID, html.EscapeString(utils.TruncateString(feedback, 100))), ports.Rich())
 

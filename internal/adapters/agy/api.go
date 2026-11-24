@@ -355,15 +355,30 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 	chat.History = geminiHistoryContents(args.History)
 
 	var textAccumulator strings.Builder
-	var lastUsage map[string]interface{}
+	var totalInputTokens, totalOutputTokens, totalCacheReadTokens int64
 	var parts []genai.Part = []genai.Part{genai.Text(args.Prompt)}
 	turns := 0
+
+	buildUsage := func(extraIn, extraOut, extraCached int64) map[string]interface{} {
+		in := totalInputTokens + extraIn
+		out := totalOutputTokens + extraOut
+		cached := totalCacheReadTokens + extraCached
+		if in == 0 && out == 0 && cached == 0 {
+			return nil
+		}
+		return map[string]interface{}{
+			"input_tokens":            in,
+			"output_tokens":           out,
+			"cache_read_input_tokens": cached,
+		}
+	}
 
 	for turn := 0; turn < maxGeminiTurns; turn++ {
 		turns++
 		stream := chat.SendMessageStream(ctx, parts...)
 
 		var fnCalls []genai.FunctionCall
+		var turnInputTokens, turnOutputTokens, turnCacheReadTokens int64
 
 		for {
 			resp, err := stream.Next()
@@ -371,10 +386,12 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 				break
 			}
 			if err != nil {
-				return textAccumulator.String(), lastUsage, turns, err
+				return textAccumulator.String(), buildUsage(turnInputTokens, turnOutputTokens, turnCacheReadTokens), turns, err
 			}
 			if resp.UsageMetadata != nil {
-				lastUsage = usageFromMetadata(resp.UsageMetadata)
+				turnInputTokens = int64(resp.UsageMetadata.PromptTokenCount)
+				turnOutputTokens = int64(resp.UsageMetadata.CandidatesTokenCount)
+				turnCacheReadTokens = int64(resp.UsageMetadata.CachedContentTokenCount)
 			}
 
 			for _, cand := range resp.Candidates {
@@ -405,7 +422,7 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 						}
 						msgBytes, _ := json.Marshal(msgEvt)
 						if _, err := fmt.Fprintf(p.wPipe, "%s\n", string(msgBytes)); err != nil {
-							return textAccumulator.String(), lastUsage, turns, errStreamOutputClosed
+							return textAccumulator.String(), buildUsage(turnInputTokens, turnOutputTokens, turnCacheReadTokens), turns, errStreamOutputClosed
 						}
 
 					case genai.FunctionCall:
@@ -427,10 +444,31 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 						}
 						toolBytes, _ := json.Marshal(toolEvt)
 						if _, err := fmt.Fprintf(p.wPipe, "%s\n", string(toolBytes)); err != nil {
-							return textAccumulator.String(), lastUsage, turns, errStreamOutputClosed
+							return textAccumulator.String(), buildUsage(turnInputTokens, turnOutputTokens, turnCacheReadTokens), turns, errStreamOutputClosed
 						}
 					}
 				}
+			}
+		}
+
+		totalInputTokens += turnInputTokens
+		totalOutputTokens += turnOutputTokens
+		totalCacheReadTokens += turnCacheReadTokens
+		if turnInputTokens > 0 || turnOutputTokens > 0 || turnCacheReadTokens > 0 {
+			usageEvt := map[string]interface{}{
+				"type":       "assistant",
+				"session_id": p.sessionID,
+				"message": map[string]interface{}{
+					"role": "assistant",
+					"usage": map[string]interface{}{
+						"input_tokens":            turnInputTokens,
+						"output_tokens":           turnOutputTokens,
+						"cache_read_input_tokens": turnCacheReadTokens,
+					},
+				},
+			}
+			if usageBytes, err := json.Marshal(usageEvt); err == nil {
+				_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(usageBytes))
 			}
 		}
 
@@ -471,7 +509,7 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 		parts = nextParts
 	}
 
-	return textAccumulator.String(), lastUsage, turns, nil
+	return textAccumulator.String(), buildUsage(0, 0, 0), turns, nil
 }
 
 func (p *AgyAPIProcess) handleError(err error) {

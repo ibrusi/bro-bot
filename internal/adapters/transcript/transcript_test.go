@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -72,5 +73,41 @@ func TestReadSessionNotFound(t *testing.T) {
 	_, err := ReadSession("/home/deploy/projects/demo-project", "missing-session-id")
 	if !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("ReadSession() error = %v, want ErrSessionNotFound", err)
+	}
+}
+
+func TestReadSessionFallsBackToAgyTranscript(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	convID := "agy-conv-uuid-123"
+	agyPath, err := AgySessionFilePath(convID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(agyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		`{"type":"GENERIC","source":"SYSTEM","created_at":"t0","content":"skip me"}`,
+		`{"type":"USER_INPUT","source":"USER_EXPLICIT","created_at":"t1","content":"<USER_REQUEST>\nСобери релиз\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>"}`,
+		`{"type":"PLANNER_RESPONSE","source":"MODEL","created_at":"t2","thinking":"hmm","content":"План готов."}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(agyPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	turns, err := ReadSession("/home/deploy/projects/demo-project", convID)
+	if err != nil {
+		t.Fatalf("ReadSession agy fallback failed: %v", err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("expected 2 turns, got %d: %+v", len(turns), turns)
+	}
+	if turns[0].Role != "user" || turns[0].Text != "Собери релиз" {
+		t.Errorf("unexpected first turn: %+v", turns[0])
+	}
+	if turns[1].Role != "assistant" || turns[1].Text != "План готов." {
+		t.Errorf("unexpected second turn: %+v", turns[1])
 	}
 }

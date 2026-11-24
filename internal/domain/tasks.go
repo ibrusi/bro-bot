@@ -524,12 +524,13 @@ func (t *TaskSession) DeliverAnswer(answer string) bool {
 	}
 }
 
-// PauseTask переводит ожидающую ввода задачу в режим паузы.
+// PauseTask переводит выполняемую, планирующую или ожидающую ввода задачу в режим паузы.
 func (t *TaskSession) PauseTask() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.Status == TaskStatusWaitingInput {
+	switch t.Status {
+	case TaskStatusWaitingInput, TaskStatusRunning, TaskStatusPlanning:
 		t.Status = TaskStatusPaused
 		t.terminateLocked()
 		if t.PauseChan != nil {
@@ -539,8 +540,9 @@ func (t *TaskSession) PauseTask() bool {
 			}
 		}
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 // TaskManager управляет жизненным циклом множества задач и переключением активной задачи.
@@ -648,8 +650,11 @@ func (tm *TaskManager) InitWithStorage(s storage.Storage) {
 				sess.TokenMetrics = &TaskTokenMetrics{
 					Project:         rec.Project,
 					Model:           m.Model,
+					Agent:           rec.Agent,
 					PRURL:           m.PRURL,
 					ConversationID:  m.ConversationID,
+					StartedAt:       rec.StartedAt,
+					FinishedAt:      rec.FinishedAt,
 					DurationSeconds: m.DurationSeconds,
 					Turns:           m.Turns,
 					ToolCallsCount:  m.ToolCallsCount,
@@ -937,12 +942,30 @@ func (tm *TaskManager) ListTasksByProject(project string, limit int) []*TaskSess
 	return result
 }
 
-// HasRunningTaskInProject проверяет, выполняется ли прямо сейчас задача в проекте (или ожидает утверждения плана).
-func (tm *TaskManager) HasRunningTaskInProject(project string) bool {
+// GetAllTasks возвращает все известные задачи в порядке создания.
+func (tm *TaskManager) GetAllTasks() []*TaskSession {
+	tm.RLock()
+	defer tm.RUnlock()
+
+	res := make([]*TaskSession, 0, len(tm.taskOrder))
+	for _, id := range tm.taskOrder {
+		if task := tm.tasks[id]; task != nil {
+			res = append(res, task)
+		}
+	}
+	return res
+}
+
+// HasOtherRunningTaskInProject проверяет, выполняется ли в проекте другая активная задача
+// (кроме excludeTaskID; при excludeTaskID <= 0 проверяются все задачи проекта).
+func (tm *TaskManager) HasOtherRunningTaskInProject(project string, excludeTaskID int) bool {
 	tm.RLock()
 	defer tm.RUnlock()
 
 	for _, task := range tm.tasks {
+		if excludeTaskID > 0 && task.ID == excludeTaskID {
+			continue
+		}
 		task.mu.Lock()
 		isRunning := (task.Project == project) &&
 			(task.Status == TaskStatusRunning || task.Status == TaskStatusWaitingInput || task.Status == TaskStatusPlanning || task.Status == TaskStatusWaitingApproval)
@@ -952,6 +975,11 @@ func (tm *TaskManager) HasRunningTaskInProject(project string) bool {
 		}
 	}
 	return false
+}
+
+// HasRunningTaskInProject проверяет, выполняется ли прямо сейчас задача в проекте (или ожидает утверждения плана).
+func (tm *TaskManager) HasRunningTaskInProject(project string) bool {
+	return tm.HasOtherRunningTaskInProject(project, 0)
 }
 
 // GetNextQueuedTaskForProject ищет следующую задачу в очереди для конкретного проекта.
@@ -1416,6 +1444,7 @@ func FormatTasksList(tm *TaskManager, lang string) (string, *ports.Keyboard) {
 			t.mu.Lock()
 			id := t.ID
 			proj := t.Project
+			agentName := t.Agent
 			status := t.Status
 			prompt := t.InitialPrompt
 			followupsCount := len(t.PendingFollowups)
@@ -1426,7 +1455,6 @@ func FormatTasksList(tm *TaskManager, lang string) (string, *ports.Keyboard) {
 				focusBadge = "👉 🎯 "
 			}
 
-			agentName := t.Agent
 			if agentName == "" {
 				agentName = "agy"
 			}

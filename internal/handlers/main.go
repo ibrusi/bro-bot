@@ -75,6 +75,7 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 		return fmt.Errorf("handlers: cannot initialize the SQLite database: %w", err)
 	}
 	domain.GlobalTaskManager.InitWithStorage(sqliteStorage)
+	domain.GlobalTokenTracker.HydrateFromTasks(domain.GlobalTaskManager.GetAllTasks())
 	domain.GlobalChatManager.InitWithStorage(sqliteStorage)
 
 	initDefaultProject(cfg.ProjectsRoot, cfg.DefaultProject)

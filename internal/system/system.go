@@ -563,7 +563,7 @@ func checkActiveTasksForSystemAction(cmdName string, flags SystemFlags, botDir, 
 		config.Session.Waiting = false
 		config.Session.PendingFollowups = nil
 		config.Session.FullOutput.Reset()
-		domain.GlobalTokenTracker.CancelTask()
+		domain.GlobalTokenTracker.CancelAllTasks()
 		config.Session.Unlock()
 	}
 

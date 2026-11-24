@@ -237,9 +237,17 @@ func readHostDisk() HostDiskStats {
 	}
 }
 
+func defaultServiceUnitName() string {
+	if s := strings.TrimSpace(config.ServiceName); s != "" {
+		return s
+	}
+	return "bro-bot.service"
+}
+
 func readCGroupStats() CGroupStats {
+	serviceName := defaultServiceUnitName()
 	stats := CGroupStats{
-		GroupName: "tg-bot.service",
+		GroupName: serviceName,
 	}
 
 	cgroupDir := ""
@@ -262,7 +270,7 @@ func readCGroupStats() CGroupStats {
 	}
 
 	if cgroupDir == "" {
-		candidate := "/sys/fs/cgroup/system.slice/tg-bot.service"
+		candidate := filepath.Join("/sys/fs/cgroup/system.slice", serviceName)
 		if fi, statErr := os.Stat(candidate); statErr == nil && fi.IsDir() {
 			cgroupDir = candidate
 		}
@@ -298,7 +306,7 @@ func readCGroupStats() CGroupStats {
 	if stats.MemoryCurrentBytes == 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, "systemctl", "show", "tg-bot.service",
+		out, err := exec.CommandContext(ctx, "systemctl", "show", serviceName,
 			"--property=MemoryCurrent,MemoryPeak,CPUUsageNSec,TasksCurrent").Output()
 		if err == nil {
 			scanner := bufio.NewScanner(bytes.NewReader(out))

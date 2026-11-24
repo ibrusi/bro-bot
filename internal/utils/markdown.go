@@ -802,6 +802,38 @@ type ParsedQuestion struct {
 	MultiSelect bool
 }
 
+// extractMultiSelectFlag читает флаг множественного выбора в различных форматах схем агентов.
+func extractMultiSelectFlag(m map[string]interface{}) bool {
+	for _, k := range []string{"is_multi_select", "multiSelect", "multi_select"} {
+		if b, ok := m[k].(bool); ok && b {
+			return true
+		}
+	}
+	return false
+}
+
+// formatQuestionOptionText извлекает строку варианта ответа из строки или объекта ({label, description, ...}).
+func formatQuestionOptionText(item interface{}) string {
+	switch v := item.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]interface{}:
+		for _, k := range []string{"label", "title", "text", "name", "value"} {
+			if s, ok := v[k].(string); ok {
+				if label := strings.TrimSpace(s); label != "" {
+					if desc, ok := v["description"].(string); ok {
+						if d := strings.TrimSpace(desc); d != "" && d != label {
+							return label + " — " + d
+						}
+					}
+					return label
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // ExtractAskQuestionItems извлекает структурированный список вопросов без сплющивания вариантов.
 func ExtractAskQuestionItems(params map[string]interface{}) []ParsedQuestion {
 	if params == nil {
@@ -820,11 +852,10 @@ func ExtractAskQuestionItems(params map[string]interface{}) []ParsedQuestion {
 			if qText == "" {
 				continue
 			}
-			multi, _ := qMap["is_multi_select"].(bool)
 			out = append(out, ParsedQuestion{
 				Question:    qText,
 				Options:     extractStringOptions(qMap["options"]),
-				MultiSelect: multi,
+				MultiSelect: extractMultiSelectFlag(qMap),
 			})
 		}
 		if len(out) > 0 {
@@ -835,11 +866,10 @@ func ExtractAskQuestionItems(params map[string]interface{}) []ParsedQuestion {
 	if qText, ok := params["question"].(string); ok {
 		qText = strings.TrimSpace(qText)
 		if qText != "" {
-			multi, _ := params["is_multi_select"].(bool)
 			out = append(out, ParsedQuestion{
 				Question:    qText,
 				Options:     extractStringOptions(params["options"]),
-				MultiSelect: multi,
+				MultiSelect: extractMultiSelectFlag(params),
 			})
 		}
 	}
@@ -851,12 +881,8 @@ func extractStringOptions(raw interface{}) []string {
 	switch v := raw.(type) {
 	case []interface{}:
 		for _, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				continue
-			}
-			if tr := strings.TrimSpace(s); tr != "" {
-				res = append(res, tr)
+			if s := formatQuestionOptionText(item); s != "" {
+				res = append(res, s)
 			}
 		}
 	case []string:
@@ -894,14 +920,13 @@ func FormatAskQuestionParams(params map[string]interface{}, lang string) string 
 			}
 			bldr.WriteString(fmt.Sprintf("**%s**", qText))
 
-			if isMulti, _ := qMap["is_multi_select"].(bool); isMulti {
+			if extractMultiSelectFlag(qMap) {
 				bldr.WriteString(i18n.T(lang, "markdown.multi_select"))
 			}
 
-			if opts, ok := qMap["options"].([]interface{}); ok && len(opts) > 0 {
+			if opts := extractStringOptions(qMap["options"]); len(opts) > 0 {
 				bldr.WriteString("\n")
-				for j, opt := range opts {
-					optStr := fmt.Sprintf("%v", opt)
+				for j, optStr := range opts {
 					bldr.WriteString(fmt.Sprintf("\n%d. %s", j+1, optStr))
 				}
 			}
@@ -938,41 +963,13 @@ func ExtractAskQuestionOptions(params map[string]interface{}) []string {
 			if !ok {
 				continue
 			}
-			if opts, ok := qMap["options"].([]interface{}); ok {
-				for _, opt := range opts {
-					s := strings.TrimSpace(fmt.Sprintf("%v", opt))
-					if s != "" {
-						result = append(result, s)
-					}
-				}
-			} else if opts, ok := qMap["options"].([]string); ok {
-				for _, opt := range opts {
-					s := strings.TrimSpace(opt)
-					if s != "" {
-						result = append(result, s)
-					}
-				}
-			}
+			result = append(result, extractStringOptions(qMap["options"])...)
 		}
 	}
 
 	// 2. Фолбэк на прямой params["options"]
 	if len(result) == 0 {
-		if opts, ok := params["options"].([]interface{}); ok {
-			for _, opt := range opts {
-				s := strings.TrimSpace(fmt.Sprintf("%v", opt))
-				if s != "" {
-					result = append(result, s)
-				}
-			}
-		} else if opts, ok := params["options"].([]string); ok {
-			for _, opt := range opts {
-				s := strings.TrimSpace(opt)
-				if s != "" {
-					result = append(result, s)
-				}
-			}
-		}
+		result = append(result, extractStringOptions(params["options"])...)
 	}
 
 	return result

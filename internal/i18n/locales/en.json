@@ -143,6 +143,7 @@
     "task.toast_nothing_selected": "Select at least one option or send a text reply",
     "task.toast_question_switched": "Question #%d",
     "task.toast_send_all_text": "Send your answers in a single message",
+    "task.toast_project_busy": "Another task is running in this project",
 
     "task.focus_switched": "🎯 <b>Focus switched to task #%d!</b>\n\n%s%s",
     "task.agent_conflict_note": "\n\n⚠️ <i>Heads up: the task uses the session of agent <b>%s</b>, while <b>%s</b> is active.</i>",
@@ -205,6 +206,7 @@
     "task.resumed_with_agent": "%s\n\n▶️ <b>Task #%d (<code>%s</code>) resumed with agent %s!</b>",
     "task.answer_delivered": "💬 <b>Answer delivered to task #%d</b> (<code>%s</code>)...",
     "task.already_running": "ℹ️ Task #%d is running right now. Stop it first: <code>/cancel %d</code>",
+    "task.project_busy": "⏳ Another active task is already running in project <code>%s</code>. Wait for it to finish or cancel it first.",
     "task.retried": "🔄 <b>Task #%d restarted from scratch</b> (new %s session in <code>%s</code>).",
     "task.queued_new": "⏳ <b>Task #%d queued for project</b> <code>%s</code>:\n\n<i>«%s»</i>\n\n💡 Another task is already running in this project. Task #%d will start automatically once it finishes.%s",
     "task.queued_new_plan_note": " A detailed plan will be drafted first.",
@@ -254,6 +256,10 @@
     "plan.approval_request": "📋 <b>Implementation plan of task #%d</b> (<code>%s</code>):\n\n📝 <b>Task:</b> <i>«%s»</i>\n\n%s%s\n\n👆 <b>The plan is waiting for your approval:</b>\n• Press <b>«%s»</b> (or pick a variant) or use <code>/approve %d</code>.\n• To amend it, send <code>/add %d &lt;notes&gt;</code> or reply to the message.\n• To cancel: <b>«%s»</b> or <code>/cancel %d</code>.",
     "plan.variants_header": "\n\n🔀 <b>Implementation variants:</b>\n",
     "plan.empty_fallback": "The agent did not produce a detailed plan. You can add notes to the task or approve it as is.",
+    "plan.empty_retry_prompt": "Your previous planning turn produced no plan text. Output the full step-by-step implementation plan in plain text, or call the ask_user tool if you need clarification from the user.",
+    "plan.empty_error": "the agent finished planning without generating a plan",
+    "plan.waiting_answers_retry_prompt": "Your previous message said you were waiting for answers, but no questions were sent to the user. Send your concrete clarifying questions right now using ask_user (or ask_question) and end your turn without extra text, OR output the complete step-by-step implementation plan now.",
+    "plan.waiting_answers_fallback": "The agent indicated it is waiting for your answers, but did not send structured questions. Please send your clarifications via /add or reply here, or ask the agent to repeat the questions.",
 
     "chat.system_preamble": "CHAT MODE. You answer the user's questions about the project in chat.\nAllowed: read files, search the code, run safe read-only commands (git log, git status, ls, grep), explain the architecture and propose solutions in words.\nFORBIDDEN: creating git branches, changing, creating or deleting files, committing and pushing, opening pull requests, running migrations and deployments.\nIf answering would require a code change — do not make it; briefly describe what needs to be done instead: the user will file it as a separate task.\nAnswer briefly, to the point, and in English.",
     "chat.short_reminder": "(chat mode: read and answer only, no changes to files or git)",

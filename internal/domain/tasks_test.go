@@ -1504,3 +1504,34 @@ func TestAddFollowupWaitingInputWithAndWithoutActivePipeline(t *testing.T) {
 	}
 }
 
+func TestPauseRunningPlanningAndHasOtherRunning(t *testing.T) {
+	tm := NewTaskManager()
+
+	for _, st := range []TaskStatus{TaskStatusRunning, TaskStatusPlanning, TaskStatusWaitingInput} {
+		task := tm.CreateTask("proj-p", "m1", "work", testChatID)
+		task.Update(func(ts *TaskSession) {
+			ts.Status = st
+		})
+		if !task.PauseTask() {
+			t.Fatalf("PauseTask() returned false for status %s", st)
+		}
+		if got := task.Snapshot().Status; got != TaskStatusPaused {
+			t.Errorf("status after PauseTask(%s) = %s, want paused", st, got)
+		}
+	}
+
+	t1 := tm.CreateTask("proj-conflict", "m1", "one", testChatID)
+	t1.Update(func(ts *TaskSession) { ts.Status = TaskStatusWaitingApproval })
+	if tm.HasOtherRunningTaskInProject("proj-conflict", t1.ID) {
+		t.Errorf("expected HasOtherRunningTaskInProject to ignore self (%d)", t1.ID)
+	}
+	if !tm.HasOtherRunningTaskInProject("proj-conflict", 0) {
+		t.Errorf("expected HasOtherRunningTaskInProject(..., 0) to detect task")
+	}
+
+	// Проверяем FormatTasksList без гонок данных.
+	msg, _ := FormatTasksList(tm, "ru")
+	if !strings.Contains(msg, "proj-conflict") {
+		t.Errorf("expected proj-conflict in formatted list, got:\n%s", msg)
+	}
+}

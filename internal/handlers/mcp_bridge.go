@@ -190,7 +190,7 @@ func (h *channelBotToolHandler) CallBotTool(ctx context.Context, name string, ar
 }
 
 func executeChannelTool(ctx context.Context, ch agentChannel, toolName string, args map[string]interface{}) ports.BotToolResult {
-	normalized := strings.TrimPrefix(strings.TrimSpace(toolName), "mcp__bro_bot__")
+	normalized := tools.NormalizeBotToolName(toolName)
 
 	switch normalized {
 	case mcp.ToolSendMessage:
