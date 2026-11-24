@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"bro-bot/internal/ports"
 )
 
 func TestMCPServer_Initialize(t *testing.T) {
@@ -178,5 +180,45 @@ func TestMCPServer_RunStream(t *testing.T) {
 	outStr := out.String()
 	if !strings.Contains(outStr, `"id":1`) {
 		t.Errorf("expected response to id 1, got %s", outStr)
+	}
+}
+
+type fakeBotToolHandler struct {
+	calls []string
+}
+
+func (f *fakeBotToolHandler) CallBotTool(_ context.Context, name string, args map[string]interface{}) ports.BotToolResult {
+	f.calls = append(f.calls, name)
+	if name == ToolSendMessage && args["message"] == "fail" {
+		return ports.BotToolResult{Text: "delivery failed", IsError: true}
+	}
+	return ports.BotToolResult{Text: "ok:" + name}
+}
+
+func TestMCPServer_ServerDiscoverAndInProcessTools(t *testing.T) {
+	handler := &fakeBotToolHandler{}
+	srv := NewServer(NewInProcessTools(handler))
+	ctx := context.Background()
+
+	disc := srv.HandleLine(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}`))
+	var discResp Response
+	if err := json.Unmarshal(disc, &discResp); err != nil || discResp.Error != nil {
+		t.Fatalf("server/discover failed: err=%v resp=%+v", err, discResp)
+	}
+
+	text, isErr := callTool(t, srv, ToolGetTaskContext, `{"task_id":42}`)
+	if isErr || text != "ok:get_task_context" {
+		t.Fatalf("in-process call failed: text=%q isErr=%v", text, isErr)
+	}
+
+	text, isErr = callTool(t, srv, ToolSendMessage, `{"message":"fail"}`)
+	if !isErr || !strings.Contains(text, "delivery failed") {
+		t.Fatalf("expected error propagation, got text=%q isErr=%v", text, isErr)
+	}
+
+	// Проверяем наличие task_id в схеме get_task_context
+	listBytes := srv.HandleLine(ctx, []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`))
+	if !strings.Contains(string(listBytes), `"task_id"`) {
+		t.Errorf("expected get_task_context schema to contain task_id, got: %s", listBytes)
 	}
 }

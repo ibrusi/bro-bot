@@ -108,9 +108,12 @@ type AgentSwitch struct {
 	Mode  string
 	// Model заполняется, если текущая модель агенту не подходила и была заменена.
 	Model string
-	// ModeAdjusted — агент не запускается в прежнем режиме, и бот сам перешёл
-	// на режим, который агент поддерживает (для grok это acp).
+	// ModeAdjusted — агент не запускается в прежнем режиме, и бот перешёл
+	// на поддерживаемый режим.
 	ModeAdjusted bool
+	// ModeDefaulted — при переключении на агента с явным DefaultMode выбран
+	// его режим по умолчанию (например, acp для agy).
+	ModeDefaulted bool
 }
 
 // ModelSwitched сообщает, была ли заменена модель.
@@ -119,17 +122,19 @@ func (r AgentSwitch) ModelSwitched() bool {
 }
 
 // SwitchActiveAgent переключает активного агента и сохраняет выбор в базе данных.
-// Если агент не запускается в текущем режиме, берётся режим, который он поддерживает,
-// и он тоже сохраняется. Явная команда /mode этот запасной путь не использует.
+// При переходе на другого агента с DefaultMode (например, agy -> acp) применяется
+// его режим по умолчанию; если прежний режим не поддерживается, берётся PreferredMode.
+// Явная команда /mode этот запасной путь не использует.
 func SwitchActiveAgent(name string) (AgentSwitch, error) {
-	return switchActiveAgent(name, config.ProjectState.GetExecutionMode(), true)
+	return switchActiveAgent(name, config.ProjectState.GetExecutionMode(), true, true)
 }
 
 // switchActiveAgent собирает адаптер агента для режима и делает его активным.
 // allowFallback разрешает сменить режим на PreferredMode, когда сборка не удалась
-// из-за неподдерживаемого режима. /mode передаёт false: опечатка и чужой режим
-// остаются ошибкой, а не молчаливой подменой.
-func switchActiveAgent(name, mode string, allowFallback bool) (AgentSwitch, error) {
+// из-за неподдерживаемого режима. applyDefault применяет spec.DefaultMode при
+// переключении с другого агента. /mode передаёт false, false: опечатка и чужой
+// режим остаются ошибкой, а не молчаливой подменой.
+func switchActiveAgent(name, mode string, allowFallback, applyDefault bool) (AgentSwitch, error) {
 	reg := registry()
 	requested := agents.NormalizeMode(mode)
 
@@ -139,6 +144,15 @@ func switchActiveAgent(name, mode string, allowFallback bool) (AgentSwitch, erro
 	}
 
 	chosen := requested
+	var modeAdjusted, modeDefaulted bool
+	if applyDefault && spec.DefaultMode != "" && !strings.EqualFold(ActiveAgentName(), spec.Name) {
+		def := agents.NormalizeMode(spec.DefaultMode)
+		if spec.Supports(def) && def != requested {
+			chosen = def
+			modeDefaulted = true
+		}
+	}
+
 	adapter, err := reg.Build(spec.Name, chosen)
 	if err != nil && allowFallback {
 		var unsupported *agents.UnsupportedModeError
@@ -148,6 +162,8 @@ func switchActiveAgent(name, mode string, allowFallback bool) (AgentSwitch, erro
 					adapter = next
 					err = nil
 					chosen = pref
+					modeDefaulted = false
+					modeAdjusted = true
 				}
 			}
 		}
@@ -160,9 +176,14 @@ func switchActiveAgent(name, mode string, allowFallback bool) (AgentSwitch, erro
 	models.SetAgent(adapter, spec.ModelAliases)
 	config.ProjectState.SetCurrentAgent(spec.Name)
 
-	result := AgentSwitch{Agent: spec.Name, Mode: chosen, ModeAdjusted: chosen != requested}
+	result := AgentSwitch{
+		Agent:         spec.Name,
+		Mode:          chosen,
+		ModeAdjusted:  modeAdjusted,
+		ModeDefaulted: modeDefaulted,
+	}
 	st := domain.GlobalTaskManager.Storage()
-	if result.ModeAdjusted {
+	if result.ModeAdjusted || result.ModeDefaulted {
 		config.ProjectState.SetExecutionMode(chosen)
 		if st != nil {
 			_ = st.SetSetting(context.Background(), "execution_mode", chosen)
@@ -196,7 +217,9 @@ func switchActiveAgent(name, mode string, allowFallback bool) (AgentSwitch, erro
 // formatAgentSwitch — сообщение пользователю о переключении агента.
 func formatAgentSwitch(r AgentSwitch, lang string) string {
 	msg := i18n.Tf(lang, "agent.switched", html.EscapeString(r.Agent), html.EscapeString(r.Mode))
-	if r.ModeAdjusted {
+	if r.ModeDefaulted {
+		msg += i18n.Tf(lang, "agent.mode_defaulted", html.EscapeString(r.Mode))
+	} else if r.ModeAdjusted {
 		msg += i18n.Tf(lang, "agent.mode_adjusted", html.EscapeString(r.Mode))
 	}
 	if r.ModelSwitched() {
@@ -206,9 +229,10 @@ func formatAgentSwitch(r AgentSwitch, lang string) string {
 }
 
 // initActiveAgent выставляет активного агента при старте: сохранённого в базе либо агента
-// по умолчанию. Если для сохранённого режима адаптер не собирается (например, api без
-// ключа), бот стартует в mcp-режиме, а не без агента.
-func initActiveAgent(savedAgent string) {
+// по умолчанию. Если в базе нет режима выполнения, выбирается PreferredMode агента (acp для agy).
+// Если сохранённый режим больше не поддерживается или недоступен (например, старый mcp у agy
+// или api без ключа), бот автоматически переходит в PreferredMode и обновляет настройку.
+func initActiveAgent(savedAgent string, hasSavedMode bool) {
 	reg := registry()
 	name := reg.Normalize(savedAgent)
 	if name == "" {
@@ -216,10 +240,23 @@ func initActiveAgent(savedAgent string) {
 		return
 	}
 
+	if !hasSavedMode {
+		if spec, ok := reg.Lookup(name); ok {
+			if pref, has := spec.PreferredMode(); has {
+				config.ProjectState.SetExecutionMode(pref)
+			}
+		}
+	}
+
 	if savedAgent != "" {
-		_, err := SwitchActiveAgent(savedAgent)
+		res, err := switchActiveAgent(name, config.ProjectState.GetExecutionMode(), true, false)
 		if err == nil {
-			log.Printf("restored the active agent from SQLite: %s", name)
+			if !hasSavedMode {
+				if st := domain.GlobalTaskManager.Storage(); st != nil {
+					_ = st.SetSetting(context.Background(), "execution_mode", res.Mode)
+				}
+			}
+			log.Printf("restored the active agent from SQLite: %s (%s)", name, res.Mode)
 			return
 		}
 		log.Printf("warning: cannot restore agent %q: %v", savedAgent, err)

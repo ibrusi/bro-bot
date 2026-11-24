@@ -215,6 +215,8 @@ func usageFooter(execMode, lang string) string {
 	switch strings.ToLower(execMode) {
 	case "api":
 		return i18n.T(lang, "usage.footer_api")
+	case "acp":
+		return i18n.T(lang, "usage.footer_acp")
 	default:
 		return i18n.T(lang, "usage.footer_mcp")
 	}

@@ -12,12 +12,14 @@ var apiKeyEnv = []string{"GEMINI_API_KEY"}
 // defaultModel — модель по умолчанию при переключении на agy (соответствует алиасу orchestrator).
 const defaultModel = "gemini-pro-orchestrator-neon"
 
-// Spec описывает агента agy для реестра: Gemini API либо режим Google Antigravity (MCP).
+// Spec описывает агента agy для реестра: по умолчанию режим ACP (Google Antigravity),
+// альтернативно Gemini API.
 func Spec() agents.Spec {
 	return agents.Spec{
 		Name:         "agy",
 		APITitle:     "Gemini API",
-		MCPTitle:     "Google Antigravity (MCP)",
+		ACPTitle:     "Google Antigravity (ACP)",
+		DefaultMode:  agents.ModeACP,
 		APIKeyEnv:    apiKeyEnv,
 		DefaultModel: func() string { return defaultModel },
 		// Модели других семейств (Claude и Grok) при переключении на agy
@@ -25,6 +27,6 @@ func Spec() agents.Spec {
 		RejectsModel: rejectsModel,
 		ModelAliases: modelAliases,
 		NewAPI:       func() ports.AgentFramework { return NewAgyAPIAdapter() },
-		NewMCP:       func() ports.AgentFramework { return NewAgyMCPAdapter() },
+		NewACP:       func() ports.AgentFramework { return NewAgyACPAdapter() },
 	}
 }

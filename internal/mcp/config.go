@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type Config struct {
@@ -90,57 +91,67 @@ func WriteTempMCPConfigFileWithToken(socketPath, channelToken string) (string, e
 	return tmpFile.Name(), nil
 }
 
-// EnsureAgyMCPConfig прописывает MCP-сервер бота в ~/.gemini/config/mcp_config.json.
-func EnsureAgyMCPConfig(socketPath string) error {
+var agyConfigMu sync.Mutex
+
+// RemoveAgyMCPConfig удаляет устаревшую запись bro_bot из конфигов agy
+// (~/.gemini/config/mcp_config.json и ~/.gemini/antigravity-cli/mcp_config.json),
+// чтобы она не перебивала встроенный in-process HTTP-эндпоинт сессии agy acp.
+// Все остальные серверы и поля сохраняются; повреждённые файлы не трогаются.
+func RemoveAgyMCPConfig() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	cfgPath := filepath.Join(home, ".gemini", "config", "mcp_config.json")
-	return ensureServerInConfig(cfgPath, bridgeServerName, GetBotExecutable(), bridgeServerArgs(socketPath, ""))
+	agyConfigMu.Lock()
+	defer agyConfigMu.Unlock()
+
+	paths := []string{
+		filepath.Join(home, ".gemini", "config", "mcp_config.json"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json"),
+	}
+	var errs []error
+	for _, p := range paths {
+		if err := removeServerFromConfig(p, bridgeServerName); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
-// ensureServerInConfig записывает в файл конфигурации path сервер name с командой
-// command и аргументами args. Файл общий с пользователем и другими инструментами,
-// поэтому всё остальное в нём сохраняется как есть: другие серверы со всеми их
-// полями (env, cwd, url, headers…), прочие ключи верхнего уровня и дополнительные
-// поля самой записи name. Повреждённый файл не перезаписывается, а неизменный —
-// не трогается вовсе.
-func ensureServerInConfig(path, name, command string, args []string) error {
-	root := map[string]json.RawMessage{}
+// removeServerFromConfig удаляет только запись name из mcpServers в файле path.
+// Все прочие серверы и ключи верхнего уровня сохраняются. Повреждённый JSON или
+// файл без записи name не перезаписываются.
+func removeServerFromConfig(path, name string) error {
 	data, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
+		return nil
 	case err != nil:
 		return err
-	case len(bytes.TrimSpace(data)) > 0:
-		if err := json.Unmarshal(data, &root); err != nil {
-			return fmt.Errorf("mcp: %s is not valid JSON, leaving it untouched: %w", path, err)
-		}
+	case len(bytes.TrimSpace(data)) == 0:
+		return nil
+	}
+
+	root := map[string]json.RawMessage{}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("mcp: %s is not valid JSON, leaving it untouched: %w", path, err)
+	}
+
+	rawServers := root["mcpServers"]
+	if len(rawServers) == 0 || string(rawServers) == "null" {
+		return nil
 	}
 
 	servers := map[string]json.RawMessage{}
-	if raw := root["mcpServers"]; len(raw) > 0 && string(raw) != "null" {
-		if err := json.Unmarshal(raw, &servers); err != nil {
-			return fmt.Errorf("mcp: %s has malformed mcpServers, leaving it untouched: %w", path, err)
-		}
+	if err := json.Unmarshal(rawServers, &servers); err != nil {
+		return fmt.Errorf("mcp: %s has malformed mcpServers, leaving it untouched: %w", path, err)
 	}
 
-	entry := map[string]interface{}{}
-	if raw := servers[name]; len(raw) > 0 && string(raw) != "null" {
-		if err := json.Unmarshal(raw, &entry); err != nil {
-			return fmt.Errorf("mcp: %s has malformed %q entry, leaving it untouched: %w", path, name, err)
-		}
-	}
-	if entry["command"] == command && sameArgs(entry["args"], args) {
+	if _, exists := servers[name]; !exists {
 		return nil
 	}
-	entry["command"] = command
-	entry["args"] = args
+	delete(servers, name)
 
-	if servers[name], err = json.Marshal(entry); err != nil {
-		return err
-	}
 	if root["mcpServers"], err = json.Marshal(servers); err != nil {
 		return err
 	}
@@ -149,20 +160,6 @@ func ensureServerInConfig(path, name, command string, args []string) error {
 		return err
 	}
 	return writeFileAtomic(path, append(out, '\n'))
-}
-
-// sameArgs сравнивает args из разобранного JSON с ожидаемым списком строк.
-func sameArgs(raw interface{}, want []string) bool {
-	got, ok := raw.([]interface{})
-	if !ok || len(got) != len(want) {
-		return false
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // writeFileAtomic заменяет файл целиком через временный файл в том же каталоге:

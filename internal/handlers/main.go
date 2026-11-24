@@ -111,11 +111,11 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 			log.Printf("restored PlanMode from SQLite: %v", pm)
 		}
 	}
-	if savedMode, err := sqliteStorage.GetSetting(ctx, "execution_mode"); err == nil && savedMode != "" {
+	savedMode, modeErr := sqliteStorage.GetSetting(ctx, "execution_mode")
+	hasSavedMode := modeErr == nil && strings.TrimSpace(savedMode) != ""
+	if hasSavedMode {
 		config.ProjectState.SetExecutionMode(savedMode)
 		log.Printf("restored the execution mode from SQLite: %s", savedMode)
-	} else {
-		config.ProjectState.SetExecutionMode(agents.ModeMCP)
 	}
 	if savedInteraction, err := sqliteStorage.GetSetting(ctx, "interaction_mode"); err == nil && savedInteraction != "" {
 		config.ProjectState.SetInteractionMode(savedInteraction)
@@ -128,7 +128,7 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	}
 
 	savedAgent, _ := sqliteStorage.GetSetting(ctx, "current_agent")
-	initActiveAgent(savedAgent)
+	initActiveAgent(savedAgent, hasSavedMode)
 
 	models.GlobalModelRegistry = models.NewModelRegistry(10 * time.Minute)
 

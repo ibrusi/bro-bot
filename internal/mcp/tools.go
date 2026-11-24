@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"bro-bot/internal/ports"
 )
 
 // Имена инструментов бота. Их знают обе стороны моста: `mcp-serve` объявляет
@@ -75,6 +77,26 @@ func NewBridgeToolsWithToken(socketPath, channelToken string) *ToolRegistry {
 	}
 	for _, tool := range BridgeToolDefinitions() {
 		r.Register(tool, forward(tool.Name))
+	}
+	return r
+}
+
+// NewInProcessTools создаёт реестр инструментов бота, выполняющий вызовы напрямую
+// в памяти процесса через handler (без Unix-сокета и подпроцесса mcp-serve).
+func NewInProcessTools(handler ports.BotToolHandler) *ToolRegistry {
+	r := NewToolRegistry()
+	for _, tool := range BridgeToolDefinitions() {
+		name := tool.Name
+		r.Register(tool, func(ctx context.Context, args map[string]interface{}) (string, error) {
+			if handler == nil {
+				return "", errors.New("bot tool handler is not configured")
+			}
+			res := handler.CallBotTool(ctx, name, args)
+			if res.IsError {
+				return "", errors.New(res.Text)
+			}
+			return res.Text, nil
+		})
 	}
 	return r
 }
@@ -197,11 +219,16 @@ func BridgeToolDefinitions() []Tool {
 		},
 		{
 			Name: ToolGetTaskContext,
-			Description: "Read-only tool returning JSON metadata about the current bot session: mode (task/plan/chat), " +
-				"task_id, project, work_dir, agent, model, language, queued pending_followups from the user, and uploaded_files.",
+			Description: "Read-only tool returning JSON metadata about the current or specified task/chat session: " +
+				"id, project, status, agent, model, plan, pending_followups, pending_questions, and last_pr_url.",
 			InputSchema: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
+				"type": "object",
+				"properties": map[string]interface{}{
+					"task_id": map[string]interface{}{
+						"type":        "integer",
+						"description": "Optional numeric task ID (defaults to the current task or active/latest task in the project)",
+					},
+				},
 			},
 		},
 		{

@@ -25,6 +25,7 @@ type fakeChannel struct {
 	questions []string
 	options   [][]string
 	batches   [][]utils.ParsedQuestion
+	taskIDs   []int
 	err       error
 }
 
@@ -40,6 +41,12 @@ func (f *fakeChannel) SendFile(_ context.Context, path, caption string) error {
 	return f.err
 }
 
+func (f *fakeChannel) SendFileContent(_ context.Context, filename, content, caption string) error {
+	f.files = append(f.files, filename+":"+content)
+	f.captions = append(f.captions, caption)
+	return f.err
+}
+
 func (f *fakeChannel) ReportProgress(status string) { f.progress = append(f.progress, status) }
 
 func (f *fakeChannel) AskQuestions(items []utils.ParsedQuestion) error {
@@ -51,7 +58,8 @@ func (f *fakeChannel) AskQuestions(items []utils.ParsedQuestion) error {
 	return f.err
 }
 
-func (f *fakeChannel) TaskContext(_ int) (string, error) {
+func (f *fakeChannel) TaskContext(taskID int) (string, error) {
+	f.taskIDs = append(f.taskIDs, taskID)
 	return `{"id":1}`, f.err
 }
 
@@ -237,4 +245,70 @@ func containsLog(logs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestBotToolsContractsForSendFileListTasksReportProgressAndContext(t *testing.T) {
+	setupTestApp(t)
+
+	// Добавляем второй проект и задачи в обоих проектах для проверки project="*".
+	_ = domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("testproj", "m", "agy", "first task", testChatID, false)
+	_ = domain.GlobalTaskManager.CreateTaskWithPlanAndAgent("second-proj", "m", "grok", "second task", testChatID, false)
+
+	channels := newAgentChannels(processTree(map[int]int{200: 100, 100: 1}))
+	ch := &fakeChannel{}
+	unbind := channels.bind(100, ch)
+	defer unbind()
+
+	ctx := context.Background()
+
+	// 1. send_file(filename, content) отправляет текстовый файл из памяти.
+	res := channels.handle(ctx, 200, call(mcp.ToolSendFile, map[string]interface{}{
+		"filename": "report.md",
+		"content":  "# Summary\nOK",
+		"caption":  "Отчёт",
+	}))
+	if res.IsError {
+		t.Fatalf("send_file(filename, content) failed: %s", res.Text)
+	}
+	if len(ch.files) != 1 || ch.files[0] != "report.md:# Summary\nOK" {
+		t.Errorf("unexpected sent files: %v", ch.files)
+	}
+	if len(ch.captions) != 1 || ch.captions[0] != "Отчёт" {
+		t.Errorf("unexpected captions: %v", ch.captions)
+	}
+
+	// 2. report_progress(message=...) работает как запасной вариант для status.
+	res = channels.handle(ctx, 200, call(mcp.ToolReportProgress, map[string]interface{}{
+		"message": "Собираю релиз",
+		"percent": float64(75),
+	}))
+	if res.IsError {
+		t.Fatalf("report_progress(message) failed: %s", res.Text)
+	}
+	if len(ch.progress) != 1 || ch.progress[0] != "Собираю релиз (75%)" {
+		t.Errorf("progress = %v, want ['Собираю релиз (75%%)']", ch.progress)
+	}
+
+	// 3. list_tasks(project="*") возвращает задачи из всех проектов.
+	res = channels.handle(ctx, 200, call(mcp.ToolListTasks, map[string]interface{}{
+		"project": "*",
+		"limit":   float64(10),
+	}))
+	if res.IsError {
+		t.Fatalf("list_tasks(*) failed: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "first task") || !strings.Contains(res.Text, "second task") {
+		t.Errorf("list_tasks(*) missing cross-project tasks: %s", res.Text)
+	}
+
+	// 4. get_task_context(task_id=...) передаёт указанный ID в канал.
+	res = channels.handle(ctx, 200, call(mcp.ToolGetTaskContext, map[string]interface{}{
+		"task_id": float64(42),
+	}))
+	if res.IsError {
+		t.Fatalf("get_task_context(task_id) failed: %s", res.Text)
+	}
+	if len(ch.taskIDs) != 1 || ch.taskIDs[0] != 42 {
+		t.Errorf("taskIDs = %v, want [42]", ch.taskIDs)
+	}
 }

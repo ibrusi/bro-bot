@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"bro-bot/internal/adapters/acp"
 	"bro-bot/internal/adapters/cliproc"
-	"bro-bot/internal/config"
 	"bro-bot/internal/effort"
 	"bro-bot/internal/mcp"
 	"bro-bot/internal/ports"
@@ -76,6 +76,27 @@ func (a *Adapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (port
 		return nil, errors.New("grok-acp: empty prompt")
 	}
 
+	var toolSrv *acp.ToolServer
+	var mcpServer acp.MCPServer
+	if args.BotTools != nil {
+		ts, srvErr := acp.StartToolServer(args.BotTools, args.ChannelToken)
+		if srvErr != nil {
+			return nil, fmt.Errorf("grok-acp: tool server: %w", srvErr)
+		}
+		toolSrv = ts
+		mcpServer = ts.ServerConfig()
+	} else {
+		mcpServer = acp.BroBotStdioServer(args.ChannelToken)
+	}
+
+	// Закрываем ToolServer на любой ветке ошибки до передачи владения в proc.run.
+	started := false
+	defer func() {
+		if !started && toolSrv != nil {
+			_ = toolSrv.Close()
+		}
+	}()
+
 	model := resolveModel(args.ModelName)
 	effortID, hasEffort := grokEffort(args.Effort)
 	yolo := yoloFromEnv() && !args.ReadOnly
@@ -95,6 +116,9 @@ func (a *Adapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (port
 	cmd := exec.CommandContext(ctx, grokBin, cmdArgs...)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), "TERM=dumb", "NO_COLOR=1")
+	if tok := strings.TrimSpace(args.ChannelToken); tok != "" {
+		cmd.Env = append(cmd.Env, mcp.ChannelTokenEnv+"="+tok)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return cliproc.KillGroup(cmd) }
 	cmd.WaitDelay = 2 * time.Second
@@ -114,11 +138,12 @@ func (a *Adapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (port
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("grok-acp: start: %w", err)
 	}
+	started = true
 
 	eventR, eventW := io.Pipe()
 	proc := &process{cmd: cmd, stdout: eventR, stdin: stdin}
 	go drainStderr(stderr)
-	go proc.run(ctx, stdin, stdout, eventW, turnConfig{
+	go proc.run(ctx, stdin, stdout, eventW, toolSrv, turnConfig{
 		WorkDir:         workDir,
 		Prompt:          args.Prompt,
 		SystemPrompt:    args.SystemPrompt,
@@ -130,6 +155,7 @@ func (a *Adapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (port
 		HasEffort:       hasEffort,
 		ReadOnly:        args.ReadOnly,
 		Yolo:            yolo,
+		MCPServer:       mcpServer,
 	})
 	return proc, nil
 }
@@ -157,36 +183,7 @@ type turnConfig struct {
 	HasEffort       bool
 	ReadOnly        bool
 	Yolo            bool
-}
-
-type mcpEnv struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
-type mcpServer struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
-	Env     []mcpEnv `json:"env"`
-}
-
-func broBotServer(channelToken string) mcpServer {
-	args := []string{"mcp-serve"}
-	if socket := strings.TrimSpace(config.MCPSocketPath); socket != "" {
-		args = append(args, "--socket", socket)
-	}
-	env := []mcpEnv{}
-	if tok := strings.TrimSpace(channelToken); tok != "" {
-		args = append(args, "--token", tok)
-		env = append(env, mcpEnv{Name: mcp.ChannelTokenEnv, Value: tok})
-	}
-	return mcpServer{
-		Name:    "bro_bot",
-		Command: mcp.GetBotExecutable(),
-		Args:    args,
-		Env:     env,
-	}
+	MCPServer       acp.MCPServer
 }
 
 func resolveModel(name string) string {
@@ -207,23 +204,44 @@ func grokEffort(level effort.Level) (string, bool) {
 	return level.String(), true
 }
 
-func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reader, events *io.PipeWriter, cfg turnConfig) {
+// pickAuthMethod выбирает вход без браузера: сохранённый токен, иначе ключ API.
+func pickAuthMethod(methods []acp.AuthMethod) (string, bool) {
+	for _, m := range methods {
+		if m.ID == "cached_token" {
+			return m.ID, true
+		}
+	}
+	for _, m := range methods {
+		if strings.Contains(m.ID, "api_key") {
+			return m.ID, true
+		}
+	}
+	return "", false
+}
+
+func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reader, events *io.PipeWriter, toolSrv *acp.ToolServer, cfg turnConfig) {
+	// Закрываем ToolServer после session/close, чтобы клиент успел прислать DELETE /mcp.
+	defer func() {
+		if toolSrv != nil {
+			_ = toolSrv.Close()
+		}
+	}()
 	defer events.Close()
 	defer stdin.Close()
 
-	conn := newRPC(stdout, stdin)
+	conn := acp.NewConn(stdout, stdin)
 	var sessionID string
 	var step int
 	var acceptUpdates atomic.Bool
 	var answer strings.Builder
 	var sawTool bool
 
-	conn.onNotify = func(msg rpcMessage) {
+	conn.OnNotify = func(msg acp.Message) {
 		if !acceptUpdates.Load() || msg.Method != "session/update" {
 			return
 		}
 		step++
-		evt, ok := translateUpdate(sessionID, msg.Params, step)
+		evt, ok := acp.TranslateUpdate(sessionID, msg.Params, step)
 		if !ok {
 			return
 		}
@@ -237,47 +255,44 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 		}
 		p.writeEvent(events, evt)
 	}
-	conn.onRequest = func(msg rpcMessage) {
+	conn.OnRequest = func(msg acp.Message) {
 		if msg.Method != "session/request_permission" {
-			_ = conn.writeJSON(struct {
-				JSONRPC string          `json:"jsonrpc"`
-				ID      json.RawMessage `json:"id"`
-				Error   *rpcError       `json:"error"`
-			}{"2.0", msg.ID, &rpcError{Code: -32601, Message: "method not supported"}})
+			_ = conn.ReplyError(msg.ID, -32601, "method not supported")
 			return
 		}
-		var params permissionParams
+		var params acp.PermissionParams
 		_ = json.Unmarshal(msg.Params, &params)
-		optionID, ok := choosePermissionForTool(cfg.ReadOnly, params.ToolCall.Kind, params.ToolCall.Title, params.Options)
-		_ = conn.reply(msg.ID, permissionResult(optionID, ok))
+		optionID, ok := acp.ChoosePermission(cfg.ReadOnly, params.ToolCall, params.Options)
+		_ = conn.Reply(msg.ID, acp.PermissionResult(optionID, ok))
 	}
 
 	readErr := make(chan error, 1)
-	go func() { readErr <- conn.readLoop() }()
+	go func() { readErr <- conn.ReadLoop() }()
 
 	started := time.Now()
-	finish := func(status, errText string) {
+	finish := func(status, errText string, usage *acp.StreamUsage) {
 		if answer.Len() == 0 && !sawTool && status == "SUCCESS" {
 			status = "ERROR"
 			if errText == "" {
 				errText = "grok returned an empty answer"
 			}
 		}
-		p.writeEvent(events, streamEvent{
+		p.writeEvent(events, acp.StreamEvent{
 			Event:          "result",
 			ConversationID: sessionID,
-			Result: &streamResult{
+			Result: &acp.StreamResult{
 				ConversationID:  sessionID,
 				Status:          status,
 				Error:           errText,
 				Response:        answer.String(),
 				DurationSeconds: time.Since(started).Seconds(),
 				NumTurns:        1,
+				Usage:           usage,
 			},
 		})
 	}
 
-	initRaw, err := conn.call(ctx, "initialize", map[string]any{
+	initRaw, err := conn.Call(ctx, "initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{
 			"fs":       map[string]any{"readTextFile": false, "writeTextFile": false},
@@ -286,27 +301,27 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 		"clientInfo": map[string]any{"name": "bro-bot", "title": "bro-bot", "version": "acp"},
 	})
 	if err != nil {
-		finish("ERROR", fmt.Sprintf("initialize: %v", err))
+		finish("ERROR", fmt.Sprintf("initialize: %v", err), nil)
 		return
 	}
-	var init initializeResult
+	var init acp.InitializeResult
 	_ = json.Unmarshal(initRaw, &init)
 	methodID, ok := pickAuthMethod(init.AuthMethods)
 	if !ok {
-		finish("ERROR", "grok is not signed in: run `grok login` on the host or set XAI_API_KEY")
+		finish("ERROR", "grok is not signed in: run `grok login` on the host or set XAI_API_KEY", nil)
 		return
 	}
-	if _, err := conn.call(ctx, "authenticate", map[string]any{"methodId": methodID}); err != nil {
-		finish("ERROR", fmt.Sprintf("authenticate: %v", err))
+	if _, err := conn.Call(ctx, "authenticate", map[string]any{"methodId": methodID}); err != nil {
+		finish("ERROR", fmt.Sprintf("authenticate: %v", err), nil)
 		return
 	}
 
 	sessionID, fresh, err := openSession(ctx, conn, cfg)
 	if err != nil {
-		finish("ERROR", err.Error())
+		finish("ERROR", err.Error(), nil)
 		return
 	}
-	p.writeEvent(events, streamEvent{Event: "init", ConversationID: sessionID})
+	p.writeEvent(events, acp.StreamEvent{Event: "init", ConversationID: sessionID})
 
 	if cfg.Model != "" {
 		if err := setConfig(ctx, conn, sessionID, "model", cfg.Model); err != nil {
@@ -324,7 +339,7 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 		prompt = "The previous Grok session could not be resumed. Continue from this message only.\n\n" + prompt
 	}
 	acceptUpdates.Store(true)
-	raw, err := conn.call(ctx, "session/prompt", map[string]any{
+	raw, err := conn.Call(ctx, "session/prompt", map[string]any{
 		"sessionId": sessionID,
 		"prompt":    []map[string]string{{"type": "text", "text": prompt}},
 	})
@@ -333,7 +348,7 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 		if ctx.Err() != nil {
 			return
 		}
-		finish("ERROR", err.Error())
+		finish("ERROR", err.Error(), nil)
 		return
 	}
 	var promptRes struct {
@@ -351,10 +366,10 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 	default:
 		status, errText = "ERROR", promptRes.StopReason
 	}
-	finish(status, errText)
+	finish(status, errText, acp.ParseUsage(raw))
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	_, _ = conn.call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+	_, _ = conn.Call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
 	cancel()
 	_ = readErr
 }
@@ -370,8 +385,8 @@ func mergeSystemRules(botInstr, sysPrompt string) string {
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
-func openSession(ctx context.Context, conn *rpcConn, cfg turnConfig) (id string, fresh bool, err error) {
-	servers := []mcpServer{broBotServer(cfg.ChannelToken)}
+func openSession(ctx context.Context, conn *acp.Conn, cfg turnConfig) (id string, fresh bool, err error) {
+	servers := []acp.MCPServer{cfg.MCPServer}
 	meta := map[string]any{}
 	if cfg.Yolo {
 		meta["yoloMode"] = true
@@ -385,7 +400,7 @@ func openSession(ctx context.Context, conn *rpcConn, cfg turnConfig) (id string,
 		if len(meta) > 0 {
 			params["_meta"] = meta
 		}
-		if _, callErr := conn.call(ctx, "session/resume", params); callErr == nil {
+		if _, callErr := conn.Call(ctx, "session/resume", params); callErr == nil {
 			return cfg.ConversationID, false, nil
 		} else {
 			log.Printf("grok-acp: resume %s: %v", cfg.ConversationID, callErr)
@@ -401,7 +416,7 @@ func openSession(ctx context.Context, conn *rpcConn, cfg turnConfig) (id string,
 	if len(meta) > 0 {
 		params["_meta"] = meta
 	}
-	raw, err := conn.call(ctx, "session/new", params)
+	raw, err := conn.Call(ctx, "session/new", params)
 	if err != nil {
 		return "", false, fmt.Errorf("session/new: %w", err)
 	}
@@ -414,8 +429,8 @@ func openSession(ctx context.Context, conn *rpcConn, cfg turnConfig) (id string,
 	return created.SessionID, true, nil
 }
 
-func setConfig(ctx context.Context, conn *rpcConn, sessionID, configID, value string) error {
-	_, err := conn.call(ctx, "session/set_config_option", map[string]any{
+func setConfig(ctx context.Context, conn *acp.Conn, sessionID, configID, value string) error {
+	_, err := conn.Call(ctx, "session/set_config_option", map[string]any{
 		"sessionId": sessionID,
 		"configId":  configID,
 		"value":     map[string]string{"value": value},
@@ -423,7 +438,7 @@ func setConfig(ctx context.Context, conn *rpcConn, sessionID, configID, value st
 	if err == nil {
 		return nil
 	}
-	_, err2 := conn.call(ctx, "session/set_config_option", map[string]any{
+	_, err2 := conn.Call(ctx, "session/set_config_option", map[string]any{
 		"sessionId": sessionID,
 		"configId":  configID,
 		"value":     value,
@@ -434,8 +449,8 @@ func setConfig(ctx context.Context, conn *rpcConn, sessionID, configID, value st
 	return err
 }
 
-func (p *process) writeEvent(w io.Writer, evt streamEvent) {
-	data, err := encodeEvent(evt)
+func (p *process) writeEvent(w io.Writer, evt acp.StreamEvent) {
+	data, err := acp.EncodeEvent(evt)
 	if err != nil {
 		return
 	}

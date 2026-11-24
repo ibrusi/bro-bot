@@ -34,7 +34,7 @@ func TestChatWorksForEveryAgentAndMode(t *testing.T) {
 		agent string
 		mode  string
 	}{
-		{"agy", "mcp"},
+		{"agy", "acp"},
 		{"agy", "api"},
 		{"claude", "mcp"},
 		{"claude", "api"},
@@ -121,7 +121,7 @@ func TestChatWorksForEveryAgentAndMode(t *testing.T) {
 // TestChatSurvivesAgentSwitch проверяет, что переключение агента посреди разговора
 // не теряет нить: новый агент получает контекст прошлых реплик и свой идентификатор сессии.
 func TestChatSurvivesAgentSwitch(t *testing.T) {
-	mt, agyAgent := setupMatrixApp(t, "agy", "mcp", "agy-conv", "Отвечает agy.")
+	mt, agyAgent := setupMatrixApp(t, "agy", "acp", "agy-conv", "Отвечает agy.")
 
 	sendText(t, mt, "расскажи про адаптеры")
 	waitFor(t, "ответ agy", func() bool { return len(agyAgent.Calls()) == 1 })
@@ -131,9 +131,10 @@ func TestChatSurvivesAgentSwitch(t *testing.T) {
 	})
 
 	// Пользователь переключился на другого агента.
-	claudeAgent := &mock.AgentFramework{Name: "claude", Response: "Отвечает claude.", ConversationID: "claude-conv"}
+	claudeAgent := &mock.AgentFramework{Name: "claude", Mode: "mcp", Response: "Отвечает claude.", ConversationID: "claude-conv"}
 	SetActiveAgent(claudeAgent, "claude")
 	config.ProjectState.SetCurrentAgent("claude")
+	config.ProjectState.SetExecutionMode("mcp")
 
 	sendText(t, mt, "а что по памяти диалога?")
 	waitFor(t, "ответ claude", func() bool { return len(claudeAgent.Calls()) == 1 })
@@ -154,7 +155,7 @@ func TestChatSurvivesAgentSwitch(t *testing.T) {
 	}
 
 	session := domain.GlobalChatManager.Get("testproj")
-	if session.ConversationIDFor("agy", "mcp") != "agy-conv" {
+	if session.ConversationIDFor("agy", "acp") != "agy-conv" {
 		t.Error("сессия agy должна сохраниться после переключения агента")
 	}
 	if session.ConversationIDFor("claude", "mcp") != "claude-conv" {
@@ -165,7 +166,7 @@ func TestChatSurvivesAgentSwitch(t *testing.T) {
 // TestChatSurvivesModeSwitch проверяет переключение mcp → api посреди разговора:
 // api-адаптер получает историю диалога из базы бота.
 func TestChatSurvivesModeSwitch(t *testing.T) {
-	mt, agent := setupMatrixApp(t, "agy", "mcp", "agy-mcp-conv", "Ответ в mcp.")
+	mt, agent := setupMatrixApp(t, "agy", "acp", "agy-acp-conv", "Ответ в acp.")
 
 	sendText(t, mt, "как работает разговорный режим?")
 	waitFor(t, "ответ в mcp", func() bool { return len(agent.Calls()) == 1 })
@@ -195,8 +196,8 @@ func TestChatSurvivesModeSwitch(t *testing.T) {
 	}
 
 	session := domain.GlobalChatManager.Get("testproj")
-	if session.ConversationIDFor("agy", "mcp") != "agy-mcp-conv" {
-		t.Error("сессия mcp должна сохраниться")
+	if session.ConversationIDFor("agy", "acp") != "agy-acp-conv" {
+		t.Error("сессия acp должна сохраниться")
 	}
 	if session.ConversationIDFor("agy", "api") != "agy-api-conv" {
 		t.Error("для api-режима должен появиться отдельный идентификатор сессии")
@@ -226,13 +227,16 @@ func TestAgentFrameworkForRespectsExecutionMode(t *testing.T) {
 	} else if _, ok := framework.(*claude.ClaudeMCPAdapter); !ok {
 		t.Errorf("claude/mcp: получили %T, ожидали ClaudeMCPAdapter", framework)
 	}
-	if framework, err := agentFrameworkFor("agy"); err != nil {
-		t.Fatalf("agy/mcp: %v", err)
-	} else if _, ok := framework.(*agy.AgyMCPAdapter); !ok {
-		t.Errorf("agy/mcp: получили %T, ожидали AgyMCPAdapter", framework)
+	if _, err := agentFrameworkFor("agy"); err == nil {
+		t.Fatal("agy/mcp должен возвращать ошибку после удаления mcp-режима у agy")
 	}
 
 	config.ProjectState.SetExecutionMode("acp")
+	if framework, err := agentFrameworkFor("agy"); err != nil {
+		t.Fatalf("agy/acp: %v", err)
+	} else if _, ok := framework.(*agy.AgyACPAdapter); !ok {
+		t.Errorf("agy/acp: получили %T, ожидали *agy.AgyACPAdapter", framework)
+	}
 	if framework, err := agentFrameworkFor("grok"); err != nil {
 		t.Fatalf("grok/acp: %v", err)
 	} else if _, ok := framework.(*grok.Adapter); !ok {

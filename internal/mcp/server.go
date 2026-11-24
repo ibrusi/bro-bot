@@ -107,7 +107,7 @@ func (s *Server) handleRequest(ctx context.Context, req Request) Response {
 			},
 		}
 
-	case "ping":
+	case "server/discover", "ping":
 		resp.Result = map[string]interface{}{}
 
 	case "tools/list":
