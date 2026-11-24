@@ -43,7 +43,7 @@ func BuildAgyModelArgs(modelName string, level effort.Level, knownModels []strin
 		return []string{"--model", family.variant(family.pickLevel(level))}
 	}
 	// Одиночная модель из каталога agy без вариантов по уровню рассуждений
-	// (например, gemini-pro-orchestrator-neon или gemini-pro-orchestrator-g1-pro) флаг --effort не принимает.
+	// (например, gemini-pro-orchestrator-neon, gemini-pro-orchestrator или gemini-pro-orchestrator-g1-pro) флаг --effort не принимает.
 	if slices.Contains(knownModels, modelName) {
 		return []string{"--model", modelName}
 	}

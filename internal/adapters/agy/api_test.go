@@ -299,6 +299,7 @@ func TestResolveAgyModelTarget_ResolvesOrchestratorAlias(t *testing.T) {
 		expected string
 	}{
 		{"orchestrator", "gemini-pro-orchestrator-neon"},
+		{"orchestrator-carbon", "gemini-pro-orchestrator"},
 		{"orchestrator-argon", "gemini-pro-orchestrator-g1-pro"},
 	}
 	for _, tc := range tests {

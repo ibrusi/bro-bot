@@ -42,8 +42,10 @@ func TestModelCommandResolvesAliasForActiveAgent(t *testing.T) {
 	}{
 		{"agy", "default", "gemini-pro-orchestrator-neon"},
 		{"agy", "orchestrator", "gemini-pro-orchestrator-neon"},
+		{"agy", "orchestrator-carbon", "gemini-pro-orchestrator"},
 		{"agy", "orchestrator-argon", "gemini-pro-orchestrator-g1-pro"},
 		{"agy", "neon", "gemini-4-neon-medium"},
+		{"agy", "carbon", "gemini-4-carbon-medium"},
 		{"agy", "argon", "gemini-4-argon-medium"},
 		{"agy", "hydrogen", "gemini-4-hydrogen-medium"},
 		{"agy", "flash", "gemini-3.8-flash-medium"},
@@ -120,8 +122,14 @@ func TestModelCommandWithoutArgsListsModels(t *testing.T) {
 	if !strings.Contains(msg.Text, "<code>/model orchestrator</code> — Orchestrator (Neon)") {
 		t.Errorf("/model без аргументов должен выводить алиас orchestrator (Neon), ответ: %s", msg.Text)
 	}
+	if !strings.Contains(msg.Text, "<code>/model orchestrator-carbon</code> — Orchestrator (Carbon)") {
+		t.Errorf("/model без аргументов должен выводить алиас orchestrator-carbon (Carbon), ответ: %s", msg.Text)
+	}
 	if !strings.Contains(msg.Text, "<code>/model orchestrator-argon</code> — Orchestrator (Argon)") {
 		t.Errorf("/model без аргументов должен выводить алиас orchestrator-argon (Argon), ответ: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "<code>/model carbon</code> — Gemini 4 Carbon") {
+		t.Errorf("/model без аргументов должен выводить алиас carbon (Gemini 4 Carbon), ответ: %s", msg.Text)
 	}
 	if !strings.Contains(msg.Text, "/model refresh") {
 		t.Errorf("/model без аргументов должен содержать подсказку /model refresh, ответ: %s", msg.Text)

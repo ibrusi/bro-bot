@@ -17,6 +17,8 @@ func TestModelAliases(t *testing.T) {
 		{"orchestrator", "gemini-pro-orchestrator-neon", true},
 		{"orchestrator-neon", "gemini-pro-orchestrator-neon", true},
 		{"gemini-pro-orchestrator-neon", "gemini-pro-orchestrator-neon", true},
+		{"orchestrator-carbon", "gemini-pro-orchestrator", true},
+		{"gemini-pro-orchestrator", "gemini-pro-orchestrator", true},
 		{"orchestrator-argon", "gemini-pro-orchestrator-g1-pro", true},
 		{"g1-pro", "gemini-pro-orchestrator-g1-pro", true},
 		{"gemini-pro-orchestrator-g1-pro", "gemini-pro-orchestrator-g1-pro", true},
@@ -26,6 +28,11 @@ func TestModelAliases(t *testing.T) {
 		{"neon-high", "gemini-4-neon-high", true},
 		{"neon-xhigh", "gemini-4-neon-xhigh", true},
 		{"neon-low", "gemini-4-neon-low", true},
+		{"carbon", "gemini-4-carbon-medium", true},
+		{"4-carbon", "gemini-4-carbon-medium", true},
+		{"gemini-4-carbon", "gemini-4-carbon-medium", true},
+		{"carbon-high", "gemini-4-carbon-high", true},
+		{"carbon-low", "gemini-4-carbon-low", true},
 		{"argon", "gemini-4-argon-medium", true},
 		{"argon-high", "gemini-4-argon-high", true},
 		{"hydrogen", "gemini-4-hydrogen-medium", true},
@@ -58,8 +65,10 @@ func TestRejectsModel(t *testing.T) {
 	}{
 		{"", false},
 		{"gemini-pro-orchestrator-neon", false},
+		{"gemini-pro-orchestrator", false},
 		{"gemini-pro-orchestrator-g1-pro", false},
 		{"neon", false},
+		{"carbon", false},
 		{"argon", false},
 		{"hydrogen", false},
 		{"gemini-3.1-pro-high", false},
@@ -86,7 +95,9 @@ func TestModelAliasHintsIncludeOrchestrators(t *testing.T) {
 	hints := modelAliases.Hints()
 	want := []models.AliasHint{
 		{Alias: "orchestrator", Title: "Orchestrator (Neon)"},
+		{Alias: "orchestrator-carbon", Title: "Orchestrator (Carbon)"},
 		{Alias: "orchestrator-argon", Title: "Orchestrator (Argon)"},
+		{Alias: "carbon", Title: "Gemini 4 Carbon"},
 	}
 	for _, item := range want {
 		if !slices.Contains(hints, item) {
