@@ -1932,6 +1932,11 @@ func FormatToolAction(name string, info *StreamToolInfo) string {
 		return "📋 list_tasks"
 	case "list_projects":
 		return "📁 list_projects"
+	case "sqlite_query":
+		if p, ok := info.Parameters["path"].(string); ok && p != "" {
+			return fmt.Sprintf("🗄 sqlite_query: %s", filepath.Base(p))
+		}
+		return "🗄 sqlite_query"
 	}
 	return fmt.Sprintf("🔧 %s", name)
 }

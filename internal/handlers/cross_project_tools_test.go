@@ -9,6 +9,7 @@ import (
 	"bro-bot/internal/ports"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -229,6 +230,57 @@ func TestCrossProjectChannelTokenAndBotTools(t *testing.T) {
 	for i, s := range mt.Messenger.Sent {
 		if s.Opts == nil || !s.Opts.Silent {
 			t.Errorf("sent[%d] expected Silent=true, got %+v", i, s.Opts)
+		}
+	}
+
+	// sqlite_query работает строго внутри workDir projB (включая живую WAL-БД) и блокирует запись/выход за пределы каталога.
+	dbDir := filepath.Join(dirB, "data")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbFile := filepath.Join(dbDir, "app.db")
+	dbConn, err := sql.Open("sqlite", "file:"+dbFile+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbConn.Exec(`CREATE TABLE metrics (k TEXT, v INT); INSERT INTO metrics VALUES ('edge', 7);`); err != nil {
+		dbConn.Close()
+		t.Fatal(err)
+	}
+	defer dbConn.Close()
+
+	sqlRes := mcpChannels.handle(ctx, 99999, mcp.BridgeCall{
+		Tool:         mcp.ToolSQLiteQuery,
+		ChannelToken: token,
+		Arguments: map[string]interface{}{
+			"path":  "data/app.db",
+			"query": "SELECT k, v FROM metrics",
+		},
+	})
+	if sqlRes.IsError || !strings.Contains(sqlRes.Text, `"edge"`) || !strings.Contains(sqlRes.Text, "7") {
+		t.Errorf("unexpected sqlite_query result (err=%v): %s", sqlRes.IsError, sqlRes.Text)
+	}
+	if badSQL := mcpChannels.handle(ctx, 99999, mcp.BridgeCall{
+		Tool:         mcp.ToolSQLiteQuery,
+		ChannelToken: token,
+		Arguments: map[string]interface{}{
+			"path":  "data/app.db",
+			"query": "DELETE FROM metrics",
+		},
+	}); !badSQL.IsError {
+		t.Errorf("expected DELETE sqlite_query to be rejected, got: %s", badSQL.Text)
+	}
+	_ = os.Symlink(outsideFile, filepath.Join(dbDir, "escape.db"))
+	for _, badDB := range []string{"../secret.txt", "data/escape.db"} {
+		if escRes := mcpChannels.handle(ctx, 99999, mcp.BridgeCall{
+			Tool:         mcp.ToolSQLiteQuery,
+			ChannelToken: token,
+			Arguments: map[string]interface{}{
+				"path":  badDB,
+				"query": "SELECT 1",
+			},
+		}); !escRes.IsError {
+			t.Errorf("expected sqlite_query path %q to be rejected, got: %s", badDB, escRes.Text)
 		}
 	}
 }

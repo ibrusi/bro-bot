@@ -1,12 +1,15 @@
 package acp
 
 import (
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"bro-bot/internal/tools"
 )
 
-const maxShellCommandBytes = 4096
+const maxShellCommandBytes = 32768
 
 var sedPrintScriptRE = regexp.MustCompile(`^[0-9,$;p\s]+$`)
 
@@ -83,16 +86,35 @@ func IsSafeReadOnlyShellCommand(cmdLine string) bool {
 	return true
 }
 
+type shellSegment struct {
+	tokens     []string
+	hasPipeIn  bool
+	hasFileIn  bool
+	hasHeredoc bool
+	heredocs   []string
+}
+
+type heredocSpec struct {
+	segIdx    int
+	delim     string
+	stripTabs bool
+	quoted    bool
+}
+
 func isSepOrSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == ';' || b == '|' || b == '&'
 }
 
-func parseShellSegments(s string) ([][]string, bool) {
-	var segments [][]string
+func parseShellSegments(s string) ([]shellSegment, bool) {
+	var segments []shellSegment
 	var curSeg []string
 	var curTok strings.Builder
 	hasTok := false
 	needSegment := false
+	curHasPipeIn := false
+	curHasFileIn := false
+	curHasHeredoc := false
+	var pendingHeredocs []heredocSpec
 	inSingle := false
 	inDouble := false
 
@@ -104,14 +126,90 @@ func parseShellSegments(s string) ([][]string, bool) {
 		}
 	}
 
-	flushSeg := func(requireNonEmpty bool) bool {
+	flushSeg := func(requireNonEmpty, nextPipeIn bool) bool {
 		flushTok()
 		if len(curSeg) == 0 {
-			return !requireNonEmpty
+			if requireNonEmpty || curHasFileIn || curHasHeredoc {
+				return false
+			}
+			curHasPipeIn = nextPipeIn
+			return true
 		}
-		segments = append(segments, curSeg)
+		segments = append(segments, shellSegment{
+			tokens:     curSeg,
+			hasPipeIn:  curHasPipeIn,
+			hasFileIn:  curHasFileIn,
+			hasHeredoc: curHasHeredoc,
+		})
 		curSeg = nil
+		curHasPipeIn = nextPipeIn
+		curHasFileIn = false
+		curHasHeredoc = false
 		return true
+	}
+
+	handleOutputRedir := func(gtIdx int) (int, bool) {
+		n := len(s)
+		pos := gtIdx + 1
+		if pos < n && s[pos] == '>' {
+			pos++
+		}
+		if pos < n && (s[pos] == '>' || s[pos] == '<' || s[pos] == '|' || s[pos] == '&' || s[pos] == '(') {
+			return gtIdx, false
+		}
+		flushTok()
+		target, nextIdx, ok := consumeRedirectTarget(s, pos)
+		if !ok || !isSafeReadOnlyOutputRedirectTarget(target) {
+			return gtIdx, false
+		}
+		return nextIdx, true
+	}
+
+	handleInputRedir := func(ltIdx int) (int, bool) {
+		n := len(s)
+		if ltIdx+1 < n && s[ltIdx+1] == '<' {
+			if ltIdx+2 < n && s[ltIdx+2] == '<' {
+				flushTok()
+				_, nextIdx, ok := consumeRedirectTarget(s, ltIdx+3)
+				if !ok {
+					return ltIdx, false
+				}
+				curHasFileIn = true
+				return nextIdx, true
+			}
+			stripTabs := false
+			pos := ltIdx + 2
+			if pos < n && s[pos] == '-' {
+				stripTabs = true
+				pos++
+			}
+			if pos < n && (s[pos] == '<' || s[pos] == '>' || s[pos] == '|' || s[pos] == '&' || s[pos] == '(') {
+				return ltIdx, false
+			}
+			flushTok()
+			delim, quoted, nextIdx, ok := consumeHeredocDelimiter(s, pos)
+			if !ok {
+				return ltIdx, false
+			}
+			pendingHeredocs = append(pendingHeredocs, heredocSpec{
+				segIdx:    len(segments),
+				delim:     delim,
+				stripTabs: stripTabs,
+				quoted:    quoted,
+			})
+			curHasHeredoc = true
+			return nextIdx, true
+		}
+		if ltIdx+1 < n && (s[ltIdx+1] == '>' || s[ltIdx+1] == '|' || s[ltIdx+1] == '&' || s[ltIdx+1] == '(') {
+			return ltIdx, false
+		}
+		flushTok()
+		_, nextIdx, ok := consumeRedirectTarget(s, ltIdx+1)
+		if !ok {
+			return ltIdx, false
+		}
+		curHasFileIn = true
+		return nextIdx, true
 	}
 
 	n := len(s)
@@ -165,8 +263,24 @@ func parseShellSegments(s string) ([][]string, bool) {
 			flushTok()
 			continue
 		case '\n':
-			if !flushSeg(false) {
+			if !flushSeg(false, false) {
 				return nil, false
+			}
+			if len(pendingHeredocs) > 0 {
+				pos := i + 1
+				for _, spec := range pendingHeredocs {
+					if spec.segIdx < 0 || spec.segIdx >= len(segments) {
+						return nil, false
+					}
+					body, nextPos, ok := consumeHeredocBody(s, pos, spec)
+					if !ok {
+						return nil, false
+					}
+					segments[spec.segIdx].heredocs = append(segments[spec.segIdx].heredocs, body)
+					pos = nextPos
+				}
+				pendingHeredocs = nil
+				i = pos - 1
 			}
 			continue
 		case '\'':
@@ -204,23 +318,25 @@ func parseShellSegments(s string) ([][]string, bool) {
 			needSegment = false
 			continue
 		case ';':
-			if needSegment || !flushSeg(true) {
+			if needSegment || !flushSeg(true, false) {
 				return nil, false
 			}
 			needSegment = true
 			continue
 		case '|':
-			if needSegment || !flushSeg(true) {
+			isOr := i+1 < n && s[i+1] == '|'
+			isPipeErr := i+1 < n && s[i+1] == '&'
+			if needSegment || !flushSeg(true, !isOr) {
 				return nil, false
 			}
-			if i+1 < n && (s[i+1] == '|' || s[i+1] == '&') {
+			if isOr || isPipeErr {
 				i++
 			}
 			needSegment = true
 			continue
 		case '&':
 			if i+1 < n && s[i+1] == '&' {
-				if needSegment || !flushSeg(true) {
+				if needSegment || !flushSeg(true, false) {
 					return nil, false
 				}
 				i++
@@ -228,12 +344,8 @@ func parseShellSegments(s string) ([][]string, bool) {
 				continue
 			}
 			if i+1 < n && s[i+1] == '>' {
-				if i+2 < n && (s[i+2] == '>' || s[i+2] == '&') {
-					return nil, false
-				}
-				flushTok()
-				target, nextIdx, ok := consumeRedirectTarget(s, i+2)
-				if !ok || target != "/dev/null" {
+				nextIdx, ok := handleOutputRedir(i + 1)
+				if !ok {
 					return nil, false
 				}
 				i = nextIdx - 1
@@ -241,37 +353,28 @@ func parseShellSegments(s string) ([][]string, bool) {
 			}
 			return nil, false
 		case '2', '1', '0':
-			if !hasTok {
+			if !hasTok && i+1 < n {
 				if (ch == '2' && strings.HasPrefix(s[i:], "2>&1")) || (ch == '1' && strings.HasPrefix(s[i:], "1>&2")) {
 					after := i + 4
 					if after < n && !isSepOrSpace(s[after]) {
 						return nil, false
 					}
-					needSegment = false
 					i += 3
 					continue
 				}
-				if (ch == '2' || ch == '1') && i+1 < n && s[i+1] == '>' {
-					if i+2 < n && (s[i+2] == '>' || s[i+2] == '|' || s[i+2] == '&') {
+				if (ch == '2' || ch == '1') && s[i+1] == '>' {
+					nextIdx, ok := handleOutputRedir(i + 1)
+					if !ok {
 						return nil, false
 					}
-					target, nextIdx, ok := consumeRedirectTarget(s, i+2)
-					if !ok || target != "/dev/null" {
-						return nil, false
-					}
-					needSegment = false
 					i = nextIdx - 1
 					continue
 				}
-				if ch == '0' && i+1 < n && s[i+1] == '<' {
-					if i+2 < n && (s[i+2] == '<' || s[i+2] == '>' || s[i+2] == '&' || s[i+2] == '(') {
+				if ch == '0' && s[i+1] == '<' {
+					nextIdx, ok := handleInputRedir(i + 1)
+					if !ok {
 						return nil, false
 					}
-					target, nextIdx, ok := consumeRedirectTarget(s, i+2)
-					if !ok || target != "/dev/null" {
-						return nil, false
-					}
-					needSegment = false
 					i = nextIdx - 1
 					continue
 				}
@@ -280,16 +383,16 @@ func parseShellSegments(s string) ([][]string, bool) {
 			hasTok = true
 			needSegment = false
 			continue
-		case '>', '<':
-			if i+1 < n {
-				next := s[i+1]
-				if next == '>' || next == '<' || next == '|' || next == '&' || next == '(' {
-					return nil, false
-				}
+		case '>':
+			nextIdx, ok := handleOutputRedir(i)
+			if !ok {
+				return nil, false
 			}
-			flushTok()
-			target, nextIdx, ok := consumeRedirectTarget(s, i+1)
-			if !ok || target != "/dev/null" {
+			i = nextIdx - 1
+			continue
+		case '<':
+			nextIdx, ok := handleInputRedir(i)
+			if !ok {
 				return nil, false
 			}
 			i = nextIdx - 1
@@ -316,16 +419,169 @@ func parseShellSegments(s string) ([][]string, bool) {
 		}
 	}
 
-	if inSingle || inDouble || needSegment {
+	if inSingle || inDouble || needSegment || len(pendingHeredocs) > 0 {
 		return nil, false
 	}
-	if !flushSeg(false) {
+	if !flushSeg(false, false) {
 		return nil, false
 	}
 	if len(segments) == 0 {
 		return nil, false
 	}
 	return segments, true
+}
+
+func consumeHeredocDelimiter(s string, start int) (delim string, quoted bool, nextIdx int, ok bool) {
+	n := len(s)
+	i := start
+	for i < n && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	if i >= n {
+		return "", false, i, false
+	}
+
+	var b strings.Builder
+	hasWord := false
+	inSingle := false
+	inDouble := false
+
+	for i < n {
+		ch := s[i]
+		if inSingle {
+			if ch == '\'' {
+				inSingle = false
+			} else {
+				b.WriteByte(ch)
+			}
+			i++
+			continue
+		}
+		if inDouble {
+			if ch == '"' {
+				inDouble = false
+			} else if ch == '\\' && i+1 < n && (s[i+1] == '"' || s[i+1] == '\\' || s[i+1] == '$' || s[i+1] == '`') {
+				b.WriteByte(s[i+1])
+				i++
+			} else {
+				b.WriteByte(ch)
+			}
+			i++
+			continue
+		}
+
+		if isSepOrSpace(ch) {
+			break
+		}
+		switch ch {
+		case '\'':
+			inSingle = true
+			quoted = true
+			hasWord = true
+		case '"':
+			inDouble = true
+			quoted = true
+			hasWord = true
+		case '\\':
+			if i+1 >= n || s[i+1] == '\n' {
+				return "", false, i, false
+			}
+			quoted = true
+			hasWord = true
+			b.WriteByte(s[i+1])
+			i++
+		case '`', '(', ')', '>', '<', '$':
+			return "", false, i, false
+		default:
+			hasWord = true
+			b.WriteByte(ch)
+		}
+		i++
+	}
+
+	if inSingle || inDouble || !hasWord || b.Len() == 0 {
+		return "", false, i, false
+	}
+	return b.String(), quoted, i, true
+}
+
+func consumeHeredocBody(s string, start int, spec heredocSpec) (string, int, bool) {
+	n := len(s)
+	if start > n {
+		return "", start, false
+	}
+	var body strings.Builder
+	pos := start
+	for pos < n {
+		lineEnd := strings.IndexByte(s[pos:], '\n')
+		var line string
+		var nextPos int
+		if lineEnd == -1 {
+			line = s[pos:]
+			nextPos = n
+		} else {
+			line = s[pos : pos+lineEnd]
+			nextPos = pos + lineEnd + 1
+		}
+		checkLine := line
+		if spec.stripTabs {
+			checkLine = strings.TrimLeft(checkLine, "\t")
+		}
+		if checkLine == spec.delim {
+			if !spec.quoted && hasUnquotedHeredocSubstitution(body.String()) {
+				return "", nextPos, false
+			}
+			return body.String(), nextPos, true
+		}
+		body.WriteString(line)
+		if lineEnd != -1 {
+			body.WriteByte('\n')
+		}
+		pos = nextPos
+	}
+	return "", n, false
+}
+
+func hasUnquotedHeredocSubstitution(body string) bool {
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '\\':
+			i++
+		case '`':
+			return true
+		case '$':
+			if i+1 < len(body) && body[i+1] == '(' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isSafeReadOnlyOutputRedirectTarget(target string) bool {
+	return target == "/dev/null" || isSafeTmpFilePath(target)
+}
+
+func isSafeTmpFilePath(p string) bool {
+	if p == "" || !strings.HasPrefix(p, "/tmp/") || strings.HasSuffix(p, "/") {
+		return false
+	}
+	if strings.Contains(p, "..") || strings.ContainsAny(p, "$*?[\x00~") {
+		return false
+	}
+	cleaned := filepath.Clean(p)
+	return strings.HasPrefix(cleaned, "/tmp/") && cleaned != "/tmp"
+}
+
+func isSafeTmpDirPath(p string) bool {
+	if p == "/tmp" || p == "/tmp/" {
+		return true
+	}
+	trimmed := strings.TrimRight(p, "/")
+	if trimmed == "/tmp" {
+		return true
+	}
+	return isSafeTmpFilePath(trimmed)
 }
 
 func consumeRedirectTarget(s string, start int) (string, int, bool) {
@@ -423,7 +679,8 @@ func consumeRedirectTarget(s string, start int) (string, int, bool) {
 	return b.String(), i, true
 }
 
-func isSafeReadOnlySegment(tokens []string) bool {
+func isSafeReadOnlySegment(seg shellSegment) bool {
+	tokens := seg.tokens
 	if len(tokens) == 0 {
 		return false
 	}
@@ -462,14 +719,22 @@ func isSafeReadOnlySegment(tokens []string) bool {
 		}
 		cleaned := filepath.Clean(cmd)
 		dir := filepath.Dir(cleaned)
-		if dir != "/bin" && dir != "/usr/bin" && dir != "/usr/local/bin" {
+		base := filepath.Base(cleaned)
+		if (dir == ".venv/bin" || dir == "venv/bin") && isPythonCommandName(base) {
+			cmd = base
+		} else if dir == "/bin" || dir == "/usr/bin" || dir == "/usr/local/bin" {
+			cmd = base
+		} else {
 			return false
 		}
-		cmd = filepath.Base(cleaned)
 	}
 
 	if alwaysReadOnlyCommands[cmd] {
 		return true
+	}
+
+	if isPythonCommandName(cmd) {
+		return isSafeReadOnlyPython(seg, args)
 	}
 
 	switch cmd {
@@ -507,7 +772,13 @@ func isSafeReadOnlySegment(tokens []string) bool {
 		return isSafeReadOnlyIP(args)
 	case "go":
 		return isSafeReadOnlyGo(args)
-	case "cargo", "rustc", "rustup", "node", "npm", "pnpm", "yarn", "python", "python3", "pip", "pip3":
+	case "sqlite3":
+		return isSafeReadOnlySQLite3(seg, args)
+	case "curl":
+		return isSafeReadOnlyCurl(args)
+	case "wget":
+		return isSafeReadOnlyWget(args)
+	case "cargo", "rustc", "rustup", "node", "npm", "pnpm", "yarn", "pip", "pip3":
 		return len(args) == 1 && (args[0] == "--version" || args[0] == "-V" || args[0] == "-v" || args[0] == "version")
 	default:
 		return false
@@ -533,7 +804,8 @@ func splitEnvAssignment(tok string) (key, val string, ok bool) {
 
 func isSafeEnvAssignment(key, val string) bool {
 	switch key {
-	case "LC_ALL", "LC_CTYPE", "LC_COLLATE", "LANG", "TZ", "NO_COLOR", "CLICOLOR", "TERM", "COLUMNS", "LINES", "GREP_COLOR", "GREP_COLORS":
+	case "LC_ALL", "LC_CTYPE", "LC_COLLATE", "LANG", "TZ", "NO_COLOR", "CLICOLOR", "TERM", "COLUMNS", "LINES", "GREP_COLOR", "GREP_COLORS",
+		"PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONPATH", "VIRTUAL_ENV":
 		return true
 	case "PAGER", "GIT_PAGER", "SYSTEMD_PAGER":
 		return val == "" || val == "cat"
@@ -548,7 +820,7 @@ var alwaysReadOnlyCommands = map[string]bool{
 	"basename": true, "dirname": true, "which": true, "type": true,
 	"cat": true, "tac": true, "nl": true, "head": true, "cut": true, "tr": true,
 	"diff": true, "cmp": true, "comm": true, "column": true, "fold": true, "fmt": true,
-	"rev": true, "paste": true, "join": true,
+	"rev": true, "paste": true, "join": true, "zcat": true, "base64": true,
 	"md5sum": true, "sha1sum": true, "sha256sum": true, "sha512sum": true, "cksum": true,
 	"strings": true, "od": true,
 	"date": true, "uname": true, "uptime": true, "hostname": true, "whoami": true, "id": true,
@@ -1146,4 +1418,569 @@ func isSafeReadOnlyGo(args []string) bool {
 	default:
 		return false
 	}
+}
+
+var safeReadOnlyPythonModules = map[string]bool{
+	"json":      true,
+	"json.tool": true,
+	"csv":       true,
+	"base64":    true,
+	"calendar":  true,
+	"sysconfig": true,
+	"platform":  true,
+	"site":      true,
+	"pydoc":     true,
+	"timeit":    true,
+	"ast":       true,
+	"dis":       true,
+}
+
+func isPythonCommandName(cmd string) bool {
+	if cmd == "python" || cmd == "python3" {
+		return true
+	}
+	if !strings.HasPrefix(cmd, "python3.") {
+		return false
+	}
+	rest := strings.TrimPrefix(cmd, "python3.")
+	if rest == "" {
+		return false
+	}
+	for i := 0; i < len(rest); i++ {
+		if rest[i] < '0' || rest[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isSafePythonScriptPath(p string) bool {
+	if strings.TrimSpace(p) == "" || strings.HasPrefix(p, "-") {
+		return false
+	}
+	if strings.Contains(p, "..") || strings.ContainsAny(p, "$*?[~") {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(p), ".py")
+}
+
+func isSafeReadOnlyPython(seg shellSegment, args []string) bool {
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-V" || args[0] == "-VV") {
+		return true
+	}
+	hasStdin := seg.hasPipeIn || seg.hasFileIn || seg.hasHeredoc
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-" {
+			return hasStdin
+		}
+		if arg == "--" {
+			return false
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return isSafePythonScriptPath(arg)
+		}
+		if arg == "-c" {
+			return i+1 < len(args)
+		}
+		if strings.HasPrefix(arg, "-c") && len(arg) > 2 {
+			return true
+		}
+		if arg == "-m" {
+			if i+1 >= len(args) {
+				return false
+			}
+			return safeReadOnlyPythonModules[args[i+1]]
+		}
+		if strings.HasPrefix(arg, "-m") && len(arg) > 2 {
+			return safeReadOnlyPythonModules[arg[2:]]
+		}
+		if arg == "-W" || arg == "-X" {
+			if i+1 >= len(args) {
+				return false
+			}
+			i++
+			continue
+		}
+		if (strings.HasPrefix(arg, "-W") || strings.HasPrefix(arg, "-X")) && len(arg) > 2 {
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			return false
+		}
+		for j := 1; j < len(arg); j++ {
+			switch arg[j] {
+			case 'B', 'E', 'I', 'O', 'P', 'q', 's', 'S', 'u', 'v', 'b':
+			default:
+				return false
+			}
+		}
+	}
+
+	return hasStdin
+}
+
+var safeSQLite3BoolFlags = map[string]bool{
+	"-readonly": true,
+	"-safe":     true,
+	"-header":   true,
+	"-noheader": true,
+	"-column":   true,
+	"-csv":      true,
+	"-json":     true,
+	"-line":     true,
+	"-list":     true,
+	"-markdown": true,
+	"-table":    true,
+	"-tabs":     true,
+	"-box":      true,
+	"-quote":    true,
+	"-html":     true,
+	"-ascii":    true,
+	"-batch":    true,
+	"-bail":     true,
+	"-echo":     true,
+	"-eqp":      true,
+	"-stats":    true,
+	"-noinit":   true,
+}
+
+var safeSQLite3DotCommands = map[string]bool{
+	".tables":     true,
+	".schema":     true,
+	".fullschema": true,
+	".indices":    true,
+	".indexes":    true,
+	".databases":  true,
+	".headers":    true,
+	".mode":       true,
+	".separator":  true,
+	".width":      true,
+	".nullvalue":  true,
+	".timeout":    true,
+	".show":       true,
+	".eqp":        true,
+	".timer":      true,
+	".stats":      true,
+	".quit":       true,
+	".exit":       true,
+}
+
+func isSQLiteReadOnlyURI(arg string) bool {
+	if !strings.HasPrefix(arg, "file:") {
+		return false
+	}
+	u, err := url.Parse(arg)
+	if err != nil || !strings.EqualFold(u.Scheme, "file") {
+		return false
+	}
+	return u.Query().Get("mode") == "ro"
+}
+
+func isSafeSQLite3DotCommand(raw string) bool {
+	fields := strings.Fields(strings.TrimSpace(raw))
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := strings.ToLower(fields[0])
+	if !safeSQLite3DotCommands[cmd] {
+		return false
+	}
+	if cmd == ".mode" && len(fields) > 2 {
+		return false
+	}
+	return true
+}
+
+func isSafeSQLite3Script(raw string) bool {
+	lines := strings.Split(raw, "\n")
+	var sqlBuf strings.Builder
+	sawStatement := false
+
+	flushSQL := func() bool {
+		sqlStr := strings.TrimSpace(sqlBuf.String())
+		sqlBuf.Reset()
+		if sqlStr == "" {
+			return true
+		}
+		if _, err := tools.ValidateReadOnlySQL(sqlStr); err != nil {
+			return false
+		}
+		sawStatement = true
+		return true
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, ".") {
+			if !flushSQL() {
+				return false
+			}
+			if !isSafeSQLite3DotCommand(trimmed) {
+				return false
+			}
+			sawStatement = true
+			continue
+		}
+		sqlBuf.WriteString(line)
+		sqlBuf.WriteByte('\n')
+	}
+	if !flushSQL() {
+		return false
+	}
+	return sawStatement
+}
+
+func isSafeReadOnlySQLite3(seg shellSegment, args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-version" || args[0] == "-help") {
+		return true
+	}
+
+	hasReadOnlyFlag := false
+	hasSafeFlag := false
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			break
+		}
+		norm := arg
+		if strings.HasPrefix(norm, "--") {
+			norm = "-" + strings.TrimPrefix(norm, "--")
+		}
+		switch {
+		case norm == "-readonly":
+			hasReadOnlyFlag = true
+			i++
+		case norm == "-safe":
+			hasSafeFlag = true
+			i++
+		case safeSQLite3BoolFlags[norm]:
+			i++
+		case norm == "-separator" || norm == "-newline" || norm == "-nullvalue":
+			if i+1 >= len(args) {
+				return false
+			}
+			i += 2
+		case norm == "-cmd":
+			if i+1 >= len(args) || !isSafeSQLite3DotCommand(args[i+1]) {
+				return false
+			}
+			i += 2
+		default:
+			return false
+		}
+	}
+
+	if i >= len(args) {
+		return false
+	}
+	dbArg := args[i]
+	if strings.TrimSpace(dbArg) == "" || strings.HasPrefix(dbArg, "-") {
+		return false
+	}
+	if !hasReadOnlyFlag && !isSQLiteReadOnlyURI(dbArg) {
+		return false
+	}
+
+	sqlArgs := args[i+1:]
+	if len(sqlArgs) > 0 {
+		for _, stmt := range sqlArgs {
+			if !isSafeSQLite3Script(stmt) {
+				return false
+			}
+		}
+		return true
+	}
+
+	if seg.hasHeredoc {
+		if len(seg.heredocs) == 0 {
+			return false
+		}
+		for _, body := range seg.heredocs {
+			if !isSafeSQLite3Script(body) {
+				return false
+			}
+		}
+		return true
+	}
+
+	return (seg.hasPipeIn || seg.hasFileIn) && hasSafeFlag
+}
+
+func isSafeHTTPURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	return scheme == "http" || scheme == "https"
+}
+
+func isSafeCurlOutputTarget(target string) bool {
+	return target == "-" || target == "/dev/null" || isSafeTmpFilePath(target)
+}
+
+func isSafeReadOnlyHTTPMethod(method string) bool {
+	return strings.EqualFold(strings.TrimSpace(method), "GET") || strings.EqualFold(strings.TrimSpace(method), "HEAD")
+}
+
+func isSafeReadOnlyCurl(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-V") {
+		return true
+	}
+
+	urlCount := 0
+	hasGetFlag := false
+	hasDataURLEncode := false
+	stopFlags := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !stopFlags && arg == "--" {
+			stopFlags = true
+			continue
+		}
+		if stopFlags || !strings.HasPrefix(arg, "-") || arg == "-" {
+			if !isSafeHTTPURL(arg) {
+				return false
+			}
+			urlCount++
+			continue
+		}
+
+		if strings.HasPrefix(arg, "--") {
+			name, val, hasEq := strings.Cut(arg, "=")
+			consumeVal := func() (string, bool) {
+				if hasEq {
+					return val, true
+				}
+				if i+1 >= len(args) {
+					return "", false
+				}
+				i++
+				return args[i], true
+			}
+			switch name {
+			case "--silent", "--show-error", "--fail", "--fail-with-body", "--location",
+				"--include", "--head", "--verbose", "--insecure", "--compressed",
+				"--globoff", "--no-buffer", "--http1.1", "--http2", "--ipv4", "--ipv6",
+				"--no-progress-meter":
+				if hasEq {
+					return false
+				}
+			case "--get":
+				if hasEq {
+					return false
+				}
+				hasGetFlag = true
+			case "--request":
+				v, ok := consumeVal()
+				if !ok || !isSafeReadOnlyHTTPMethod(v) {
+					return false
+				}
+			case "--output", "--dump-header":
+				v, ok := consumeVal()
+				if !ok || !isSafeCurlOutputTarget(v) {
+					return false
+				}
+			case "--url":
+				v, ok := consumeVal()
+				if !ok || !isSafeHTTPURL(v) {
+					return false
+				}
+				urlCount++
+			case "--data-urlencode":
+				if _, ok := consumeVal(); !ok {
+					return false
+				}
+				hasDataURLEncode = true
+			case "--header", "--user-agent", "--referer", "--max-time", "--connect-timeout",
+				"--retry", "--retry-delay", "--retry-max-time", "--write-out", "--range",
+				"--cacert", "--capath":
+				if _, ok := consumeVal(); !ok {
+					return false
+				}
+			default:
+				return false
+			}
+			continue
+		}
+
+		// Короткие и объединённые флаги curl (например -fsSL, -fsSLo, -sG, -XGET).
+		for j := 1; j < len(arg); j++ {
+			c := arg[j]
+			switch c {
+			case 's', 'S', 'f', 'L', 'i', 'I', 'v', 'k', '4', '6', 'g', 'N', 'q', '0':
+				continue
+			case 'G':
+				hasGetFlag = true
+				continue
+			case 'H', 'A', 'e', 'm', 'w', 'r', 'X', 'o', 'D':
+				var v string
+				if j+1 < len(arg) {
+					v = arg[j+1:]
+					j = len(arg)
+				} else if i+1 < len(args) {
+					i++
+					v = args[i]
+				} else {
+					return false
+				}
+				switch c {
+				case 'X':
+					if !isSafeReadOnlyHTTPMethod(v) {
+						return false
+					}
+				case 'o', 'D':
+					if !isSafeCurlOutputTarget(v) {
+						return false
+					}
+				}
+				j = len(arg)
+			default:
+				return false
+			}
+		}
+	}
+
+	return urlCount > 0 && (!hasDataURLEncode || hasGetFlag)
+}
+
+func isSafeReadOnlyWget(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-V") {
+		return true
+	}
+
+	urlCount := 0
+	hasSafeOutput := false
+	stopFlags := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !stopFlags && arg == "--" {
+			stopFlags = true
+			continue
+		}
+		if stopFlags || !strings.HasPrefix(arg, "-") || arg == "-" {
+			if !isSafeHTTPURL(arg) {
+				return false
+			}
+			urlCount++
+			continue
+		}
+
+		if arg == "-nv" {
+			continue
+		}
+
+		if strings.HasPrefix(arg, "--") {
+			name, val, hasEq := strings.Cut(arg, "=")
+			consumeVal := func() (string, bool) {
+				if hasEq {
+					return val, true
+				}
+				if i+1 >= len(args) {
+					return "", false
+				}
+				i++
+				return args[i], true
+			}
+			switch name {
+			case "--quiet", "--server-response", "--no-verbose", "--no-check-certificate",
+				"--content-on-error", "--inet4-only", "--inet6-only", "--no-hsts":
+				if hasEq {
+					return false
+				}
+			case "--spider":
+				if hasEq {
+					return false
+				}
+				hasSafeOutput = true
+			case "--output-document":
+				v, ok := consumeVal()
+				if !ok || !isSafeCurlOutputTarget(v) {
+					return false
+				}
+				hasSafeOutput = true
+			case "--directory-prefix":
+				v, ok := consumeVal()
+				if !ok || !isSafeTmpDirPath(v) {
+					return false
+				}
+				hasSafeOutput = true
+			case "--method":
+				v, ok := consumeVal()
+				if !ok || !isSafeReadOnlyHTTPMethod(v) {
+					return false
+				}
+			case "--output-file", "--append-output":
+				v, ok := consumeVal()
+				if !ok || !isSafeReadOnlyOutputRedirectTarget(v) {
+					return false
+				}
+			case "--timeout", "--connect-timeout", "--read-timeout", "--tries",
+				"--user-agent", "--header", "--ca-certificate", "--ca-directory":
+				if _, ok := consumeVal(); !ok {
+					return false
+				}
+			default:
+				return false
+			}
+			continue
+		}
+
+		for j := 1; j < len(arg); j++ {
+			c := arg[j]
+			switch c {
+			case 'q', 'S', '4', '6':
+				continue
+			case 'O', 'P', 'T', 't', 'U', 'o', 'a':
+				var v string
+				if j+1 < len(arg) {
+					v = arg[j+1:]
+					j = len(arg)
+				} else if i+1 < len(args) {
+					i++
+					v = args[i]
+				} else {
+					return false
+				}
+				switch c {
+				case 'O':
+					if !isSafeCurlOutputTarget(v) {
+						return false
+					}
+					hasSafeOutput = true
+				case 'P':
+					if !isSafeTmpDirPath(v) {
+						return false
+					}
+					hasSafeOutput = true
+				case 'o', 'a':
+					if !isSafeReadOnlyOutputRedirectTarget(v) {
+						return false
+					}
+				}
+				j = len(arg)
+			default:
+				return false
+			}
+		}
+	}
+
+	return urlCount > 0 && hasSafeOutput
 }

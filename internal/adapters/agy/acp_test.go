@@ -379,6 +379,88 @@ while True:
 		}
 	})
 
+	t.Run("ReadOnly allows sqlite_query MCP tool and analytical python3/sqlite3/curl commands", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		dir := t.TempDir()
+		permFile := filepath.Join(dir, "perm")
+		t.Setenv("PERM_FILE", permFile)
+
+		analyticsScript := filepath.Join(dir, "agy-analytics")
+		scriptBody := `#!/usr/bin/env python3
+import json, os, sys, urllib.request
+perm_file = os.environ["PERM_FILE"]
+perms = []
+mcp_srv = None
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    msg = json.loads(line)
+    m, mid, p = msg.get("method"), msg.get("id"), msg.get("params") or {}
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
+    elif m == "session/new":
+        srvs = p.get("mcpServers") or []
+        if srvs and srvs[0].get("type") == "http":
+            mcp_srv = srvs[0]
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "s-analytics"}})
+    elif m == "session/prompt":
+        calls = [
+            (10, {"name": "call_mcp_tool", "kind": "execute", "title": "MCP Tool sqlite_query", "rawInput": {"ServerName": "bro_bot", "ToolName": "sqlite_query"}}),
+            (11, {"name": "run_command", "kind": "execute", "title": "python3", "rawInput": {"CommandLine": "python3 -c 'print(1)'"}}),
+            (12, {"name": "run_command", "kind": "execute", "title": "curl", "rawInput": {"CommandLine": "curl -fsSL \"https://api.example.com/candles\" -o /tmp/c.json"}}),
+            (13, {"name": "run_command", "kind": "execute", "title": "sqlite3", "rawInput": {"CommandLine": "sqlite3 -readonly data/db/pair_edge.db \"SELECT count(*) FROM trades\""}}),
+            (14, {"name": "run_command", "kind": "execute", "title": "deploy", "rawInput": {"CommandLine": "./scripts/deploy-release.sh"}}),
+        ]
+        for req_id, tc in calls:
+            send({"jsonrpc": "2.0", "id": req_id, "method": "session/request_permission", "params": {
+                "toolCall": tc,
+                "options": [{"optionId": "allow", "kind": "allow_once"}, {"optionId": "deny", "kind": "reject_once"}]
+            }})
+            r = json.loads(sys.stdin.readline())
+            perms.append(((r.get("result") or {}).get("outcome") or {}).get("optionId", ""))
+        send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s-analytics", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Analytics OK"}}}})
+        send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+    elif m == "session/close":
+        open(perm_file, "w").write("\n".join(perms))
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        break
+`
+		if err := os.WriteFile(analyticsScript, []byte(scriptBody), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		prev := agyBin
+		agyBin = analyticsScript
+		t.Cleanup(func() { agyBin = prev })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		proc, err := NewAgyACPAdapter().ExecuteTask(ctx, ports.ExecuteArgs{
+			Prompt:   "Inspect SQLite and fetch candles",
+			WorkDir:  dir,
+			ReadOnly: true,
+			BotTools: &fakeAgyBotTools{},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer proc.Close()
+		out, _ := io.ReadAll(proc.Stdout())
+		if waitErr := proc.Wait(); waitErr != nil {
+			t.Fatalf("Wait: %v\n%s", waitErr, out)
+		}
+		if !strings.Contains(string(out), `"status":"SUCCESS"`) || !strings.Contains(string(out), "Analytics OK") {
+			t.Fatalf("expected SUCCESS with Analytics OK, got:\n%s", out)
+		}
+		permData, _ := os.ReadFile(permFile)
+		if got := strings.TrimSpace(string(permData)); got != "allow\nallow\nallow\nallow\ndeny" {
+			t.Errorf("permissions = %q, want allow/allow/allow/allow/deny", got)
+		}
+	})
+
 	t.Run("ReadOnly denied command triggering empty turn sends single recovery prompt and sums usage", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		dir := t.TempDir()

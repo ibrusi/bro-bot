@@ -38,7 +38,7 @@ func TestClaudeToolDefinitions(t *testing.T) {
 	for _, tool := range withBot {
 		botNames[tool["name"].(string)] = true
 	}
-	for _, expected := range []string{"ask_user", "send_file", "telegram_send_message", "get_task_context", "list_tasks", "list_projects"} {
+	for _, expected := range []string{"ask_user", "send_file", "telegram_send_message", "get_task_context", "list_tasks", "list_projects", "sqlite_query"} {
 		if !botNames[expected] {
 			t.Errorf("bot tools missing %s: %+v", expected, botNames)
 		}
@@ -79,7 +79,7 @@ func TestGeminiToolDeclarations(t *testing.T) {
 	for _, decl := range withBot[0].FunctionDeclarations {
 		botNames[decl.Name] = true
 	}
-	if !botNames["ask_user"] || !botNames["send_file"] || !IsBotToolName("ask_user") || IsBotToolName("read_file") {
+	if !botNames["ask_user"] || !botNames["send_file"] || !botNames["sqlite_query"] || !IsBotToolName("ask_user") || !IsBotToolName("sqlite_query") || IsBotToolName("read_file") {
 		t.Errorf("unexpected bot tool flags: botNames=%+v", botNames)
 	}
 }
