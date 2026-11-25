@@ -234,6 +234,7 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 
 	conn := acp.NewConn(stdout, stdin)
 	var sessionID string
+	var stateMu sync.Mutex
 	var step int
 	var acceptUpdates atomic.Bool
 	var answer strings.Builder
@@ -242,20 +243,28 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 	var toolsReg acp.ToolCallRegistry
 	var usageMu sync.Mutex
 	var lastUpdateUsage *acp.StreamUsage
+	var permMu sync.Mutex
+	var deniedPerms []acp.DeniedPermission
 
 	conn.OnNotify = func(msg acp.Message) {
 		if !acceptUpdates.Load() || msg.Method != "session/update" {
 			return
 		}
 		toolsReg.Observe(msg.Params)
+		stateMu.Lock()
 		step++
-		evt, ok := acp.TranslateUpdate(sessionID, msg.Params, step)
+		curStep := step
+		stateMu.Unlock()
+		evt, ok := acp.TranslateUpdate(sessionID, msg.Params, curStep)
 		if !ok {
 			return
 		}
 		if evt.StepUpdate != nil {
 			if evt.StepUpdate.StepType == "tool" {
 				toolsReg.EnrichStepUpdate(evt.StepUpdate)
+			}
+			stateMu.Lock()
+			if evt.StepUpdate.StepType == "tool" {
 				sawTool = true
 				if acp.IsInteractiveTurnTool(evt.StepUpdate.ToolName) {
 					sawInteractiveBotTool = true
@@ -264,6 +273,7 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 			if evt.StepUpdate.TextDelta != "" {
 				answer.WriteString(evt.StepUpdate.TextDelta)
 			}
+			stateMu.Unlock()
 			if evt.StepUpdate.Usage != nil {
 				usageMu.Lock()
 				uCopy := *evt.StepUpdate.Usage
@@ -281,10 +291,16 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 		var params acp.PermissionParams
 		_ = json.Unmarshal(msg.Params, &params)
 		params.ToolCall = toolsReg.Enrich(params.ToolCall)
+		allowed := !cfg.ReadOnly || acp.IsAllowedInReadOnly(params.ToolCall)
 		optionID, ok := acp.ChoosePermission(cfg.ReadOnly, params.ToolCall, params.Options)
-		if !ok || (cfg.ReadOnly && !acp.ReadOnlyToolKind(params.ToolCall.Kind) && !acp.IsBotOrInteractiveTool(params.ToolCall)) {
+		if !ok || !allowed {
 			log.Printf("grok-acp: permission readOnly=%v name=%q toolName=%q kind=%q title=%q -> ok=%v opt=%q",
 				cfg.ReadOnly, params.ToolCall.Name, params.ToolCall.ToolName, params.ToolCall.Kind, params.ToolCall.Title, ok, optionID)
+			if cfg.ReadOnly && !allowed {
+				permMu.Lock()
+				deniedPerms = append(deniedPerms, acp.NewDeniedPermission(params.ToolCall))
+				permMu.Unlock()
+			}
 		}
 		_ = conn.Reply(msg.ID, acp.PermissionResult(optionID, ok))
 	}
@@ -295,17 +311,27 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 	}()
 
 	started := time.Now()
+	numTurns := 1
 	finish := func(status, errText string, usage *acp.StreamUsage) {
-		if status == "SUCCESS" && answer.Len() == 0 {
-			if cfg.ReadOnly && !sawInteractiveBotTool {
+		stateMu.Lock()
+		answerStr := answer.String()
+		usedTool := sawTool
+		usedInteractive := sawInteractiveBotTool
+		stateMu.Unlock()
+
+		permMu.Lock()
+		denied := append([]acp.DeniedPermission(nil), deniedPerms...)
+		permMu.Unlock()
+
+		if status == "SUCCESS" && strings.TrimSpace(answerStr) == "" {
+			if (cfg.ReadOnly && !usedInteractive) || !usedTool {
 				status = "ERROR"
 				if errText == "" {
-					errText = "grok returned an empty answer"
-				}
-			} else if !sawTool {
-				status = "ERROR"
-				if errText == "" {
-					errText = "grok returned an empty answer"
+					if len(denied) > 0 {
+						errText = "read-only mode blocked " + acp.FormatDeniedPermissions(denied)
+					} else {
+						errText = "grok returned an empty answer"
+					}
 				}
 			}
 		}
@@ -319,9 +345,9 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 				ConversationID:  sessionID,
 				Status:          status,
 				Error:           errText,
-				Response:        answer.String(),
+				Response:        answerStr,
 				DurationSeconds: time.Since(started).Seconds(),
-				NumTurns:        1,
+				NumTurns:        numTurns,
 				Usage:           usage,
 			},
 		})
@@ -379,44 +405,65 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 		promptCtx, promptCancel = context.WithTimeout(ctx, cfg.Timeout)
 	}
 
-	acceptUpdates.Store(true)
-	raw, err := conn.Call(promptCtx, "session/prompt", map[string]any{
-		"sessionId": sessionID,
-		"prompt":    []map[string]string{{"type": "text", "text": prompt}},
-	})
-	acceptUpdates.Store(false)
+	var usage *acp.StreamUsage
+	var status, errText string
+	numTurns = 0
+	curPrompt := prompt
+	for attempt := 0; attempt < 2; attempt++ {
+		numTurns++
+		acceptUpdates.Store(true)
+		raw, err := conn.Call(promptCtx, "session/prompt", map[string]any{
+			"sessionId": sessionID,
+			"prompt":    []map[string]string{{"type": "text", "text": curPrompt}},
+		})
+		acceptUpdates.Store(false)
+		if err != nil {
+			timedOutByCfg := promptCancel != nil && errors.Is(promptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+			if promptCancel != nil {
+				promptCancel()
+			}
+			if timedOutByCfg {
+				_ = conn.Notify("session/cancel", map[string]any{"sessionId": sessionID})
+				finish("ERROR", context.DeadlineExceeded.Error(), usage)
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			finish("ERROR", err.Error(), usage)
+			return
+		}
+
+		var cancelled bool
+		status, errText, cancelled = acp.ParsePromptStopReason(raw)
+		if cancelled && ctx.Err() != nil {
+			if promptCancel != nil {
+				promptCancel()
+			}
+			return
+		}
+		usage = acp.MergeUsage(usage, acp.ParseUsage(raw))
+
+		if attempt > 0 || status != "SUCCESS" || !cfg.ReadOnly || ctx.Err() != nil || promptCtx.Err() != nil {
+			break
+		}
+		stateMu.Lock()
+		emptyAnswer := strings.TrimSpace(answer.String()) == ""
+		interactive := sawInteractiveBotTool
+		stateMu.Unlock()
+		permMu.Lock()
+		denied := append([]acp.DeniedPermission(nil), deniedPerms...)
+		permMu.Unlock()
+		if !emptyAnswer || interactive || len(denied) == 0 {
+			break
+		}
+		deniedSummary := acp.FormatDeniedPermissions(denied)
+		log.Printf("grok-acp: read-only permission denied (%s) ended turn with empty answer; sending recovery prompt", deniedSummary)
+		curPrompt = acp.ReadOnlyRecoveryPrompt(deniedSummary)
+	}
 	if promptCancel != nil {
-		timedOutByCfg := errors.Is(promptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 		promptCancel()
-		if err != nil && timedOutByCfg {
-			_ = conn.Notify("session/cancel", map[string]any{"sessionId": sessionID})
-			finish("ERROR", context.DeadlineExceeded.Error(), nil)
-			return
-		}
 	}
-	if err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		finish("ERROR", err.Error(), nil)
-		return
-	}
-	var promptRes struct {
-		StopReason string `json:"stopReason"`
-	}
-	_ = json.Unmarshal(raw, &promptRes)
-	status, errText := "SUCCESS", ""
-	switch promptRes.StopReason {
-	case "", "end_turn", "end":
-	case "cancelled":
-		if ctx.Err() != nil {
-			return
-		}
-		status, errText = "ERROR", "cancelled"
-	default:
-		status, errText = "ERROR", promptRes.StopReason
-	}
-	usage := acp.ParseUsage(raw)
 	if usage == nil {
 		usageMu.Lock()
 		if lastUpdateUsage != nil {

@@ -177,9 +177,20 @@ func TestChoosePermissionAgyAndGrokReadOnlyMatrix(t *testing.T) {
 			want:     "allow_once",
 		},
 		{
-			name:     "agy run_command in ReadOnly rejected",
+			name:     "agy safe read-only run_command in ReadOnly allowed",
 			readOnly: true,
-			call:     ToolCallPermission{Kind: "execute", Name: "run_command", Title: "echo hi"},
+			call: ToolCallPermission{
+				Kind:     "execute",
+				Name:     "run_command",
+				Title:    "git status -sb && ls -la",
+				RawInput: map[string]any{"CommandLine": "git status -sb && ls -la"},
+			},
+			want: "allow_once",
+		},
+		{
+			name:     "agy mutating run_command in ReadOnly rejected",
+			readOnly: true,
+			call:     ToolCallPermission{Kind: "execute", Name: "run_command", Title: "echo hi > out.txt"},
 			want:     "reject_once",
 		},
 		{
@@ -199,6 +210,12 @@ func TestChoosePermissionAgyAndGrokReadOnlyMatrix(t *testing.T) {
 			readOnly: true,
 			call:     ToolCallPermission{Kind: "other", Title: "use_tool", RawInput: map[string]any{"tool_name": "github__create_issue"}},
 			want:     "reject_once",
+		},
+		{
+			name:     "grok safe read-only bash in ReadOnly allowed",
+			readOnly: true,
+			call:     ToolCallPermission{Kind: "execute", Title: "bash", RawInput: map[string]any{"command": "git status -sb"}},
+			want:     "allow_once",
 		},
 		{
 			name:     "grok bash in ReadOnly rejected",

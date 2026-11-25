@@ -218,7 +218,7 @@ func isSafeReadOnlyBuiltinName(s string) bool {
 		"glob", "read", "ls", "search", "web_search", "search_web",
 		"fetch_web_page", "read_url_content", "read_resource", "list_resources",
 		"command_status", "view_file_outline", "view_code_item", "enter_plan_mode",
-		"search_tool":
+		"search_tool", "update_steps":
 		return true
 	default:
 		return false
@@ -332,13 +332,103 @@ func IsBotMCPToolTitle(toolTitle string) bool {
 	return tools.IsBotToolName(base)
 }
 
+// IsAllowedInReadOnly сообщает, разрешён ли вызов инструмента в режиме чтения (/chat и /plan).
+func IsAllowedInReadOnly(call ToolCallPermission) bool {
+	if ReadOnlyToolKind(call.Kind) || IsBotOrInteractiveTool(call) {
+		return true
+	}
+	return IsSafeReadOnlyShellCall(call)
+}
+
+// DeniedPermission описывает отклонённый в read-only режиме запрос разрешения инструмента.
+type DeniedPermission struct {
+	Tool  string
+	Title string
+}
+
+// NewDeniedPermission собирает описание отклонённого вызова инструмента из метаданных ACP,
+// предпочитая фактическую shell-команду в параметрах заголовку-заглушке вроде "bash".
+func NewDeniedPermission(call ToolCallPermission) DeniedPermission {
+	tool := firstNonEmptyString(call.Name, call.ToolName)
+	if tool == "" {
+		if isShellToolName(call.Title) {
+			tool = strings.TrimSpace(call.Title)
+		} else {
+			tool = firstNonEmptyString(call.Kind, "tool")
+		}
+	}
+	title := strings.TrimSpace(call.Title)
+	if cmd := extractShellCommand(call); cmd != "" {
+		title = cmd
+	}
+	return DeniedPermission{
+		Tool:  tool,
+		Title: title,
+	}
+}
+
+func firstNonEmptyString(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// FormatDeniedPermissions собирает компактное описание отклонённых вызовов для логов,
+// recovery-промпта и сообщения об ошибке.
+func FormatDeniedPermissions(denied []DeniedPermission) string {
+	if len(denied) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(denied))
+	seen := make(map[string]bool, len(denied))
+	for _, d := range denied {
+		tool := strings.TrimSpace(d.Tool)
+		if tool == "" {
+			tool = "tool"
+		}
+		title := truncateRunes(strings.TrimSpace(d.Title), 160)
+		label := tool
+		if title != "" && !strings.EqualFold(title, tool) {
+			label = tool + ": " + title
+		}
+		if !seen[label] {
+			seen[label] = true
+			parts = append(parts, label)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func truncateRunes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return string(r[:limit]) + "…"
+}
+
+// ReadOnlyRecoveryPrompt формирует инструкцию восстановления после того,
+// как отказ в доступе в read-only режиме оборвал ход агента без текстового ответа.
+func ReadOnlyRecoveryPrompt(deniedSummary string) string {
+	return "Your previous tool call (" + deniedSummary + ") was denied because this session is strictly read-only. " +
+		"Do NOT retry that command or call any write/edit/mutating tools. " +
+		"Answer the user's request directly in the user's language using only already gathered information, read_file, or safe read-only commands, " +
+		"or concisely explain what cannot be done in read-only mode."
+}
+
 // ChoosePermission выбирает вариант ответа на session/request_permission
 // с учётом режима readOnly (/chat, /plan) и метаданных вызываемого инструмента.
 func ChoosePermission(readOnly bool, call ToolCallPermission, options []PermOption) (string, bool) {
 	if len(options) == 0 {
 		return "", false
 	}
-	allowedInReadOnly := ReadOnlyToolKind(call.Kind) || IsBotOrInteractiveTool(call)
+	allowedInReadOnly := IsAllowedInReadOnly(call)
 	var prefer []string
 	switch {
 	case readOnly && !allowedInReadOnly:
