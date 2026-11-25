@@ -34,14 +34,34 @@ const (
 	chatBootstrapChars = 6000
 )
 
-// chatSystemPreamble — инструкция диалогового режима: агент изучает код и отвечает, но не меняет его.
-func chatSystemPreamble(lang string) string {
-	return i18n.T(lang, "chat.system_preamble")
+// chatSystemPreamble — системная инструкция диалогового режима с учётом политики записи.
+// Всегда сохраняет маркеры «РЕЖИМ ДИАЛОГА» / «CHAT MODE».
+func chatSystemPreamble(lang, writeMode, agent, execMode string) string {
+	var base string
+	switch domain.NormalizeWriteMode(writeMode, domain.WriteModeAsk) {
+	case domain.WriteModeAllow:
+		base = i18n.T(lang, "chat.system_preamble_allow")
+	case domain.WriteModeAsk:
+		base = i18n.T(lang, "chat.system_preamble_ask")
+	default:
+		base = i18n.T(lang, "chat.system_preamble")
+	}
+	if writeMode != domain.WriteModeDeny && strings.EqualFold(agent, "claude") && strings.EqualFold(execMode, "mcp") {
+		base += "\n" + i18n.T(lang, "chat.claude_mcp_prompt_note")
+	}
+	return base
 }
 
 // chatShortReminder — короткое напоминание о режиме для последующих ходов CLI-агента.
-func chatShortReminder(lang string) string {
-	return i18n.T(lang, "chat.short_reminder")
+func chatShortReminder(lang, writeMode string) string {
+	switch domain.NormalizeWriteMode(writeMode, domain.WriteModeAsk) {
+	case domain.WriteModeAllow:
+		return i18n.T(lang, "chat.short_reminder_allow")
+	case domain.WriteModeAsk:
+		return i18n.T(lang, "chat.short_reminder_ask")
+	default:
+		return i18n.T(lang, "chat.short_reminder")
+	}
 }
 
 // buildChatPrompt собирает промпт хода диалога.
@@ -50,18 +70,18 @@ func chatShortReminder(lang string) string {
 // поэтому в промпте остаётся только текст пользователя. В cli-режиме у агента своя память сессии:
 // при первом ходе новой пары агент/режим подмешиваем преамбулу и краткий контекст прошлых реплик,
 // дальше достаточно короткого напоминания.
-func buildChatPrompt(session *domain.ChatSession, agent, mode, userText, lang, rules string) string {
+func buildChatPrompt(session *domain.ChatSession, agent, mode, userText, lang, rules, writeMode string) string {
 	if strings.EqualFold(mode, "api") {
 		return userText
 	}
 
 	firstTurn := session.ConversationIDFor(agent, mode) == ""
 	if !firstTurn {
-		return fmt.Sprintf("%s\n\n%s", chatShortReminder(lang), userText)
+		return fmt.Sprintf("%s\n\n%s", chatShortReminder(lang, writeMode), userText)
 	}
 
 	var bldr strings.Builder
-	bldr.WriteString(chatSystemPreamble(lang))
+	bldr.WriteString(chatSystemPreamble(lang, writeMode, agent, mode))
 	if rules != "" {
 		bldr.WriteString("\n\n")
 		bldr.WriteString(rules)
@@ -306,21 +326,30 @@ func runChatTurn(ctx context.Context, m ports.Messenger, chat ports.ChatID, sess
 	channelToken := generateChannelToken()
 	defer mcpChannels.bindWithToken(0, channelToken, chatCh)()
 
+	policy := config.WritePolicySnapshot()
+	chatWriteMode := config.ProjectState.GetChatWriteMode()
+	var permHandler ports.PermissionHandler
+	if chatWriteMode != domain.WriteModeDeny {
+		permHandler = newWritePermissionController(m, chat, writePermScopeChat, 0, project, projectsRoot, lang)
+	}
+
 	args := ports.ExecuteArgs{
-		ConversationID:  session.ConversationIDFor(agent, mode),
-		ModelName:       model,
-		Prompt:          buildChatPrompt(session, agent, mode, userText, lang, rules),
-		WorkDir:         workDir,
-		History:         chatHistoryForAgent(session, mode),
-		ReadOnly:        true,
-		Effort:          setup.Effort,
-		Timeout:         chatTimeout(),
-		BotInstructions: buildBotToolInstructions(lang, false, true),
-		ChannelToken:    channelToken,
-		BotTools:        newChannelBotToolHandler(chatCh),
+		ConversationID:    session.ConversationIDFor(agent, mode),
+		ModelName:         model,
+		Prompt:            buildChatPrompt(session, agent, mode, userText, lang, rules, chatWriteMode),
+		WorkDir:           workDir,
+		History:           chatHistoryForAgent(session, mode),
+		ReadOnly:          true,
+		ScriptsDir:        policy.ScriptsDir,
+		PermissionHandler: permHandler,
+		Effort:            setup.Effort,
+		Timeout:           chatTimeout(),
+		BotInstructions:   buildBotToolInstructions(lang, false, true, chatWriteMode),
+		ChannelToken:      channelToken,
+		BotTools:          newChannelBotToolHandler(chatCh),
 	}
 	if strings.EqualFold(mode, "api") {
-		args.SystemPrompt = chatSystemPreamble(lang)
+		args.SystemPrompt = chatSystemPreamble(lang, chatWriteMode, agent, mode)
 		if rules != "" {
 			args.SystemPrompt = fmt.Sprintf("%s\n\n%s", args.SystemPrompt, rules)
 		}
@@ -721,11 +750,13 @@ func takeChatSuggestion(s ports.Session) (workSuggestion, bool) {
 	return takeSuggestion(cb.Message.ID)
 }
 
-// buildChatModeMarkup — кнопка переключения диалогового режима.
+// buildChatModeMarkup — кнопки переключения диалогового режима и прав записи в чате.
 func buildChatModeMarkup(lang string) *ports.Keyboard {
+	writeMode := config.ProjectState.GetChatWriteMode()
 	return &ports.Keyboard{
 		Rows: [][]ports.Button{
 			{{Text: i18n.T(lang, "btn.toggle_message_mode"), Action: "chat_mode_toggle"}},
+			buildWriteModeButtonsRow(writePermScopeChat, writeMode, lang),
 		},
 	}
 }
@@ -773,6 +804,15 @@ func formatChatStatus(project, lang string) string {
 	bldr.WriteString(i18n.Tf(lang, "chat.status_project", html.EscapeString(project)))
 	bldr.WriteString(i18n.Tf(lang, "chat.status_agent", html.EscapeString(agent), html.EscapeString(mode)))
 
+	writeMode := config.ProjectState.GetChatWriteMode()
+	bldr.WriteString(i18n.Tf(lang, "chat.status_write_mode", formatWriteModeLabel(writeMode, lang)))
+	if policy := config.WritePolicySnapshot(); len(policy.ChatWritePaths) > 0 {
+		bldr.WriteString(i18n.Tf(lang, "chat.status_write_paths", html.EscapeString(strings.Join(policy.ChatWritePaths, ", "))))
+	}
+	if writeMode != domain.WriteModeDeny && strings.EqualFold(agent, "claude") && strings.EqualFold(mode, "mcp") {
+		bldr.WriteString(i18n.T(lang, "chat.status_claude_mcp_note"))
+	}
+
 	session := domain.GlobalChatManager.Get(project)
 	if session == nil {
 		bldr.WriteString(i18n.T(lang, "chat.status_not_started"))
@@ -811,6 +851,10 @@ func handleChat(s ports.Session) error {
 			return s.Send(i18n.T(lang, "projects.select_first"), nil)
 		}
 		return s.Send(formatChatStatus(curProj, lang), ports.RichWith(buildChatModeMarkup(lang)))
+	}
+
+	if isWriteSubcommandArgs(args) {
+		return applyWriteModeCommand(s, writePermScopeChat)
 	}
 
 	switch strings.ToLower(strings.TrimSpace(args[0])) {

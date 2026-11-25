@@ -48,11 +48,15 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - A plain message is a conversation with the agent about the active project: context is preserved between messages, so `/resume` is no longer needed.
   - When a message looks like a code-change request, the bot does not run it silently — it offers buttons: answer in chat, draft a plan, or create a task.
   - Works for every agent (`agy`, `claude`, `grok`) and every execution mode that agent supports (`acp`, `mcp`, `api`); switching `/agent` or `/mode` mid-conversation keeps the thread, and ACP agents (`agy`, `grok`) keep their own ACP sessions.
-  - In chat the agent only reads the code and answers: file edits, branches, commits and PRs go through a task.
-  - Controls: `/chat` (status), `/chat <question>`, `/chat new`, `/chat stop`, `/chatmode [on|off]`.
+  - Controlled file/data writes (`deny` / `ask` / `allow`) configured independently for **`/chat write`** (default: `ask`) and **`/plan write`** (default: `deny`), persisted in SQLite (`chat_write_mode`, `plan_write_mode`):
+    - **Always allowed immediately** in `deny`, `ask`, and `allow`: reading any files/directories on the server (including `/etc`, `/proc`, `/sys`, `/var/log`, and `SCRIPTS_DIR`), read-only diagnostics (`systemctl status`/`is-active`/`list-units`/`cat`/`show`, `journalctl`), and analytical `python3` (including read-only inspection of `SCRIPTS_DIR`).
+    - **Controlled writes & downloads**: direct requests to save/fetch datasets (e.g., to external data folders via `CHAT_WRITE_PATHS` or arbitrary paths with interactive Telegram confirmation buttons `Allow once` / `Allow for this turn` / `Deny`) or create standalone helper scripts work cleanly inside `/chat` and `/plan`.
+    - **`SCRIPTS_DIR` rules**: blocked in `deny`; creating/editing files asks 2 buttons (`Allow once` / `Deny`, never auto-allowed via `CHAT_WRITE_PATHS` or `Allow for this turn`) in `ask` and is immediate in `allow`; **executing scripts in `SCRIPTS_DIR` ALWAYS asks 2 buttons (`Allow once` / `Deny`) in both `ask` and `allow`**.
+    - **Hard guardrails** (always blocked in `/chat` and `/plan`, even in `allow` and after `Allow for this turn`): `git`/`gh` mutations, `sudo`/privilege escalation, mutating `systemctl`/OS/disk commands, `rm -rf`/`find -delete`, writing to protected system paths (`/etc`, `/boot`, `/sys`, `/proc`, `/usr`, `/bin`, `/sbin`, `/lib*`, `.git`, `.ssh`, shell profiles), foreign MCP servers, mutating subagents (`!= research`), and modifying projects with another active task.
+  - Controls: `/chat` (status), `/chat <question>`, `/chat new`, `/chat stop`, `/chat write [deny|ask|allow]`, `/chatmode [on|off]`.
 - **Intelligent Task Pipeline**:
   - Independent, per-project task queues.
-  - Pre-planning mode (`/plan <task>`, `/planmode [on|off]`): the agent inspects the repository, composes and justifies an architectural plan, awaits user confirmation via interactive inline buttons (`/approve`, `/confirm`), and only then starts writing code.
+  - Pre-planning mode (`/plan <task>`, `/planmode [on|off]`, `/plan write [deny|ask|allow]`): the agent inspects the repository, composes and justifies an architectural plan, awaits user confirmation via interactive inline buttons (`/approve`, `/confirm`), and only then starts writing code.
   - Pause and resume (`/pause [id]`, `/resume [id] [answer]`).
   - Live execution streaming, recent logs, compact system resources (Bot, `agy`, `claude`, `grok`, `whisper-server`), and step tracking (`/status [id]`, `/tasks`).
   - Dialogue transcript inspection (`/history [id]`): view the full conversation and agent actions directly from the session logs.
@@ -81,7 +85,7 @@ The bot empowers a developer or engineering team to manage a pool of projects, a
   - `acp` (default for `agy` and `grok`): `agy acp` and `grok agent stdio` communicate over the Agent Client Protocol (newline-delimited JSON-RPC over stdio), resume the ACP session (`session/resume`), and access all 8 bot tools (`telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, `list_projects`, `sqlite_query`) through an ephemeral in-process HTTP MCP server (`127.0.0.1:0` with single-use `Bearer` token), without spawning `bot mcp-serve` or using a Unix socket.
   - `mcp` (default for `claude`): `claude` runs with the bot's built-in stdio Model Context Protocol server (`bot mcp-serve`) via `--mcp-config`. Its tools reach the running bot over a local Unix-socket bridge using step tokens and process-tree matching, so calls always land in the right task regardless of active project focus.
   - `api`: connects directly to provider APIs (Google Gemini API for `agy` & Anthropic Messages API for `claude`) with built-in workspace tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_search`, `find_files`, `run_command`) and in-process bot tools (`telegram_send_message`, `send_file`, `ask_user`, `report_progress`, `get_task_context`, `list_tasks`, `list_projects`, `sqlite_query`). `grok` does not support this mode.
-  - Safe sandboxing: chat mode (`/chat`) provides strictly read-only file access, while file writes and command executions are enabled for pipeline tasks. All paths are validated within the project directory.
+  - Controlled sandboxing: `/chat` and `/plan` support independent persistent write policies (`deny` / `ask` / `allow`) enforced via ACP (`agy`, `grok`) using `allow_once` per tool call and built-in API permission gates (`agy`, `claude`), while full code edits and VCS workflows run inside approved tasks. (`claude` in `mcp` mode runs with `--dangerously-skip-permissions`, so it relies on dynamic prompt guidance without per-tool interactive ACP buttons.)
 - **Multilingual Interface**:
   - Every bot reply, button, command description and agent prompt comes from a message catalog — English and Russian ship out of the box.
   - English is the default until a language is picked; the choice is made with `/language` and survives restarts.
@@ -327,6 +331,8 @@ nano .env
 | `STEP_TIMEOUT` | No | `1h` | Execution timeout for a single agent step. Formats: `1h`, `30m`, `3600s`, or seconds. When exceeded, the task is paused while preserving the session. |
 | `AUTO_CONTINUE_MAX` | No | `2` | How many times in a row a step is continued automatically when the agent ends its turn without waiting for its own background commands (agy prints `root agent idle; waiting … background task(s)` and the agent never wakes up, and/or `terminating N background task(s) on exit`). The step continues in the same agent session. When the limit is reached, the task is paused with a «Resume» button instead of being reported as completed. `0` disables auto-continue. |
 | `CHAT_TIMEOUT` | No | `1h` | Timeout for a single answer in conversational mode (`/chat`). Formats: `1h`, `30m`, `3600s`, or seconds. |
+| `CHAT_WRITE_PATHS` | No | — | Directories (`:` or `,` separated, `~` expanded) where writes/downloads in `ask` mode proceed without confirmation buttons. Subpaths under `SCRIPTS_DIR` are automatically ignored so script writes still prompt in `ask`. |
+| `CHAT_APPROVAL_TIMEOUT` | No | `5m` | How long the bot waits for a Telegram confirmation button press (`Allow once` / `Allow for this turn` / `Deny`) before denying automatically. Formats: `5m`, `120s`, or seconds. |
 | `BOT_DIR` | No | Executable's directory | Path to the bot's source code for `/rebuild` and storing restart markers. When unset, the executable's directory is used — but only if a `go.mod` sits next to it. Otherwise the bot refuses to start and says so. |
 | `BOT_SERVICE_NAME` | **Yes** | — | Name of the systemd service unit for `/restart` and `/rebuild`. |
 | `SQLITE_DB_PATH` | No | `data/bot.db` under `BOT_DIR` | Path to the SQLite database file for persistent tasks, plans, logs, and settings. |
@@ -352,6 +358,8 @@ QUESTION_TIMEOUT=15m
 STEP_TIMEOUT=1h
 AUTO_CONTINUE_MAX=2
 CHAT_TIMEOUT=1h
+# CHAT_WRITE_PATHS=/home/deploy/pair-edge-datasets
+CHAT_APPROVAL_TIMEOUT=5m
 BOT_DIR=/home/deploy/bro-bot
 BOT_SERVICE_NAME=bro-bot.service
 SQLITE_DB_PATH=data/bot.db
@@ -454,17 +462,16 @@ while the agent session id is kept separately for each "agent + mode" pair:
 When you switch `/agent` or `/mode`, the new agent receives a short context of previous turns,
 so the conversation continues. Reset it with `/chat new`.
 
-> ⚠️ The read-only stance in conversational mode is a prompt instruction, not a sandbox.
-> If you need a guarantee that nothing changes on disk, use a separate branch or a task.
+> ⚠️ **Runtime note for `claude` in `mcp` mode:** interactive per-tool approval cards are enforced across ACP (`agy/acp`, `grok/acp`) and API (`agy/api`, `claude/api`). Because `claude/mcp` executes CLI with `--dangerously-skip-permissions`, per-tool write buttons are unavailable there and write boundaries are guided via prompts.
 
 ### 📌 Task Management & Planning
 
 | Command | Description | Example |
 |---|---|---|
-| `<message>` | In conversational mode (default) — a question to the agent with preserved context; a code-change request is offered as a plan or a task. With `/chatmode off` — creates a task right away. | `How does the task pipeline work?` |
-| `/chat [question\|new\|stop]` | With no arguments — conversation status (project, agent, mode, memory kind). With text — a one-off question bypassing the classifier. `new` starts a fresh conversation, `stop` aborts the current answer. | `/chat show where commands are registered` |
+| `<message>` | In conversational mode (default) — a question to the agent (or a direct data-saving / helper-script request routed cleanly to chat with write controls); code-change requests offer plan/task buttons. With `/chatmode off` — creates a task right away. | `How does the task pipeline work?` |
+| `/chat [question\|new\|stop\|write [deny\|ask\|allow]]` | With no arguments — status (project, agent, mode, write policy). `write [deny\|ask\|allow]` configures chat write policy (default: `ask`, aliases `on`/`off`/`ro`/`approve`). Text runs a one-off question, `new` resets session, `stop` aborts turn. | `/chat write allow` |
 | `/chatmode [on\|off]` | Answer plain messages in chat (`on`, default) or create a task immediately (`off`). | `/chatmode off` |
-| `/plan [project] <task>` | Start a task in pre-planning mode (agent inspects repo, drafts a plan, and awaits approval). | `/plan Design distributed caching architecture` |
+| `/plan [project] <task> \| /plan write [deny\|ask\|allow]` | Start a task in pre-planning mode, or configure independent `/plan` write permissions (default: `deny`; multi-word prompts like `/plan write tests` still create tasks). | `/plan write ask` |
 | `/planmode [on\|off]` | Toggle mandatory planning mode for all incoming tasks. | `/planmode on` |
 | `/approve [id]` (or `/confirm`) | Approve the agent's proposed architectural plan and trigger implementation. | `/approve 3` |
 | `/tasks` | List all tasks in the current session with statuses and quick focus buttons. | `/tasks` |

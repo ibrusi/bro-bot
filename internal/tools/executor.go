@@ -37,13 +37,31 @@ var (
 )
 
 // Executor выполняет файловые операции и команды внутри рабочей директории проекта.
+// При AllowExternalRead/AllowExternalWrite (используется в контролируемых режимах /chat и /plan)
+// допускаются абсолютные пути вне WorkDir с обязательной защитой системных путей при записи.
 type Executor struct {
-	WorkDir string
+	WorkDir            string
+	AllowExternalRead  bool
+	AllowExternalWrite bool
 }
 
 // NewExecutor создаёт новый исполнитель инструментов для указанной директории.
 func NewExecutor(workDir string) *Executor {
 	return &Executor{WorkDir: workDir}
+}
+
+func (e *Executor) resolvePath(targetPath string, forWrite bool) (string, error) {
+	if (!forWrite && !e.AllowExternalRead) || (forWrite && !e.AllowExternalWrite) {
+		return e.SafeResolvePath(targetPath)
+	}
+	resolved, err := ResolvePathWithSymlinks(targetPath, e.WorkDir)
+	if err != nil {
+		return "", err
+	}
+	if forWrite && IsSensitiveSystemPath(resolved) {
+		return "", fmt.Errorf("writing to protected system path %q is not permitted", targetPath)
+	}
+	return resolved, nil
 }
 
 // SafeResolvePath проверяет и возвращает абсолютный путь к файлу,
@@ -75,7 +93,7 @@ func (e *Executor) SafeResolvePath(targetPath string) (string, error) {
 
 // ReadFile читает содержимое файла. Поддерживает диапазон строк [startLine, endLine] (1-indexed).
 func (e *Executor) ReadFile(path string, startLine, endLine int) (string, error) {
-	fullPath, err := e.SafeResolvePath(path)
+	fullPath, err := e.resolvePath(path, false)
 	if err != nil {
 		return "", err
 	}
@@ -155,7 +173,7 @@ func (e *Executor) ReadFile(path string, startLine, endLine int) (string, error)
 
 // WriteFile создаёт или перезаписывает файл указанным содержимым, автоматически создавая директории.
 func (e *Executor) WriteFile(path, content string) (string, error) {
-	fullPath, err := e.SafeResolvePath(path)
+	fullPath, err := e.resolvePath(path, true)
 	if err != nil {
 		return "", err
 	}
@@ -178,7 +196,7 @@ func (e *Executor) EditFile(path, oldString, newString string) (string, error) {
 		return "", errors.New("old_string cannot be empty")
 	}
 
-	fullPath, err := e.SafeResolvePath(path)
+	fullPath, err := e.resolvePath(path, true)
 	if err != nil {
 		return "", err
 	}
@@ -214,7 +232,7 @@ func (e *Executor) ListDir(path string) (string, error) {
 	if path == "" {
 		path = "."
 	}
-	fullPath, err := e.SafeResolvePath(path)
+	fullPath, err := e.resolvePath(path, false)
 	if err != nil {
 		return "", err
 	}
@@ -317,9 +335,15 @@ func (e *Executor) GrepSearch(ctx context.Context, pattern, relPath, globPattern
 		realWorkDir = absWorkDir
 	}
 
-	rootPath, err := e.SafeResolvePath(relPath)
+	rootPath, err := e.resolvePath(relPath, false)
 	if err != nil {
 		return "", err
+	}
+	if e.AllowExternalRead {
+		if realRoot, symErr := filepath.EvalSymlinks(rootPath); symErr == nil {
+			realWorkDir = realRoot
+			absWorkDir = rootPath
+		}
 	}
 	info, err := os.Stat(rootPath)
 	if err != nil {
@@ -470,9 +494,15 @@ func (e *Executor) FindFiles(pattern, relPath string, maxResults int) (string, e
 		realWorkDir = absWorkDir
 	}
 
-	rootPath, err := e.SafeResolvePath(relPath)
+	rootPath, err := e.resolvePath(relPath, false)
 	if err != nil {
 		return "", err
+	}
+	if e.AllowExternalRead {
+		if realRoot, symErr := filepath.EvalSymlinks(rootPath); symErr == nil {
+			realWorkDir = realRoot
+			absWorkDir = rootPath
+		}
 	}
 	if _, err := os.Stat(rootPath); err != nil {
 		if os.IsNotExist(err) {

@@ -143,6 +143,12 @@ func runAgentTaskPipeline(m ports.Messenger, chat ports.ChatID, task *domain.Tas
 			planningPrompt = i18n.Tf(lang, "pipeline.plan_revise_prompt",
 				view.InitialPrompt, existingPlan, feedback, pendingSection)
 		}
+		switch config.ProjectState.GetPlanWriteMode() {
+		case domain.WriteModeAsk:
+			planningPrompt += "\n\n" + i18n.T(lang, "pipeline.plan_write_note_ask")
+		case domain.WriteModeAllow:
+			planningPrompt += "\n\n" + i18n.T(lang, "pipeline.plan_write_note_allow")
+		}
 
 		// autoContinues — сколько раз подряд шаг планирования продолжен автоматически
 		// после выхода агента с прерванными фоновыми задачами.
@@ -871,17 +877,33 @@ func executeStepForTask(m ports.Messenger, chat ports.ChatID, task *domain.TaskS
 	channelToken := generateChannelToken()
 	defer mcpChannels.bindWithToken(0, channelToken, mcpChannel)()
 
+	var (
+		scriptsDir  string
+		permHandler ports.PermissionHandler
+		planWrite   string
+	)
+	if isPlanning {
+		policy := config.WritePolicySnapshot()
+		scriptsDir = policy.ScriptsDir
+		planWrite = config.ProjectState.GetPlanWriteMode()
+		if planWrite != domain.WriteModeDeny {
+			permHandler = newWritePermissionController(m, chat, writePermScopePlan, taskID, projectName, config.ProjectsRoot, lang)
+		}
+	}
+
 	args := ports.ExecuteArgs{
-		ConversationID:  convID,
-		ModelName:       modelName,
-		Prompt:          prompt,
-		WorkDir:         workDir,
-		ReadOnly:        isPlanning,
-		Effort:          stepEffort,
-		Timeout:         timeout,
-		BotInstructions: buildBotToolInstructions(lang, isPlanning, false),
-		ChannelToken:    channelToken,
-		BotTools:        newChannelBotToolHandler(mcpChannel),
+		ConversationID:    convID,
+		ModelName:         modelName,
+		Prompt:            prompt,
+		WorkDir:           workDir,
+		ReadOnly:          isPlanning,
+		ScriptsDir:        scriptsDir,
+		PermissionHandler: permHandler,
+		Effort:            stepEffort,
+		Timeout:           timeout,
+		BotInstructions:   buildBotToolInstructions(lang, isPlanning, false, planWrite),
+		ChannelToken:      channelToken,
+		BotTools:          newChannelBotToolHandler(mcpChannel),
 	}
 
 	// Передаём правила проекта AGENTS.md как системный промпт для новой сессии (convID == "")

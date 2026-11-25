@@ -713,3 +713,111 @@ while True:
     elif mid is not None:
         send({"jsonrpc": "2.0", "id": mid, "result": {}})
 `
+
+type fakeAgyACPPermHandler struct {
+	fn func(context.Context, ports.PermissionRequest) (ports.PermissionDecision, string)
+}
+
+func (f *fakeAgyACPPermHandler) DecidePermission(ctx context.Context, req ports.PermissionRequest) (ports.PermissionDecision, string) {
+	return f.fn(ctx, req)
+}
+
+func TestAgyACPAdapterPermissionHandler(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	permFile := filepath.Join(dir, "perm")
+	promptsFile := filepath.Join(dir, "prompts")
+	t.Setenv("PERM_FILE", permFile)
+	t.Setenv("PROMPTS_FILE", promptsFile)
+
+	script := filepath.Join(dir, "agy-perm")
+	scriptBody := `#!/usr/bin/env python3
+import json, os, sys
+perm_file = os.environ["PERM_FILE"]
+prompts_file = os.environ["PROMPTS_FILE"]
+perms = []
+prompts = []
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+turn = 0
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    msg = json.loads(line)
+    m, mid, p = msg.get("method"), msg.get("id"), msg.get("params") or {}
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
+    elif m == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "agy-perm"}})
+    elif m == "session/prompt":
+        turn += 1
+        txt = "".join(c.get("text", "") for c in (p.get("prompt") or []))
+        prompts.append(txt)
+        if turn == 1:
+            send({"jsonrpc": "2.0", "id": 10, "method": "session/request_permission", "params": {
+                "toolCall": {"name": "write_file", "kind": "edit", "title": "/tmp/moex/data.csv", "rawInput": {"path": "/tmp/moex/data.csv"}},
+                "options": [{"optionId": "always_id", "kind": "allow_always"}, {"optionId": "once_id", "kind": "allow_once"}, {"optionId": "deny_id", "kind": "reject_once"}]
+            }})
+            r1 = json.loads(sys.stdin.readline())
+            perms.append(((r1.get("result") or {}).get("outcome") or {}).get("optionId", ""))
+
+            send({"jsonrpc": "2.0", "id": 11, "method": "session/request_permission", "params": {
+                "toolCall": {"name": "run_command", "kind": "execute", "title": "bash /opt/scripts/run.sh"},
+                "options": [{"optionId": "once_id", "kind": "allow_once"}, {"optionId": "deny_id", "kind": "reject_once"}]
+            }})
+            r2 = json.loads(sys.stdin.readline())
+            perms.append(((r2.get("result") or {}).get("outcome") or {}).get("optionId", ""))
+            send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+        else:
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "agy-perm", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Recovered safely."}}}})
+            send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+    elif m == "session/close":
+        open(perm_file, "w").write("\n".join(perms))
+        open(prompts_file, "w").write("\n---\n".join(prompts))
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        break
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := agyBin
+	agyBin = script
+	t.Cleanup(func() { agyBin = prev })
+
+	calls := 0
+	h := &fakeAgyACPPermHandler{fn: func(_ context.Context, req ports.PermissionRequest) (ports.PermissionDecision, string) {
+		calls++
+		if calls == 1 {
+			return ports.PermissionAllowAlways, ""
+		}
+		return ports.PermissionDeny, "script run rejected"
+	}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	proc, err := NewAgyACPAdapter().ExecuteTask(ctx, ports.ExecuteArgs{
+		Prompt:            "Save file and run script",
+		WorkDir:           dir,
+		ReadOnly:          true,
+		ScriptsDir:        "/opt/scripts",
+		PermissionHandler: h,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proc.Close()
+	out, _ := io.ReadAll(proc.Stdout())
+	if waitErr := proc.Wait(); waitErr != nil {
+		t.Fatalf("Wait: %v\n%s", waitErr, out)
+	}
+	permData, _ := os.ReadFile(permFile)
+	if got := strings.TrimSpace(string(permData)); got != "once_id\ndeny_id" {
+		t.Fatalf("permissions = %q, want once_id\\ndeny_id", got)
+	}
+	pData, _ := os.ReadFile(promptsFile)
+	if !strings.Contains(string(pData), "user decision") || !strings.Contains(string(pData), "script run rejected") {
+		t.Fatalf("expected controlled recovery prompt with reason, got:\n%s", pData)
+	}
+}

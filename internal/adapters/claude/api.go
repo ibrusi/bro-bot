@@ -100,8 +100,8 @@ func buildClaudeMessagesBody(modelName string, args ports.ExecuteArgs) map[strin
 		reqBody["system"] = systemPrompt
 	}
 	applyClaudeEffort(reqBody, modelName, args.Effort)
-	isReadOnly := args.ReadOnly || strings.Contains(args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(args.SystemPrompt, "CHAT MODE")
-	reqBody["tools"] = tools.ClaudeToolDefinitionsWithBot(isReadOnly, args.BotTools != nil)
+	strictReadOnly := tools.IsControlledSession(args.ReadOnly, args.SystemPrompt) && args.PermissionHandler == nil
+	reqBody["tools"] = tools.ClaudeToolDefinitionsWithBot(strictReadOnly, args.BotTools != nil)
 	return reqBody
 }
 
@@ -467,8 +467,10 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 	initBytes, _ := json.Marshal(initEvt)
 	_, _ = fmt.Fprintf(p.wPipe, "%s\n", string(initBytes))
 
-	isReadOnly := stream.args.ReadOnly || strings.Contains(stream.args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(stream.args.SystemPrompt, "CHAT MODE")
+	controlled := tools.IsControlledSession(stream.args.ReadOnly, stream.args.SystemPrompt)
 	executor := tools.NewExecutor(stream.args.WorkDir)
+	executor.AllowExternalRead = controlled
+	executor.AllowExternalWrite = controlled && stream.args.PermissionHandler != nil
 
 	body := buildClaudeMessagesBody(stream.model, stream.args)
 	messages, _ := body["messages"].([]map[string]interface{})
@@ -728,11 +730,17 @@ func (p *ClaudeAPIProcess) runStreaming(ctx context.Context, stream claudeStream
 					shouldEndTurn = true
 				}
 			} else {
-				var execErr error
-				out, execErr = executor.Execute(ctx, tc.toolName, tc.toolInput, isReadOnly)
-				if execErr != nil {
-					out = fmt.Sprintf("Error: %v", execErr)
+				toolReadOnly, permErr := tools.AuthorizeAPIToolCall(ctx, stream.args.PermissionHandler, tc.toolName, tc.toolInput, stream.args.WorkDir, controlled)
+				if permErr != nil {
+					out = fmt.Sprintf("Error: %v", permErr)
 					isErr = true
+				} else {
+					var execErr error
+					out, execErr = executor.Execute(ctx, tc.toolName, tc.toolInput, toolReadOnly)
+					if execErr != nil {
+						out = fmt.Sprintf("Error: %v", execErr)
+						isErr = true
+					}
 				}
 			}
 			resultBlock := map[string]interface{}{

@@ -60,17 +60,19 @@ func (a *AgyACPAdapter) GetCredits(ctx context.Context) ([]byte, error) {
 }
 
 type acpTurnConfig struct {
-	WorkDir         string
-	Prompt          string
-	SystemPrompt    string
-	BotInstructions string
-	ChannelToken    string
-	ConversationID  string
-	ModelID         string
-	Effort          string
-	ReadOnly        bool
-	Timeout         time.Duration
-	MCPServer       acp.MCPServer
+	WorkDir           string
+	Prompt            string
+	SystemPrompt      string
+	BotInstructions   string
+	ChannelToken      string
+	ConversationID    string
+	ModelID           string
+	Effort            string
+	ReadOnly          bool
+	ScriptsDir        string
+	PermissionHandler ports.PermissionHandler
+	Timeout           time.Duration
+	MCPServer         acp.MCPServer
 }
 
 // ExecuteTask запускает один ход agy по протоколу ACP.
@@ -153,17 +155,19 @@ func (a *AgyACPAdapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs)
 	proc := &acpProcess{cmd: cmd, stdout: eventR, stdin: stdin, runDone: make(chan struct{}), readDone: make(chan struct{})}
 	go drainACPSterr(stderr)
 	go proc.run(ctx, stdin, stdout, eventW, toolSrv, acpTurnConfig{
-		WorkDir:         workDir,
-		Prompt:          args.Prompt,
-		SystemPrompt:    args.SystemPrompt,
-		BotInstructions: args.BotInstructions,
-		ChannelToken:    args.ChannelToken,
-		ConversationID:  args.ConversationID,
-		ModelID:         modelID,
-		Effort:          effortVal,
-		ReadOnly:        args.ReadOnly,
-		Timeout:         args.Timeout,
-		MCPServer:       mcpServer,
+		WorkDir:           workDir,
+		Prompt:            args.Prompt,
+		SystemPrompt:      args.SystemPrompt,
+		BotInstructions:   args.BotInstructions,
+		ChannelToken:      args.ChannelToken,
+		ConversationID:    args.ConversationID,
+		ModelID:           modelID,
+		Effort:            effortVal,
+		ReadOnly:          args.ReadOnly,
+		ScriptsDir:        args.ScriptsDir,
+		PermissionHandler: args.PermissionHandler,
+		Timeout:           args.Timeout,
+		MCPServer:         mcpServer,
 	})
 	return proc, nil
 }
@@ -252,14 +256,13 @@ func (p *acpProcess) run(ctx context.Context, stdin io.WriteCloser, stdout io.Re
 		var params acp.PermissionParams
 		_ = json.Unmarshal(msg.Params, &params)
 		params.ToolCall = toolsReg.Enrich(params.ToolCall)
-		allowed := !cfg.ReadOnly || acp.IsAllowedInReadOnly(params.ToolCall)
-		optionID, ok := acp.ChoosePermission(cfg.ReadOnly, params.ToolCall, params.Options)
+		optionID, ok, allowed, denyReason := acp.ResolvePermission(ctx, cfg.ReadOnly, cfg.ScriptsDir, cfg.WorkDir, cfg.PermissionHandler, params.ToolCall, params.Options)
 		if !ok || !allowed {
-			log.Printf("agy-acp: permission readOnly=%v name=%q toolName=%q kind=%q title=%q -> ok=%v opt=%q",
-				cfg.ReadOnly, params.ToolCall.Name, params.ToolCall.ToolName, params.ToolCall.Kind, params.ToolCall.Title, ok, optionID)
+			log.Printf("agy-acp: permission readOnly=%v name=%q toolName=%q kind=%q title=%q reason=%q -> ok=%v opt=%q",
+				cfg.ReadOnly, params.ToolCall.Name, params.ToolCall.ToolName, params.ToolCall.Kind, params.ToolCall.Title, denyReason, ok, optionID)
 			if cfg.ReadOnly && !allowed {
 				permMu.Lock()
-				deniedPerms = append(deniedPerms, acp.NewDeniedPermission(params.ToolCall))
+				deniedPerms = append(deniedPerms, acp.NewDeniedPermissionWithReason(params.ToolCall, denyReason))
 				permMu.Unlock()
 			}
 		}
@@ -289,7 +292,11 @@ func (p *acpProcess) run(ctx context.Context, stdin io.WriteCloser, stdout io.Re
 				status = "ERROR"
 				if errText == "" {
 					if len(denied) > 0 {
-						errText = "read-only mode blocked " + acp.FormatDeniedPermissions(denied)
+						if cfg.PermissionHandler != nil {
+							errText = "permission denied: " + acp.FormatDeniedPermissions(denied)
+						} else {
+							errText = "read-only mode blocked " + acp.FormatDeniedPermissions(denied)
+						}
 					} else {
 						errText = "agy returned an empty answer"
 					}
@@ -411,7 +418,7 @@ func (p *acpProcess) run(ctx context.Context, stdin io.WriteCloser, stdout io.Re
 		}
 		deniedSummary := acp.FormatDeniedPermissions(denied)
 		log.Printf("agy-acp: read-only permission denied (%s) ended turn with empty answer; sending recovery prompt", deniedSummary)
-		curPrompt = acp.ReadOnlyRecoveryPrompt(deniedSummary)
+		curPrompt = acp.ControlledDeniedRecoveryPrompt(deniedSummary, cfg.PermissionHandler != nil)
 	}
 	if promptCancel != nil {
 		promptCancel()

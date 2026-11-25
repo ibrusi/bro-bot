@@ -334,3 +334,77 @@ func TestGrepSearchFindFilesAndBotToolDefs(t *testing.T) {
 		t.Errorf("expected ask_user in GeminiToolDeclarationsWithBot")
 	}
 }
+
+func TestExecutorExternalReadAndWriteControl(t *testing.T) {
+	base := t.TempDir()
+	workDir := filepath.Join(base, "repo")
+	outsideDir := filepath.Join(base, "outside")
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outsideFile := filepath.Join(outsideDir, "note.txt")
+	if err := os.WriteFile(outsideFile, []byte("external content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Default executor blocks reading/writing outside workspace.
+	strict := NewExecutor(workDir)
+	if _, err := strict.Execute(ctx, "read_file", map[string]interface{}{"path": outsideFile}, true); err == nil {
+		t.Fatalf("expected strict executor to reject outside read_file")
+	}
+	if _, err := strict.Execute(ctx, "list_dir", map[string]interface{}{"path": outsideDir}, true); err == nil {
+		t.Fatalf("expected strict executor to reject outside list_dir")
+	}
+	if _, err := strict.Execute(ctx, "write_file", map[string]interface{}{"path": filepath.Join(outsideDir, "new.txt"), "content": "x"}, false); err == nil {
+		t.Fatalf("expected strict executor to reject outside write_file")
+	}
+
+	// AllowExternalRead permits read_file/list_dir/grep_search/find_files outside workspace while blocking outside write.
+	extReadOnly := NewExecutor(workDir)
+	extReadOnly.AllowExternalRead = true
+
+	got, err := extReadOnly.Execute(ctx, "read_file", map[string]interface{}{"path": outsideFile}, true)
+	if err != nil || got != "external content" {
+		t.Fatalf("AllowExternalRead read_file = (%q, %v), want %q", got, err, "external content")
+	}
+	dirOut, err := extReadOnly.Execute(ctx, "list_dir", map[string]interface{}{"path": outsideDir}, true)
+	if err != nil || !strings.Contains(dirOut, "note.txt") {
+		t.Fatalf("AllowExternalRead list_dir = (%q, %v), want note.txt", dirOut, err)
+	}
+	grepOut, err := extReadOnly.Execute(ctx, "grep_search", map[string]interface{}{"pattern": "external", "path": outsideDir}, true)
+	if err != nil || !strings.Contains(grepOut, "external content") {
+		t.Fatalf("AllowExternalRead grep_search = (%q, %v)", grepOut, err)
+	}
+	findOut, err := extReadOnly.Execute(ctx, "find_files", map[string]interface{}{"pattern": "*.txt", "path": outsideDir}, true)
+	if err != nil || !strings.Contains(findOut, "note.txt") {
+		t.Fatalf("AllowExternalRead find_files = (%q, %v)", findOut, err)
+	}
+	if _, err := extReadOnly.Execute(ctx, "write_file", map[string]interface{}{"path": filepath.Join(outsideDir, "blocked.txt"), "content": "x"}, false); err == nil {
+		t.Fatalf("expected AllowExternalRead alone to still reject outside write_file")
+	}
+
+	// AllowExternalWrite permits outside writes only when readOnly is false.
+	extWrite := NewExecutor(workDir)
+	extWrite.AllowExternalRead = true
+	extWrite.AllowExternalWrite = true
+
+	targetOut := filepath.Join(outsideDir, "created.csv")
+	if _, err := extWrite.Execute(ctx, "write_file", map[string]interface{}{"path": targetOut, "content": "a,b\n1,2\n"}, true); err == nil {
+		t.Fatalf("expected readOnly=true to still block write_file")
+	}
+	if _, err := extWrite.Execute(ctx, "write_file", map[string]interface{}{"path": targetOut, "content": "a,b\n1,2\n"}, false); err != nil {
+		t.Fatalf("expected AllowExternalWrite with readOnly=false to write %s: %v", targetOut, err)
+	}
+	if _, err := extWrite.Execute(ctx, "edit_file", map[string]interface{}{"path": targetOut, "old_string": "1,2", "new_string": "3,4"}, false); err != nil {
+		t.Fatalf("expected AllowExternalWrite with readOnly=false to edit %s: %v", targetOut, err)
+	}
+	edited, err := os.ReadFile(targetOut)
+	if err != nil || !strings.Contains(string(edited), "3,4") {
+		t.Fatalf("unexpected edited outside file content: %q, err=%v", string(edited), err)
+	}
+}

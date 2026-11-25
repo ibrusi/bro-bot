@@ -27,6 +27,22 @@ func TestClassifyMessage(t *testing.T) {
 		{"проверка связи", "Супер, я просто проверял связь, извини, что побеспокоил)", IntentChat},
 		{"пустое", "   ", IntentChat},
 
+		// Разговор: сохранение данных, загрузка файлов и создание отдельных скриптов
+		{"создать скрипт в scripts", "создай скрипт в папке scripts в проекте bro-bot", IntentChat},
+		{"подгрузить данные по пути", "подгрузи данные в /home/deploy/pair-edge-datasets/moex_cache_1m/", IntentChat},
+		{"скачать и сохранить csv", "скачай свечи по SBER и сохрани в csv на диск", IntentChat},
+		{"написать python скрипт", "напиши python скрипт load_candles.py для выгрузки котировок", IntentChat},
+		{"download data english", "download candles to /home/deploy/pair-edge-datasets/moex_cache_1m/", IntentChat},
+		{"write script english", "write a python script to fetch moex candles", IntentChat},
+		{"save script with exclusion word in path", "создай скрипт ~/scripts/deploy_test_helper.sh", IntentChat},
+		{"save csv in tmp test path", "сохрани данные в /tmp/test_cache/out.csv", IntentChat},
+
+		// Работа: инженерные задачи со словом файл/скрипт НЕ попадают в быструю запись
+		{"починить скрипт", "почини скрипт scripts/load.py", IntentWork},
+		{"рефакторинг скрипта", "отрефактори скрипт load_data.py", IntentWork},
+		{"удалить скрипт", "удали скрипт old.sh", IntentWork},
+		{"тесты для скрипта", "напиши тесты для scripts/load.py", IntentWork},
+
 		// Работа: повелительная форма в начале
 		{"сделай рефакторинг", "сделай рефакторинг handlers", IntentWork},
 		{"исправь тест", "исправь падающий тест в models", IntentWork},
@@ -76,6 +92,8 @@ func TestClassifyMessageReason(t *testing.T) {
 		{"объясни поток событий", IntentReasonReadOnlyVerb},
 		{"тут всё сломалось, почини", IntentReasonWorkMention},
 		{"интересная штука получилась", IntentReasonDefaultChat},
+		{"подгрузи данные в /home/deploy/pair-edge-datasets/moex_cache_1m/", IntentReasonChatSave},
+		{"создай скрипт в папке scripts в проекте bro-bot", IntentReasonChatSave},
 	}
 
 	for _, tt := range tests {
@@ -83,6 +101,28 @@ func TestClassifyMessageReason(t *testing.T) {
 		if reason != tt.wantReason {
 			t.Errorf("ClassifyMessageReason(%q) вернул правило %q, ожидали %q", tt.in, reason, tt.wantReason)
 		}
+	}
+}
+
+func TestNormalizeAndStateWriteModes(t *testing.T) {
+	var ps ProjectState
+	if got := ps.GetChatWriteMode(); got != WriteModeAsk {
+		t.Fatalf("default ChatWriteMode = %q, want %q", got, WriteModeAsk)
+	}
+	if got := ps.GetPlanWriteMode(); got != WriteModeDeny {
+		t.Fatalf("default PlanWriteMode = %q, want %q", got, WriteModeDeny)
+	}
+
+	ps.SetChatWriteMode("allow")
+	ps.SetPlanWriteMode("ask")
+	if ps.GetChatWriteMode() != WriteModeAllow || ps.GetPlanWriteMode() != WriteModeAsk {
+		t.Fatalf("unexpected modes: chat=%q plan=%q", ps.GetChatWriteMode(), ps.GetPlanWriteMode())
+	}
+
+	ps.SetChatWriteMode("off")
+	ps.SetPlanWriteMode("approve")
+	if ps.GetChatWriteMode() != WriteModeDeny || ps.GetPlanWriteMode() != WriteModeAllow {
+		t.Fatalf("unexpected alias modes: chat=%q plan=%q", ps.GetChatWriteMode(), ps.GetPlanWriteMode())
 	}
 }
 

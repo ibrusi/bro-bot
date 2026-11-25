@@ -431,3 +431,130 @@ while True:
 		t.Errorf("expected recovery prompt to include actual blocked command, got:\n%s", pData)
 	}
 }
+
+type fakeGrokPermHandler struct {
+	decision ports.PermissionDecision
+	reason   string
+	calls    []ports.PermissionRequest
+}
+
+func (f *fakeGrokPermHandler) DecidePermission(_ context.Context, req ports.PermissionRequest) (ports.PermissionDecision, string) {
+	f.calls = append(f.calls, req)
+	return f.decision, f.reason
+}
+
+func TestGrokACPAdapterPermissionHandler(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XAI_API_KEY", "test-key")
+	dir := t.TempDir()
+	permFile := filepath.Join(dir, "perm")
+	promptsFile := filepath.Join(dir, "prompts")
+	t.Setenv("PERM_FILE", permFile)
+	t.Setenv("PROMPTS_FILE", promptsFile)
+
+	script := filepath.Join(dir, "grok-perm")
+	scriptBody := `#!/usr/bin/env python3
+import json, os, sys
+perm_file = os.environ["PERM_FILE"]
+prompts_file = os.environ["PROMPTS_FILE"]
+perms = []
+prompts = []
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+turn = 0
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    msg = json.loads(line)
+    m, mid, p = msg.get("method"), msg.get("id"), msg.get("params") or {}
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1, "authMethods": [{"id": "cached_token"}], "agentCapabilities": {"loadSession": True, "sessionCapabilities": {"resume": {}}}}})
+    elif m == "authenticate":
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+    elif m == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "g-perm"}})
+    elif m == "session/prompt":
+        turn += 1
+        txt = "".join(c.get("text", "") for c in (p.get("prompt") or []))
+        prompts.append(txt)
+        if turn == 1:
+            send({"jsonrpc": "2.0", "id": 10, "method": "session/request_permission", "params": {
+                "toolCall": {"name": "write_file", "kind": "edit", "title": "/tmp/moex/candles.csv", "rawInput": {"path": "/tmp/moex/candles.csv"}},
+                "options": [{"optionId": "always_id", "kind": "allow_always"}, {"optionId": "once_id", "kind": "allow_once"}, {"optionId": "deny_id", "kind": "reject_once"}]
+            }})
+            r1 = json.loads(sys.stdin.readline())
+            perms.append(((r1.get("result") or {}).get("outcome") or {}).get("optionId", ""))
+
+            send({"jsonrpc": "2.0", "id": 11, "method": "session/request_permission", "params": {
+                "toolCall": {"name": "run_command", "kind": "execute", "title": "sudo reboot"},
+                "options": [{"optionId": "once_id", "kind": "allow_once"}, {"optionId": "deny_id", "kind": "reject_once"}]
+            }})
+            r2 = json.loads(sys.stdin.readline())
+            perms.append(((r2.get("result") or {}).get("outcome") or {}).get("optionId", ""))
+            send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+        else:
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "g-perm", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Recovered cleanly."}}}})
+            send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+    elif m == "session/close":
+        open(perm_file, "w").write("\n".join(perms))
+        open(prompts_file, "w").write("\n---\n".join(prompts))
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        break
+    elif mid is not None:
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := grokBin
+	grokBin = script
+	t.Cleanup(func() { grokBin = prev })
+
+	h := &fakeGrokPermHandler{decision: ports.PermissionAllowAlways}
+	// First call returns allow_always (ACP must map to once_id); override to deny for second?
+	// Use dynamic handler instead:
+	_ = h
+	callNum := 0
+	dynHandler := &fakeGrokDynHandler{fn: func(_ context.Context, req ports.PermissionRequest) (ports.PermissionDecision, string) {
+		callNum++
+		if callNum == 1 {
+			return ports.PermissionAllowAlways, ""
+		}
+		return ports.PermissionDeny, "sudo blocked"
+	}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	proc, err := NewAdapter().ExecuteTask(ctx, ports.ExecuteArgs{
+		Prompt:            "Save data",
+		WorkDir:           dir,
+		ReadOnly:          true,
+		PermissionHandler: dynHandler,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proc.Close()
+	out, _ := io.ReadAll(proc.Stdout())
+	if waitErr := proc.Wait(); waitErr != nil {
+		t.Fatalf("Wait: %v\n%s", waitErr, out)
+	}
+	permData, _ := os.ReadFile(permFile)
+	if got := strings.TrimSpace(string(permData)); got != "once_id\ndeny_id" {
+		t.Fatalf("permissions = %q, want once_id\\ndeny_id", got)
+	}
+	pData, _ := os.ReadFile(promptsFile)
+	if !strings.Contains(string(pData), "user decision") || !strings.Contains(string(pData), "sudo blocked") {
+		t.Fatalf("expected controlled recovery prompt with denial reason, got:\n%s", pData)
+	}
+}
+
+type fakeGrokDynHandler struct {
+	fn func(context.Context, ports.PermissionRequest) (ports.PermissionDecision, string)
+}
+
+func (f *fakeGrokDynHandler) DecidePermission(ctx context.Context, req ports.PermissionRequest) (ports.PermissionDecision, string) {
+	return f.fn(ctx, req)
+}
