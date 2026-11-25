@@ -144,19 +144,21 @@ func (a *Adapter) ExecuteTask(ctx context.Context, args ports.ExecuteArgs) (port
 	proc := &process{cmd: cmd, stdout: eventR, stdin: stdin, runDone: make(chan struct{}), readDone: make(chan struct{})}
 	go drainStderr(stderr)
 	go proc.run(ctx, stdin, stdout, eventW, toolSrv, turnConfig{
-		WorkDir:         workDir,
-		Prompt:          args.Prompt,
-		SystemPrompt:    args.SystemPrompt,
-		BotInstructions: args.BotInstructions,
-		ChannelToken:    args.ChannelToken,
-		ConversationID:  args.ConversationID,
-		Model:           model,
-		Effort:          effortID,
-		HasEffort:       hasEffort,
-		ReadOnly:        args.ReadOnly,
-		Yolo:            yolo,
-		Timeout:         args.Timeout,
-		MCPServer:       mcpServer,
+		WorkDir:           workDir,
+		Prompt:            args.Prompt,
+		SystemPrompt:      args.SystemPrompt,
+		BotInstructions:   args.BotInstructions,
+		ChannelToken:      args.ChannelToken,
+		ConversationID:    args.ConversationID,
+		Model:             model,
+		Effort:            effortID,
+		HasEffort:         hasEffort,
+		ReadOnly:          args.ReadOnly,
+		Yolo:              yolo,
+		ScriptsDir:        args.ScriptsDir,
+		PermissionHandler: args.PermissionHandler,
+		Timeout:           args.Timeout,
+		MCPServer:         mcpServer,
 	})
 	return proc, nil
 }
@@ -173,19 +175,21 @@ func drainStderr(r io.Reader) {
 }
 
 type turnConfig struct {
-	WorkDir         string
-	Prompt          string
-	SystemPrompt    string
-	BotInstructions string
-	ChannelToken    string
-	ConversationID  string
-	Model           string
-	Effort          string
-	HasEffort       bool
-	ReadOnly        bool
-	Yolo            bool
-	Timeout         time.Duration
-	MCPServer       acp.MCPServer
+	WorkDir           string
+	Prompt            string
+	SystemPrompt      string
+	BotInstructions   string
+	ChannelToken      string
+	ConversationID    string
+	Model             string
+	Effort            string
+	HasEffort         bool
+	ReadOnly          bool
+	Yolo              bool
+	ScriptsDir        string
+	PermissionHandler ports.PermissionHandler
+	Timeout           time.Duration
+	MCPServer         acp.MCPServer
 }
 
 func resolveModel(name string) string {
@@ -291,14 +295,13 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 		var params acp.PermissionParams
 		_ = json.Unmarshal(msg.Params, &params)
 		params.ToolCall = toolsReg.Enrich(params.ToolCall)
-		allowed := !cfg.ReadOnly || acp.IsAllowedInReadOnly(params.ToolCall)
-		optionID, ok := acp.ChoosePermission(cfg.ReadOnly, params.ToolCall, params.Options)
+		optionID, ok, allowed, denyReason := acp.ResolvePermission(ctx, cfg.ReadOnly, cfg.ScriptsDir, cfg.WorkDir, cfg.PermissionHandler, params.ToolCall, params.Options)
 		if !ok || !allowed {
-			log.Printf("grok-acp: permission readOnly=%v name=%q toolName=%q kind=%q title=%q -> ok=%v opt=%q",
-				cfg.ReadOnly, params.ToolCall.Name, params.ToolCall.ToolName, params.ToolCall.Kind, params.ToolCall.Title, ok, optionID)
+			log.Printf("grok-acp: permission readOnly=%v name=%q toolName=%q kind=%q title=%q reason=%q -> ok=%v opt=%q",
+				cfg.ReadOnly, params.ToolCall.Name, params.ToolCall.ToolName, params.ToolCall.Kind, params.ToolCall.Title, denyReason, ok, optionID)
 			if cfg.ReadOnly && !allowed {
 				permMu.Lock()
-				deniedPerms = append(deniedPerms, acp.NewDeniedPermission(params.ToolCall))
+				deniedPerms = append(deniedPerms, acp.NewDeniedPermissionWithReason(params.ToolCall, denyReason))
 				permMu.Unlock()
 			}
 		}
@@ -328,7 +331,11 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 				status = "ERROR"
 				if errText == "" {
 					if len(denied) > 0 {
-						errText = "read-only mode blocked " + acp.FormatDeniedPermissions(denied)
+						if cfg.PermissionHandler != nil {
+							errText = "permission denied: " + acp.FormatDeniedPermissions(denied)
+						} else {
+							errText = "read-only mode blocked " + acp.FormatDeniedPermissions(denied)
+						}
 					} else {
 						errText = "grok returned an empty answer"
 					}
@@ -459,7 +466,7 @@ func (p *process) run(ctx context.Context, stdin io.WriteCloser, stdout io.Reade
 		}
 		deniedSummary := acp.FormatDeniedPermissions(denied)
 		log.Printf("grok-acp: read-only permission denied (%s) ended turn with empty answer; sending recovery prompt", deniedSummary)
-		curPrompt = acp.ReadOnlyRecoveryPrompt(deniedSummary)
+		curPrompt = acp.ControlledDeniedRecoveryPrompt(deniedSummary, cfg.PermissionHandler != nil)
 	}
 	if promptCancel != nil {
 		promptCancel()

@@ -387,21 +387,36 @@ func normalizeQuestionOptions(raw []string) []string {
 
 // buildBotToolInstructions формирует секцию системного промпта с описанием доступных
 // инструментов бота. Передаётся через ExecuteArgs.BotInstructions на каждом шаге.
-func buildBotToolInstructions(lang string, isPlanning, isChat bool) string {
+func buildBotToolInstructions(lang string, isPlanning, isChat bool, writeMode string) string {
 	var bldr strings.Builder
 	bldr.WriteString(i18n.T(lang, "bot.tools_prompt_header"))
 	bldr.WriteString("\n")
 	bldr.WriteString(i18n.T(lang, "bot.tools_prompt_common"))
+	normalizedWrite := domain.NormalizeWriteMode(writeMode, domain.WriteModeDeny)
 	if isChat {
 		bldr.WriteString("\n\n")
-		bldr.WriteString(i18n.T(lang, "bot.tools_prompt_chat"))
+		switch normalizedWrite {
+		case domain.WriteModeAllow:
+			bldr.WriteString(i18n.T(lang, "bot.tools_prompt_chat_allow"))
+		case domain.WriteModeAsk:
+			bldr.WriteString(i18n.T(lang, "bot.tools_prompt_chat_ask"))
+		default:
+			bldr.WriteString(i18n.T(lang, "bot.tools_prompt_chat"))
+		}
 		return bldr.String()
 	}
 	bldr.WriteString("\n")
 	bldr.WriteString(i18n.T(lang, "bot.tools_prompt_task_extra"))
 	bldr.WriteString("\n")
 	if isPlanning {
-		bldr.WriteString(i18n.T(lang, "bot.tools_prompt_planning"))
+		switch normalizedWrite {
+		case domain.WriteModeAllow:
+			bldr.WriteString(i18n.T(lang, "bot.tools_prompt_planning_allow"))
+		case domain.WriteModeAsk:
+			bldr.WriteString(i18n.T(lang, "bot.tools_prompt_planning_ask"))
+		default:
+			bldr.WriteString(i18n.T(lang, "bot.tools_prompt_planning"))
+		}
 	} else {
 		bldr.WriteString(i18n.T(lang, "bot.tools_prompt_execution"))
 	}

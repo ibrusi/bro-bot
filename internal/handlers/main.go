@@ -122,6 +122,14 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 		config.ProjectState.SetInteractionMode(savedInteraction)
 		log.Printf("restored the interaction mode from SQLite: %s", savedInteraction)
 	}
+	if savedChatWrite, err := sqliteStorage.GetSetting(ctx, "chat_write_mode"); err == nil && savedChatWrite != "" {
+		config.ProjectState.SetChatWriteMode(savedChatWrite)
+		log.Printf("restored the chat write mode from SQLite: %s", savedChatWrite)
+	}
+	if savedPlanWrite, err := sqliteStorage.GetSetting(ctx, "plan_write_mode"); err == nil && savedPlanWrite != "" {
+		config.ProjectState.SetPlanWriteMode(savedPlanWrite)
+		log.Printf("restored the plan write mode from SQLite: %s", savedPlanWrite)
+	}
 
 	if savedLang, err := sqliteStorage.GetSetting(ctx, "bot_language"); err == nil && savedLang != "" {
 		config.ProjectState.SetLanguage(savedLang)
@@ -166,6 +174,11 @@ func Start(t ports.Transport, reg *agents.Registry, cfg config.Config) error {
 	onCmd("chat", handleChat)
 	onCmd("chatmode", handleChatMode)
 	t.OnCallback("chat_mode_toggle", onChatModeToggle)
+	t.OnCallback("chat_write_sel", onChatWriteSel)
+	t.OnCallback("plan_write_sel", onPlanWriteSel)
+	t.OnCallback("perm_once", onPermOnce)
+	t.OnCallback("perm_turn", onPermTurn)
+	t.OnCallback("perm_deny", onPermDeny)
 	onCmd("language", handleLanguage)
 	t.OnCallback("lang_sel", onLanguageSel)
 	t.OnCallback("chat_answer", onChatAnswer)

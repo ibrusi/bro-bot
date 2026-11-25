@@ -31,11 +31,16 @@ func handlePlan(s ports.Session) error {
 		if mode {
 			statusStr = i18n.T(lang, "plan.mode_on_label")
 		}
+		planWriteMode := config.ProjectState.GetPlanWriteMode()
 
 		menu := &ports.Keyboard{Rows: [][]ports.Button{
 			{{Text: i18n.T(lang, "btn.toggle_plan_mode"), Action: "plan_mode_toggle"}},
+			buildWriteModeButtonsRow(writePermScopePlan, planWriteMode, lang),
 		}}
-		return s.Send(i18n.Tf(lang, "plan.overview", statusStr), ports.RichWith(menu))
+		return s.Send(i18n.Tf(lang, "plan.overview", statusStr, formatWriteModeLabel(planWriteMode, lang)), ports.RichWith(menu))
+	}
+	if isWriteSubcommandArgs(args) {
+		return applyWriteModeCommand(s, writePermScopePlan)
 	}
 	text := commandPayload(s)
 	return handleCreatePlanTask(s, text)

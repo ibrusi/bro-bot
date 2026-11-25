@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"bro-bot/internal/config"
 	"bro-bot/internal/effort"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/tools"
 
 	"github.com/google/generative-ai-go/genai"
 )
@@ -329,5 +331,59 @@ func TestAgyAPIAdapter_ProcessExecutionFallback(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "GEMINI_API_KEY") {
 		t.Errorf("expected error to mention GEMINI_API_KEY, got: %v", err)
+	}
+}
+
+type fakeAgyPermHandler struct {
+	decision ports.PermissionDecision
+	reason   string
+	calls    []ports.PermissionRequest
+}
+
+func (f *fakeAgyPermHandler) DecidePermission(_ context.Context, req ports.PermissionRequest) (ports.PermissionDecision, string) {
+	f.calls = append(f.calls, req)
+	return f.decision, f.reason
+}
+
+func TestAgyAPIControlledPermissionGate(t *testing.T) {
+	base := t.TempDir()
+	workDir := filepath.Join(base, "repo")
+	outsideDir := filepath.Join(base, "outside")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if !tools.IsControlledSession(false, "РЕЖИМ ДИАЛОГА") || !tools.IsControlledSession(false, "CHAT MODE") {
+		t.Fatal("expected controlled session detection for chat preambles")
+	}
+
+	ro, err := tools.AuthorizeAPIToolCall(context.Background(), nil, "write_file", map[string]any{"path": "a.txt", "content": "x"}, workDir, true)
+	if !ro || !errors.Is(err, tools.ErrReadOnly) {
+		t.Fatalf("expected ErrReadOnly without PermissionHandler, got ro=%v err=%v", ro, err)
+	}
+
+	denyHandler := &fakeAgyPermHandler{decision: ports.PermissionDeny, reason: "blocked by policy"}
+	ro, err = tools.AuthorizeAPIToolCall(context.Background(), denyHandler, "write_file", map[string]any{"path": filepath.Join(outsideDir, "a.csv"), "content": "1"}, workDir, true)
+	if !ro || err == nil || !strings.Contains(err.Error(), "blocked by policy") {
+		t.Fatalf("expected permission denied error, got ro=%v err=%v", ro, err)
+	}
+
+	allowHandler := &fakeAgyPermHandler{decision: ports.PermissionAllowOnce}
+	target := filepath.Join(outsideDir, "a.csv")
+	ro, err = tools.AuthorizeAPIToolCall(context.Background(), allowHandler, "write_file", map[string]any{"path": target, "content": "a,b\n"}, workDir, true)
+	if ro || err != nil {
+		t.Fatalf("expected allow once to clear readOnly, got ro=%v err=%v", ro, err)
+	}
+	exec := tools.NewExecutor(workDir)
+	exec.AllowExternalRead = true
+	exec.AllowExternalWrite = true
+	if _, execErr := exec.Execute(context.Background(), "write_file", map[string]any{"path": target, "content": "a,b\n"}, ro); execErr != nil {
+		t.Fatalf("expected approved external write to succeed: %v", execErr)
+	}
+	if _, statErr := os.Stat(target); statErr != nil {
+		t.Fatalf("expected file written at %s: %v", target, statErr)
 	}
 }

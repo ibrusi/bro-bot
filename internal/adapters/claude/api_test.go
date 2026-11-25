@@ -470,3 +470,212 @@ func TestClaudeAPI_BotToolEndTurnAndInstructions(t *testing.T) {
 		t.Errorf("expected ask_user bot tool call, got %v", handler.calls)
 	}
 }
+
+type fakeClaudePermHandler struct {
+	fn func(context.Context, ports.PermissionRequest) (ports.PermissionDecision, string)
+}
+
+func (f *fakeClaudePermHandler) DecidePermission(ctx context.Context, req ports.PermissionRequest) (ports.PermissionDecision, string) {
+	return f.fn(ctx, req)
+}
+
+func TestClaudeAPIAdapterControlledPermissions(t *testing.T) {
+	base := t.TempDir()
+	workDir := filepath.Join(base, "repo")
+	outsideDir := filepath.Join(base, "outside")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	extReadFile := filepath.Join(outsideDir, "read_me.txt")
+	if err := os.WriteFile(extReadFile, []byte("outside-ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	allowedWritePath := filepath.Join(outsideDir, "saved.csv")
+	deniedWritePath := filepath.Join(outsideDir, "blocked.csv")
+
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	// Subtest 1: strict deny (PermissionHandler == nil) hides mutating tools and permits external read_file.
+	t.Run("strict deny omits mutating tools and allows external read", func(t *testing.T) {
+		var offeredTools []string
+		var turn int
+		var results []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/models" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "claude-sonnet-5"}}})
+				return
+			}
+			var body struct {
+				Messages []map[string]any `json:"messages"`
+				Tools    []map[string]any `json:"tools"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			turn++
+			if turn == 1 {
+				for _, td := range body.Tools {
+					if name, _ := td["name"].(string); name != "" {
+						offeredTools = append(offeredTools, name)
+					}
+				}
+			}
+			for _, m := range body.Messages {
+				if content, ok := m["content"].([]any); ok {
+					for _, b := range content {
+						if blk, ok := b.(map[string]any); ok && blk["type"] == "tool_result" {
+							if s, _ := blk["content"].(string); s != "" {
+								results = append(results, s)
+							}
+						}
+					}
+				}
+			}
+			w.Header().Set("content-type", "text/event-stream")
+			if turn == 1 {
+				inp, _ := json.Marshal(map[string]any{"path": extReadFile})
+				delta, _ := json.Marshal(map[string]any{"type": "input_json_delta", "partial_json": string(inp)})
+				_, _ = w.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_1\",\"name\":\"read_file\"}}\n\n"))
+				_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":" + string(delta) + "}\n\n"))
+				_, _ = w.Write([]byte("data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
+				_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n"))
+				return
+			}
+			_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"))
+		}))
+		defer srv.Close()
+
+		adapter := &ClaudeAPIAdapter{HTTPClient: srv.Client(), BaseURL: srv.URL}
+		proc, err := adapter.ExecuteTask(context.Background(), ports.ExecuteArgs{
+			Prompt:    "read external file",
+			WorkDir:   workDir,
+			ModelName: "claude-sonnet-5",
+			ReadOnly:  true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer proc.Close()
+		_, _ = io.ReadAll(proc.Stdout())
+		if err := proc.Wait(); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range offeredTools {
+			if n == "write_file" || n == "edit_file" || n == "run_command" {
+				t.Errorf("strict deny mode must NOT offer mutating tool %q", n)
+			}
+		}
+		if len(results) == 0 || results[0] != "outside-ok" {
+			t.Errorf("expected outside read content, got %v", results)
+		}
+	})
+
+	// Subtest 2: PermissionHandler != nil exposes mutating tools and gates writes.
+	t.Run("interactive permission handler gates external writes", func(t *testing.T) {
+		var offeredTools []string
+		var turn int
+		var results []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/models" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "claude-sonnet-5"}}})
+				return
+			}
+			var body struct {
+				Messages []map[string]any `json:"messages"`
+				Tools    []map[string]any `json:"tools"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			turn++
+			if turn == 1 {
+				for _, td := range body.Tools {
+					if name, _ := td["name"].(string); name != "" {
+						offeredTools = append(offeredTools, name)
+					}
+				}
+			}
+			for _, m := range body.Messages {
+				if content, ok := m["content"].([]any); ok {
+					for _, b := range content {
+						if blk, ok := b.(map[string]any); ok && blk["type"] == "tool_result" {
+							if s, _ := blk["content"].(string); s != "" {
+								results = append(results, s)
+							}
+						}
+					}
+				}
+			}
+			w.Header().Set("content-type", "text/event-stream")
+			switch turn {
+			case 1:
+				inp, _ := json.Marshal(map[string]any{"path": allowedWritePath, "content": "ok\n"})
+				delta, _ := json.Marshal(map[string]any{"type": "input_json_delta", "partial_json": string(inp)})
+				_, _ = w.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_allow\",\"name\":\"write_file\"}}\n\n"))
+				_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":" + string(delta) + "}\n\n"))
+				_, _ = w.Write([]byte("data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
+				_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n"))
+			case 2:
+				inp, _ := json.Marshal(map[string]any{"path": deniedWritePath, "content": "nope\n"})
+				delta, _ := json.Marshal(map[string]any{"type": "input_json_delta", "partial_json": string(inp)})
+				_, _ = w.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_deny\",\"name\":\"write_file\"}}\n\n"))
+				_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":" + string(delta) + "}\n\n"))
+				_, _ = w.Write([]byte("data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
+				_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n"))
+			default:
+				_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n"))
+				_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"))
+			}
+		}))
+		defer srv.Close()
+
+		h := &fakeClaudePermHandler{fn: func(_ context.Context, req ports.PermissionRequest) (ports.PermissionDecision, string) {
+			if len(req.Paths) > 0 && req.Paths[0] == allowedWritePath {
+				return ports.PermissionAllowOnce, ""
+			}
+			return ports.PermissionDeny, "rejected by user"
+		}}
+
+		adapter := &ClaudeAPIAdapter{HTTPClient: srv.Client(), BaseURL: srv.URL}
+		proc, err := adapter.ExecuteTask(context.Background(), ports.ExecuteArgs{
+			Prompt:            "save two files",
+			WorkDir:           workDir,
+			ModelName:         "claude-sonnet-5",
+			ReadOnly:          true,
+			PermissionHandler: h,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer proc.Close()
+		_, _ = io.ReadAll(proc.Stdout())
+		if err := proc.Wait(); err != nil {
+			t.Fatal(err)
+		}
+
+		sawWrite := false
+		for _, n := range offeredTools {
+			if n == "write_file" {
+				sawWrite = true
+			}
+		}
+		if !sawWrite {
+			t.Fatalf("expected write_file declared when PermissionHandler != nil, got %v", offeredTools)
+		}
+		if data, readErr := os.ReadFile(allowedWritePath); readErr != nil || string(data) != "ok\n" {
+			t.Fatalf("expected approved external write at %s, got data=%q err=%v", allowedWritePath, string(data), readErr)
+		}
+		if _, statErr := os.Stat(deniedWritePath); !os.IsNotExist(statErr) {
+			t.Fatalf("denied write %s must not exist", deniedWritePath)
+		}
+		foundDenyMsg := false
+		for _, res := range results {
+			if strings.Contains(res, "rejected by user") {
+				foundDenyMsg = true
+			}
+		}
+		if !foundDenyMsg {
+			t.Errorf("expected denied tool result containing rejection reason, got %v", results)
+		}
+	})
+}

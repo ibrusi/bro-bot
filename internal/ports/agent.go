@@ -58,6 +58,31 @@ type BotToolHandler interface {
 	CallBotTool(ctx context.Context, name string, args map[string]interface{}) BotToolResult
 }
 
+// PermissionDecision — исход проверки права на выполнение инструмента агента.
+type PermissionDecision int
+
+const (
+	PermissionDeny PermissionDecision = iota
+	PermissionAllowOnce
+	PermissionAllowAlways // одобрение на текущий ход/шаг вне SCRIPTS_DIR (в ACP всё равно уходит allow_once)
+)
+
+// PermissionRequest описывает вызов инструмента, требующий проверки политики доступа.
+type PermissionRequest struct {
+	ToolName string
+	Kind     string
+	Title    string
+	Command  string
+	Paths    []string
+	WorkDir  string
+	RawInput map[string]any
+}
+
+// PermissionHandler проверяет допустимость вызова инструмента (в /chat и /plan при режимах ask/allow).
+type PermissionHandler interface {
+	DecidePermission(ctx context.Context, req PermissionRequest) (PermissionDecision, string)
+}
+
 // ExecuteArgs содержит аргументы для запуска агента
 type ExecuteArgs struct {
 	ConversationID string
@@ -75,6 +100,13 @@ type ExecuteArgs struct {
 	BotInstructions string
 	// ReadOnly указывает, что агенту разрешены только операции чтения файлов (диалоговый режим).
 	ReadOnly bool
+	// ScriptsDir — каталог пользовательских скриптов (/script, SCRIPTS_DIR).
+	// Запуск скриптов из него не проходит тихий read-only и всегда требует подтверждения;
+	// запись в него требует подтверждения в режиме ask и разрешена сразу в allow.
+	ScriptsDir string
+	// PermissionHandler задаёт динамический контроль прав на вызовы инструментов.
+	// Когда nil — ReadOnly=true означает строгий read-only (режим deny).
+	PermissionHandler PermissionHandler
 	// Effort — уровень усилия рассуждений (команда /effort). Нулевое значение
 	// effort.Auto означает, что уровень агенту не передаётся.
 	Effort effort.Level

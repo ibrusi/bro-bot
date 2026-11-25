@@ -35,11 +35,64 @@ type ProjectState struct {
 	// InteractionMode задаёт, что делать с обычным сообщением без активной задачи:
 	// "chat" — отвечать в диалоге, "task" — сразу создавать задачу.
 	InteractionMode string
+	// ChatWriteMode управляет правами записи в /chat ("deny", "ask", "allow"; по умолчанию "ask").
+	ChatWriteMode string
+	// PlanWriteMode управляет правами записи на этапе /plan ("deny", "ask", "allow"; по умолчанию "deny").
+	PlanWriteMode string
 	// Effort — уровень усилия рассуждений агента, общий для всех агентов.
 	Effort effort.Level
 	// Language — зеркало выбранного языка для отладки и снимков состояния.
 	// Источник истины — i18n.Active(): см. GetLanguage/SetLanguage.
 	Language string
+}
+
+// Политики записи на диск для режимов диалога (/chat) и планирования (/plan).
+const (
+	WriteModeDeny  = "deny"  // строгий read-only (чтение, аналитика, systemctl status)
+	WriteModeAsk   = "ask"   // подтверждение кнопкой + авто-запись в CHAT_WRITE_PATHS (кроме SCRIPTS_DIR)
+	WriteModeAllow = "allow" // запись разрешена сразу (включая SCRIPTS_DIR); запуск скриптов из SCRIPTS_DIR — по кнопке
+)
+
+// NormalizeWriteMode нормализует ввод (включая синонимы on/off/ro/approve/auto) к каноническому значению.
+func NormalizeWriteMode(raw, fallback string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case WriteModeDeny, "off", "ro", "readonly", "disable", "false", "0", "запретить", "выкл", "нет":
+		return WriteModeDeny
+	case WriteModeAsk, "confirm", "спрашивать", "подтверждать":
+		return WriteModeAsk
+	case WriteModeAllow, "approve", "auto", "on", "enable", "true", "1", "разрешить", "вкл", "да":
+		return WriteModeAllow
+	default:
+		return fallback
+	}
+}
+
+// GetChatWriteMode возвращает текущую политику записи в режиме диалога (/chat, по умолчанию "ask").
+func (ps *ProjectState) GetChatWriteMode() string {
+	ps.RLock()
+	defer ps.RUnlock()
+	return NormalizeWriteMode(ps.ChatWriteMode, WriteModeAsk)
+}
+
+// SetChatWriteMode обновляет политику записи в режиме диалога (/chat).
+func (ps *ProjectState) SetChatWriteMode(mode string) {
+	ps.Lock()
+	defer ps.Unlock()
+	ps.ChatWriteMode = NormalizeWriteMode(mode, WriteModeAsk)
+}
+
+// GetPlanWriteMode возвращает текущую политику записи на этапе планирования (/plan, по умолчанию "deny").
+func (ps *ProjectState) GetPlanWriteMode() string {
+	ps.RLock()
+	defer ps.RUnlock()
+	return NormalizeWriteMode(ps.PlanWriteMode, WriteModeDeny)
+}
+
+// SetPlanWriteMode обновляет политику записи на этапе планирования (/plan).
+func (ps *ProjectState) SetPlanWriteMode(mode string) {
+	ps.Lock()
+	defer ps.Unlock()
+	ps.PlanWriteMode = NormalizeWriteMode(mode, WriteModeDeny)
 }
 
 // GetCurrentAgent возвращает имя активного агента (по умолчанию agy).

@@ -345,10 +345,13 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 		model.SystemInstruction = genai.NewUserContent(genai.Text(systemPrompt))
 	}
 
-	isReadOnly := args.ReadOnly || strings.Contains(args.SystemPrompt, "РЕЖИМ ДИАЛОГА") || strings.Contains(args.SystemPrompt, "CHAT MODE")
-	model.Tools = tools.GeminiToolDeclarationsWithBot(isReadOnly, args.BotTools != nil)
+	controlled := tools.IsControlledSession(args.ReadOnly, args.SystemPrompt)
+	strictReadOnly := controlled && args.PermissionHandler == nil
+	model.Tools = tools.GeminiToolDeclarationsWithBot(strictReadOnly, args.BotTools != nil)
 
 	executor := tools.NewExecutor(args.WorkDir)
+	executor.AllowExternalRead = controlled
+	executor.AllowExternalWrite = controlled && args.PermissionHandler != nil
 
 	// История диалога проигрывается на нашей стороне: Gemini API не хранит сессии.
 	chat := model.StartChat()
@@ -490,10 +493,15 @@ func (p *AgyAPIProcess) streamOnce(ctx context.Context, client *genai.Client, mo
 					shouldEndTurn = true
 				}
 			} else {
-				var execErr error
-				out, execErr = executor.Execute(ctx, fc.Name, fc.Args, isReadOnly)
-				if execErr != nil {
-					out = fmt.Sprintf("Error: %v", execErr)
+				toolReadOnly, permErr := tools.AuthorizeAPIToolCall(ctx, args.PermissionHandler, fc.Name, fc.Args, args.WorkDir, controlled)
+				if permErr != nil {
+					out = fmt.Sprintf("Error: %v", permErr)
+				} else {
+					var execErr error
+					out, execErr = executor.Execute(ctx, fc.Name, fc.Args, toolReadOnly)
+					if execErr != nil {
+						out = fmt.Sprintf("Error: %v", execErr)
+					}
 				}
 			}
 			nextParts = append(nextParts, genai.FunctionResponse{

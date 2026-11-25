@@ -31,6 +31,7 @@ const (
 	IntentReasonWorkMention  = "work_mention"  // повелительный глагол в середине сообщения
 	IntentReasonDefaultChat  = "default_chat"  // ничего не сработало — считаем разговором
 	IntentReasonReadOnlyVerb = "readonly_verb" // «объясни», «покажи» и подобные — это тоже разговор
+	IntentReasonChatSave     = "chat_save"     // прямой запрос на скачивание/сохранение данных или создание скрипта в чате
 )
 
 // fillerPrefixes — вежливые вступления, которые отбрасываются перед разбором повелительной формы.
@@ -126,6 +127,9 @@ func ClassifyMessageReason(text string) (Intent, string) {
 	}
 
 	tokens := intentTokens(normalized)
+	if isChatSaveIntent(text, normalized, tokens) {
+		return IntentChat, IntentReasonChatSave
+	}
 	meaningful := dropFillerPrefix(tokens)
 
 	if len(meaningful) > 0 && hasStem(meaningful[0], workVerbStems) {
@@ -181,6 +185,132 @@ func dropFillerPrefix(tokens []string) []string {
 func hasStem(token string, stems []string) bool {
 	for _, stem := range stems {
 		if strings.HasPrefix(token, stem) {
+			return true
+		}
+	}
+	return false
+}
+
+// codeWorkExclusionStems — признаки инженерной задачи по изменению кодовой базы,
+// которые не должны перехватываться как быстрая запись/сохранение данных в чате.
+var codeWorkExclusionStems = []string{
+	"рефактор", "отрефактор", "зарефактор",
+	"исправ", "почин", "поправ", "пофикс", "баг",
+	"реализ", "внедр", "интегрир", "мигр",
+	"тест", "зависимост", "удал", "убер", "убрат", "переимен", "вынес",
+	"коммит", "ветк", "релиз", "депло",
+	"refactor", "fix", "bug", "implement", "integrate", "migrate", "test", "delete", "remove", "drop", "rename",
+	"commit", "branch", "release", "deploy",
+}
+
+// chatSaveVerbStems — глаголы загрузки/выгрузки/сохранения данных.
+var chatSaveVerbStems = []string{
+	"скача", "загруз", "подгруз", "выгруз", "сохран", "запиш", "дамп", "экспортир",
+	"download", "fetch", "export", "save", "dump",
+}
+
+// chatSaveTargetStems — объекты данных/файлов для сохранения в чате.
+var chatSaveTargetStems = []string{
+	"данн", "файл", "датасет", "кеш", "кэш", "таблиц", "отчет", "диск", "папк", "каталог",
+	"csv", "json", "parquet", "sqlite", "tsv", "xlsx", "свеч", "котировк",
+	"data", "dataset", "cache", "file", "table", "report", "disk", "folder", "dir",
+}
+
+// scriptCreationVerbStems — глаголы создания, применимые к отдельным скриптам.
+var scriptCreationVerbStems = []string{
+	"созда", "напиш", "сгенерир", "нагенерир", "сдела", "сохран", "обнов",
+	"create", "write", "generate", "save", "make", "update",
+}
+
+func isChatSaveIntent(rawText, normalized string, tokens []string) bool {
+	hasExplicitPath, nonPathText := splitPathAndNonPath(rawText)
+	nonPathTokens := intentTokens(normalizeIntentText(nonPathText))
+	for _, tok := range nonPathTokens {
+		if hasStem(tok, codeWorkExclusionStems) {
+			return false
+		}
+	}
+
+	hasSaveVerb := false
+	hasSaveTarget := false
+	hasScriptVerb := false
+	hasScriptTarget := false
+
+	for _, tok := range tokens {
+		if hasStem(tok, chatSaveVerbStems) {
+			hasSaveVerb = true
+		}
+		if hasStem(tok, chatSaveTargetStems) {
+			hasSaveTarget = true
+		}
+		if hasStem(tok, scriptCreationVerbStems) {
+			hasScriptVerb = true
+		}
+		if hasStem(tok, []string{"скрипт", "script"}) {
+			hasScriptTarget = true
+		}
+	}
+	if strings.Contains(normalized, "scripts/") || strings.Contains(normalized, ".py") || strings.Contains(normalized, ".sh") {
+		hasScriptTarget = true
+	}
+
+	if hasSaveVerb && (hasSaveTarget || hasExplicitPath || hasScriptTarget) {
+		return true
+	}
+	if hasScriptVerb && hasScriptTarget {
+		return true
+	}
+	return false
+}
+
+var chatSavePathExts = []string{".py", ".sh", ".csv", ".json", ".parquet", ".db", ".sqlite", ".tsv", ".xlsx", ".txt", ".md", ".yaml", ".yml"}
+
+// containsFilePath проверяет, содержит ли текст путь на диске (отсекая слэш-команды вида /chat или /plan).
+func containsFilePath(rawText string) bool {
+	hasExplicitPath, _ := splitPathAndNonPath(rawText)
+	return hasExplicitPath
+}
+
+func splitPathAndNonPath(rawText string) (hasExplicitPath bool, nonPathText string) {
+	fields := strings.Fields(rawText)
+	kept := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if isFilePathField(field) {
+			hasExplicitPath = true
+			continue
+		}
+		kept = append(kept, field)
+	}
+	return hasExplicitPath, strings.Join(kept, " ")
+}
+
+func isFilePathField(field string) bool {
+	tok := strings.Trim(field, `"'()[]{}<>.,:;!?`+"`")
+	if idx := strings.IndexByte(tok, '='); idx > 0 {
+		if isFilePathToken(tok[idx+1:]) {
+			return true
+		}
+	}
+	return isFilePathToken(tok)
+}
+
+func isFilePathToken(tok string) bool {
+	if len(tok) < 3 || !strings.Contains(tok, "/") {
+		return false
+	}
+	lower := strings.ToLower(tok)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return false
+	}
+	if strings.HasPrefix(tok, "/") || strings.HasPrefix(tok, "~/") || strings.HasPrefix(tok, "./") || strings.HasPrefix(tok, "../") {
+		rest := strings.TrimLeft(tok, "~./")
+		return strings.Contains(rest, "/") || strings.Contains(rest, ".")
+	}
+	if strings.HasSuffix(tok, "/") {
+		return true
+	}
+	for _, ext := range chatSavePathExts {
+		if strings.HasSuffix(lower, ext) {
 			return true
 		}
 	}

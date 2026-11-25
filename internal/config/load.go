@@ -15,43 +15,46 @@ import (
 // Имена переменных окружения собраны здесь, чтобы страж envguard_test и тексты
 // ошибок пользовались одним списком, а не россыпью строковых литералов.
 const (
-	envMessenger       = "MESSENGER"
-	envBotToken        = "TELEGRAM_BOT_TOKEN"
-	envAdminID         = "TELEGRAM_ADMIN_ID"
-	envProjectsRoot    = "PROJECTS_ROOT"
-	envDefaultProject  = "DEFAULT_PROJECT"
-	envDefaultModel    = "DEFAULT_MODEL"
-	envQuestionTimeout = "QUESTION_TIMEOUT"
-	envStepTimeout     = "STEP_TIMEOUT"
-	envChatTimeout     = "CHAT_TIMEOUT"
-	envAutoContinueMax = "AUTO_CONTINUE_MAX"
-	envBotDir          = "BOT_DIR"
-	envServiceName     = "BOT_SERVICE_NAME"
-	envDBPath          = "SQLITE_DB_PATH"
-	envScriptsDir         = "SCRIPTS_DIR"
-	envWhisperServerURL   = "WHISPER_SERVER_URL"
-	envWhisperAPIKey      = "WHISPER_API_KEY"
-	envWhisperModel       = "WHISPER_MODEL"
-	envWhisperLanguage    = "WHISPER_LANGUAGE"
-	envWhisperPrompt      = "WHISPER_PROMPT"
-	envWhisperTemperature = "WHISPER_TEMPERATURE"
-	envWhisperLoudnorm    = "WHISPER_LOUDNORM"
-	envWhisperTimeout     = "WHISPER_TIMEOUT"
-	envDebug              = "DEBUG"
-	envDebugLower         = "debug"
+	envMessenger           = "MESSENGER"
+	envBotToken            = "TELEGRAM_BOT_TOKEN"
+	envAdminID             = "TELEGRAM_ADMIN_ID"
+	envProjectsRoot        = "PROJECTS_ROOT"
+	envDefaultProject      = "DEFAULT_PROJECT"
+	envDefaultModel        = "DEFAULT_MODEL"
+	envQuestionTimeout     = "QUESTION_TIMEOUT"
+	envStepTimeout         = "STEP_TIMEOUT"
+	envChatTimeout         = "CHAT_TIMEOUT"
+	envAutoContinueMax     = "AUTO_CONTINUE_MAX"
+	envBotDir              = "BOT_DIR"
+	envServiceName         = "BOT_SERVICE_NAME"
+	envDBPath              = "SQLITE_DB_PATH"
+	envScriptsDir          = "SCRIPTS_DIR"
+	envChatWritePaths      = "CHAT_WRITE_PATHS"
+	envChatApprovalTimeout = "CHAT_APPROVAL_TIMEOUT"
+	envWhisperServerURL    = "WHISPER_SERVER_URL"
+	envWhisperAPIKey       = "WHISPER_API_KEY"
+	envWhisperModel        = "WHISPER_MODEL"
+	envWhisperLanguage     = "WHISPER_LANGUAGE"
+	envWhisperPrompt       = "WHISPER_PROMPT"
+	envWhisperTemperature  = "WHISPER_TEMPERATURE"
+	envWhisperLoudnorm     = "WHISPER_LOUDNORM"
+	envWhisperTimeout      = "WHISPER_TIMEOUT"
+	envDebug               = "DEBUG"
+	envDebugLower          = "debug"
 )
 
 // Значения по умолчанию для необязательных параметров.
 const (
-	defaultMessenger          = "telegram"
-	DefaultStepTimeout        = time.Hour
-	DefaultChatTimeout        = time.Hour
-	defaultAutoContinueMax    = 2
-	defaultWhisperTimeout     = 60 * time.Second
-	defaultWhisperModel       = "base-q5_1"
-	defaultWhisperLanguage    = "en"
-	defaultWhisperTemperature = 0.0
-	defaultWhisperLoudnorm    = true
+	defaultMessenger           = "telegram"
+	DefaultStepTimeout         = time.Hour
+	DefaultChatTimeout         = time.Hour
+	DefaultChatApprovalTimeout = 5 * time.Minute
+	defaultAutoContinueMax     = 2
+	defaultWhisperTimeout      = 60 * time.Second
+	defaultWhisperModel        = "base-q5_1"
+	defaultWhisperLanguage     = "en"
+	defaultWhisperTemperature  = 0.0
+	defaultWhisperLoudnorm     = true
 )
 
 // Config — снимок настроек окружения, снятый один раз при старте процесса.
@@ -75,7 +78,9 @@ type Config struct {
 	ScriptsDir      string
 	// MCPSocketPath — сокет моста, через который `bot mcp-serve` передаёт боту
 	// вызовы инструментов агента. Не настраивается: вычисляется от BotDir.
-	MCPSocketPath   string
+	MCPSocketPath       string
+	ChatWritePaths      []string
+	ChatApprovalTimeout time.Duration
 
 	// Whisper (распознавание речи)
 	WhisperServerURL   string
@@ -175,6 +180,8 @@ func Load() (Config, error) {
 		cfg.ScriptsDir = filepath.Join(botDir, "scripts")
 	}
 	cfg.MCPSocketPath = BridgeSocketPath(botDir)
+	cfg.ChatWritePaths = parseChatWritePaths(envTrim(envChatWritePaths), cfg.ScriptsDir)
+	cfg.ChatApprovalTimeout = durationOrDefault(envChatApprovalTimeout, DefaultChatApprovalTimeout)
 
 	cfg.WhisperServerURL = envTrim(envWhisperServerURL)
 	cfg.WhisperAPIKey = envTrim(envWhisperAPIKey)
@@ -239,6 +246,12 @@ func Apply(c Config) {
 	DBPath = c.DBPath
 	ScriptsDir = c.ScriptsDir
 	MCPSocketPath = c.MCPSocketPath
+	if len(c.ChatWritePaths) > 0 {
+		ChatWritePaths = append([]string(nil), c.ChatWritePaths...)
+	} else {
+		ChatWritePaths = nil
+	}
+	ChatApprovalTimeout = c.ChatApprovalTimeout
 	WhisperServerURL = c.WhisperServerURL
 	WhisperAPIKey = c.WhisperAPIKey
 	WhisperModel = c.WhisperModel
@@ -248,6 +261,74 @@ func Apply(c Config) {
 	WhisperLoudnorm = c.WhisperLoudnorm
 	WhisperTimeout = c.WhisperTimeout
 	Debug = c.Debug
+
+	SetWritePolicy(WritePolicyConfig{
+		ScriptsDir:          c.ScriptsDir,
+		ChatWritePaths:      ChatWritePaths,
+		ChatApprovalTimeout: c.ChatApprovalTimeout,
+	})
+}
+
+// parseChatWritePaths разбирает CHAT_WRITE_PATHS (разделители ':' и ','), раскрывает '~',
+// отсекает относительные пути, '/' и каталоги внутри SCRIPTS_DIR.
+func parseChatWritePaths(raw, scriptsDir string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	homeDir, _ := os.UserHomeDir()
+	var cleanScripts string
+	if strings.TrimSpace(scriptsDir) != "" {
+		cleanScripts = filepath.Clean(scriptsDir)
+		if realScripts, err := filepath.EvalSymlinks(cleanScripts); err == nil {
+			cleanScripts = filepath.Clean(realScripts)
+		}
+	}
+
+	parts := strings.FieldsFunc(raw, func(r rune) bool { return r == ':' || r == ',' })
+	seen := make(map[string]bool, len(parts))
+	out := make([]string, 0, len(parts))
+
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if p == "~" && homeDir != "" {
+			p = homeDir
+		} else if strings.HasPrefix(p, "~/") && homeDir != "" {
+			p = filepath.Join(homeDir, strings.TrimPrefix(p, "~/"))
+		}
+		if !filepath.IsAbs(p) {
+			logf("Предупреждение: %s содержит относительный путь %q — пропущен (требуется абсолютный путь)", envChatWritePaths, p)
+			continue
+		}
+		cleaned := filepath.Clean(p)
+		if cleaned == "/" {
+			logf("Предупреждение: %s содержит корневой каталог \"/\" — пропущен по соображениям безопасности", envChatWritePaths)
+			continue
+		}
+		checkPath := cleaned
+		if realPath, err := filepath.EvalSymlinks(cleaned); err == nil {
+			checkPath = filepath.Clean(realPath)
+		}
+		if cleanScripts != "" {
+			if relToScripts, err := filepath.Rel(cleanScripts, checkPath); err == nil && relToScripts != ".." && !strings.HasPrefix(relToScripts, ".."+string(filepath.Separator)) {
+				logf("Предупреждение: %s содержит путь %q внутри SCRIPTS_DIR (%q) — пропущен (для SCRIPTS_DIR в режиме ask требуется подтверждение)", envChatWritePaths, p, scriptsDir)
+				continue
+			}
+			if relFromEntry, err := filepath.Rel(checkPath, cleanScripts); err == nil && relFromEntry != ".." && !strings.HasPrefix(relFromEntry, ".."+string(filepath.Separator)) {
+				logf("Предупреждение: %s содержит родительский каталог %q для SCRIPTS_DIR (%q) — подкаталог SCRIPTS_DIR останется защищённым", envChatWritePaths, p, scriptsDir)
+			}
+		}
+		if !seen[cleaned] {
+			seen[cleaned] = true
+			out = append(out, cleaned)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // BotToken возвращает токен бота, нигде его не сохраняя.

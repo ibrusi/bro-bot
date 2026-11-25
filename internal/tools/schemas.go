@@ -57,13 +57,13 @@ func ClaudeReadOnlyToolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
 		{
 			"name":        "read_file",
-			"description": "Read the contents of a file in the project workspace. Optionally specify start_line and end_line (1-indexed) to read a specific line range.",
+			"description": "Read the contents of a file (relative to workspace, or an absolute path on the system when permitted). Optionally specify start_line and end_line (1-indexed) to read a specific line range.",
 			"input_schema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"path": map[string]interface{}{
 						"type":        "string",
-						"description": "Relative path to the file within the project workspace.",
+						"description": "Relative path within the project workspace or an absolute file path.",
 					},
 					"start_line": map[string]interface{}{
 						"type":        "integer",
@@ -146,13 +146,13 @@ func ClaudeWriteToolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
 		{
 			"name":        "write_file",
-			"description": "Create a new file or completely overwrite an existing file with the specified content in the project workspace.",
+			"description": "Create a new file or completely overwrite an existing file with the specified content.",
 			"input_schema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"path": map[string]interface{}{
 						"type":        "string",
-						"description": "Relative path to the file within the project workspace.",
+						"description": "Relative path within the project workspace or an absolute target path explicitly requested by the user.",
 					},
 					"content": map[string]interface{}{
 						"type":        "string",
@@ -164,13 +164,13 @@ func ClaudeWriteToolDefinitions() []map[string]interface{} {
 		},
 		{
 			"name":        "edit_file",
-			"description": "Edit an existing file by replacing old_string with new_string in the project workspace.",
+			"description": "Edit an existing file by replacing old_string with new_string.",
 			"input_schema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"path": map[string]interface{}{
 						"type":        "string",
-						"description": "Relative path to the file within the project workspace.",
+						"description": "Relative path within the project workspace or an absolute target path explicitly requested by the user.",
 					},
 					"old_string": map[string]interface{}{
 						"type":        "string",
@@ -229,13 +229,13 @@ func GeminiReadOnlyFunctionDeclarations() []*genai.FunctionDeclaration {
 	return []*genai.FunctionDeclaration{
 		{
 			Name:        "read_file",
-			Description: "Read the contents of a file in the project workspace. Optionally specify start_line and end_line (1-indexed) to read a specific line range.",
+			Description: "Read the contents of a file (relative to workspace, or an absolute path on the system when permitted). Optionally specify start_line and end_line (1-indexed) to read a specific line range.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
 					"path": {
 						Type:        genai.TypeString,
-						Description: "Relative path to the file within the project workspace.",
+						Description: "Relative path within the project workspace or an absolute file path.",
 					},
 					"start_line": {
 						Type:        genai.TypeInteger,
@@ -318,13 +318,13 @@ func GeminiWriteFunctionDeclarations() []*genai.FunctionDeclaration {
 	return []*genai.FunctionDeclaration{
 		{
 			Name:        "write_file",
-			Description: "Create a new file or completely overwrite an existing file with the specified content in the project workspace.",
+			Description: "Create a new file or completely overwrite an existing file with the specified content.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
 					"path": {
 						Type:        genai.TypeString,
-						Description: "Relative path to the file within the project workspace.",
+						Description: "Relative path within the project workspace or an absolute target path explicitly requested by the user.",
 					},
 					"content": {
 						Type:        genai.TypeString,
@@ -336,13 +336,13 @@ func GeminiWriteFunctionDeclarations() []*genai.FunctionDeclaration {
 		},
 		{
 			Name:        "edit_file",
-			Description: "Edit an existing file by replacing old_string with new_string in the project workspace.",
+			Description: "Edit an existing file by replacing old_string with new_string.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
 					"path": {
 						Type:        genai.TypeString,
-						Description: "Relative path to the file within the project workspace.",
+						Description: "Relative path within the project workspace or an absolute target path explicitly requested by the user.",
 					},
 					"old_string": {
 						Type:        genai.TypeString,

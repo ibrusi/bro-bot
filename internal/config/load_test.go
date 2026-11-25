@@ -33,7 +33,7 @@ func setEnv(t *testing.T, env map[string]string) {
 	all := []string{
 		envMessenger, envAdminID, envProjectsRoot, envDefaultProject, envDefaultModel,
 		envQuestionTimeout, envStepTimeout, envChatTimeout, envAutoContinueMax, envBotDir, envServiceName,
-		envDBPath, envScriptsDir,
+		envDBPath, envScriptsDir, envChatWritePaths, envChatApprovalTimeout,
 		envWhisperServerURL, envWhisperAPIKey, envWhisperModel, envWhisperLanguage,
 		envWhisperPrompt, envWhisperTemperature, envWhisperLoudnorm, envWhisperTimeout,
 		envDebug, envDebugLower,
@@ -503,29 +503,31 @@ func TestLoadIsNotMemoized(t *testing.T) {
 // которое забыли перенести в Apply, роняло тест само.
 func TestApplyPublishesEveryField(t *testing.T) {
 	cfg := Config{
-		Messenger:       "telegram",
-		AdminID:         ports.ChatID("777"),
-		ProjectsRoot:    "/projects",
-		DefaultProject:  "bro-bot",
-		DefaultModel:    "gemini-3.1-pro-high",
-		QuestionTimeout: 11 * time.Minute,
-		StepTimeout:     22 * time.Minute,
-		ChatTimeout:     33 * time.Minute,
-		AutoContinueMax: 5,
-		BotDir:          "/bot",
-		ServiceName:     "bro-bot.service",
-		DBPath:           "/bot/data/bot.db",
-		ScriptsDir:       "/bot/scripts",
-		MCPSocketPath:    "/bot/data/mcp/bridge.sock",
-		WhisperServerURL: "http://127.0.0.1:8080",
-		WhisperAPIKey:    "secret",
-		WhisperModel:       "small",
-		WhisperLanguage:    "ru",
-		WhisperPrompt:      "дебаг, код",
-		WhisperTemperature: 0.2,
-		WhisperLoudnorm:    true,
-		WhisperTimeout:     44 * time.Second,
-		Debug:              true,
+		Messenger:           "telegram",
+		AdminID:             ports.ChatID("777"),
+		ProjectsRoot:        "/projects",
+		DefaultProject:      "bro-bot",
+		DefaultModel:        "gemini-3.1-pro-high",
+		QuestionTimeout:     11 * time.Minute,
+		StepTimeout:         22 * time.Minute,
+		ChatTimeout:         33 * time.Minute,
+		AutoContinueMax:     5,
+		BotDir:              "/bot",
+		ServiceName:         "bro-bot.service",
+		DBPath:              "/bot/data/bot.db",
+		ScriptsDir:          "/bot/scripts",
+		MCPSocketPath:       "/bot/data/mcp/bridge.sock",
+		ChatWritePaths:      []string{"/datasets", "/tmp/cache"},
+		ChatApprovalTimeout: 7 * time.Minute,
+		WhisperServerURL:    "http://127.0.0.1:8080",
+		WhisperAPIKey:       "secret",
+		WhisperModel:        "small",
+		WhisperLanguage:     "ru",
+		WhisperPrompt:       "дебаг, код",
+		WhisperTemperature:  0.2,
+		WhisperLoudnorm:     true,
+		WhisperTimeout:      44 * time.Second,
+		Debug:               true,
 	}
 
 	Apply(cfg)
@@ -534,28 +536,30 @@ func TestApplyPublishesEveryField(t *testing.T) {
 	// Messenger живёт только в снимке: адаптер мессенджера выбирают один раз в
 	// корне композиции, глобальная переменная для этого не нужна.
 	published := map[string]any{
-		"AdminID":            AdminID,
-		"ProjectsRoot":       ProjectsRoot,
-		"DefaultProject":     DefaultProject,
-		"DefaultModel":       DefaultModel,
-		"QuestionTimeout":    QuestionTimeout,
-		"StepTimeout":        StepTimeout,
-		"ChatTimeout":        ChatTimeout,
-		"AutoContinueMax":    AutoContinueMax,
-		"BotDir":             BotDir,
-		"ServiceName":        ServiceName,
-		"DBPath":             DBPath,
-		"ScriptsDir":         ScriptsDir,
-		"MCPSocketPath":      MCPSocketPath,
-		"WhisperServerURL":   WhisperServerURL,
-		"WhisperAPIKey":      WhisperAPIKey,
-		"WhisperModel":       WhisperModel,
-		"WhisperLanguage":    WhisperLanguage,
-		"WhisperPrompt":      WhisperPrompt,
-		"WhisperTemperature": WhisperTemperature,
-		"WhisperLoudnorm":    WhisperLoudnorm,
-		"WhisperTimeout":     WhisperTimeout,
-		"Debug":              Debug,
+		"AdminID":             AdminID,
+		"ProjectsRoot":        ProjectsRoot,
+		"DefaultProject":      DefaultProject,
+		"DefaultModel":        DefaultModel,
+		"QuestionTimeout":     QuestionTimeout,
+		"StepTimeout":         StepTimeout,
+		"ChatTimeout":         ChatTimeout,
+		"AutoContinueMax":     AutoContinueMax,
+		"BotDir":              BotDir,
+		"ServiceName":         ServiceName,
+		"DBPath":              DBPath,
+		"ScriptsDir":          ScriptsDir,
+		"MCPSocketPath":       MCPSocketPath,
+		"ChatWritePaths":      ChatWritePaths,
+		"ChatApprovalTimeout": ChatApprovalTimeout,
+		"WhisperServerURL":    WhisperServerURL,
+		"WhisperAPIKey":       WhisperAPIKey,
+		"WhisperModel":        WhisperModel,
+		"WhisperLanguage":     WhisperLanguage,
+		"WhisperPrompt":       WhisperPrompt,
+		"WhisperTemperature":  WhisperTemperature,
+		"WhisperLoudnorm":     WhisperLoudnorm,
+		"WhisperTimeout":      WhisperTimeout,
+		"Debug":               Debug,
 	}
 
 	v := reflect.ValueOf(cfg)
@@ -584,5 +588,82 @@ func TestBotTokenNamesVariableWithoutValue(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), envBotToken) {
 		t.Errorf("ошибка не называет переменную: %v", err)
+	}
+}
+
+func TestLoadChatWritePathsAndApprovalTimeout(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	botDir := t.TempDir()
+	scriptsDir := filepath.Join(botDir, "scripts")
+	var warnings []string
+	prev := logf
+	logf = func(format string, args ...any) {
+		warnings = append(warnings, format)
+	}
+	t.Cleanup(func() { logf = prev })
+
+	env := validEnv(botDir)
+	env[envScriptsDir] = scriptsDir
+	env[envChatWritePaths] = strings.Join([]string{
+		"/home/deploy/pair-edge-datasets",
+		"~/datasets",
+		"/home/deploy/pair-edge-datasets/", // дубликат
+		"relative/path",                    // относительный -> предупреждение и пропуск
+		"/",                                // корень -> предупреждение и пропуск
+		scriptsDir,                         // сам SCRIPTS_DIR -> предупреждение и пропуск
+		filepath.Join(scriptsDir, "sub"),   // внутри SCRIPTS_DIR -> предупреждение и пропуск
+		botDir,                             // родитель SCRIPTS_DIR -> предупреждение, но остаётся в списке
+	}, ":")
+	env[envChatApprovalTimeout] = "120s"
+	setEnv(t, env)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	wantPaths := []string{
+		"/home/deploy/pair-edge-datasets",
+		filepath.Join(home, "datasets"),
+		botDir,
+	}
+	if !reflect.DeepEqual(cfg.ChatWritePaths, wantPaths) {
+		t.Errorf("ChatWritePaths = %v, want %v", cfg.ChatWritePaths, wantPaths)
+	}
+	if cfg.ChatApprovalTimeout != 2*time.Minute {
+		t.Errorf("ChatApprovalTimeout = %v, want 2m", cfg.ChatApprovalTimeout)
+	}
+	if len(warnings) != 5 {
+		t.Errorf("expected 5 warnings (rel, root, scriptsDir, scriptsDir/sub, parent), got %d: %v", len(warnings), warnings)
+	}
+
+	// Запятая как разделитель и дефолтный таймаут
+	warnings = nil
+	env2 := validEnv(botDir)
+	env2[envChatWritePaths] = "/data/a, /data/b"
+	setEnv(t, env2)
+	cfg2, err := Load()
+	if err != nil {
+		t.Fatalf("Load() comma failed: %v", err)
+	}
+	if !reflect.DeepEqual(cfg2.ChatWritePaths, []string{"/data/a", "/data/b"}) {
+		t.Errorf("ChatWritePaths (comma) = %v", cfg2.ChatWritePaths)
+	}
+	if cfg2.ChatApprovalTimeout != DefaultChatApprovalTimeout {
+		t.Errorf("default ChatApprovalTimeout = %v, want %v", cfg2.ChatApprovalTimeout, DefaultChatApprovalTimeout)
+	}
+
+	// WritePolicySnapshot потокобезопасен и возвращает копию
+	Apply(cfg2)
+	t.Cleanup(func() { Apply(Config{}) })
+	snap := WritePolicySnapshot()
+	if snap.ChatApprovalTimeout != DefaultChatApprovalTimeout || !reflect.DeepEqual(snap.ChatWritePaths, []string{"/data/a", "/data/b"}) {
+		t.Errorf("unexpected WritePolicySnapshot: %+v", snap)
+	}
+	snap.ChatWritePaths[0] = "/mutated"
+	if WritePolicySnapshot().ChatWritePaths[0] != "/data/a" {
+		t.Errorf("WritePolicySnapshot must return defensive copy")
 	}
 }

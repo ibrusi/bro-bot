@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"context"
 	"encoding/json"
 	"os/exec"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"bro-bot/internal/ports"
 	"bro-bot/internal/tools"
 )
 
@@ -27,6 +29,9 @@ type ToolCallPermission struct {
 	RawInput   map[string]any `json:"rawInput"`
 	Args       map[string]any `json:"args"`
 	Meta       map[string]any `json:"_meta"`
+	Locations  []struct {
+		Path string `json:"path"`
+	} `json:"locations"`
 }
 
 // MergeFrom дополняет пустые поля и отсутствующие ключи параметров из предыдущего снимка вызова.
@@ -45,6 +50,11 @@ func (c *ToolCallPermission) MergeFrom(prev ToolCallPermission) {
 	}
 	if c.Title == "" {
 		c.Title = prev.Title
+	}
+	if len(c.Locations) == 0 && len(prev.Locations) > 0 {
+		c.Locations = append([]struct {
+			Path string `json:"path"`
+		}(nil), prev.Locations...)
 	}
 	c.RawInput = mergeAnyMaps(prev.RawInput, c.RawInput)
 	c.Args = mergeAnyMaps(prev.Args, c.Args)
@@ -340,15 +350,21 @@ func IsAllowedInReadOnly(call ToolCallPermission) bool {
 	return IsSafeReadOnlyShellCall(call)
 }
 
-// DeniedPermission описывает отклонённый в read-only режиме запрос разрешения инструмента.
+// DeniedPermission описывает отклонённый в контролируемом режиме запрос разрешения инструмента.
 type DeniedPermission struct {
-	Tool  string
-	Title string
+	Tool   string
+	Title  string
+	Reason string
 }
 
 // NewDeniedPermission собирает описание отклонённого вызова инструмента из метаданных ACP,
 // предпочитая фактическую shell-команду в параметрах заголовку-заглушке вроде "bash".
 func NewDeniedPermission(call ToolCallPermission) DeniedPermission {
+	return NewDeniedPermissionWithReason(call, "")
+}
+
+// NewDeniedPermissionWithReason собирает описание отклонённого вызова инструмента с указанием причины отказа.
+func NewDeniedPermissionWithReason(call ToolCallPermission, reason string) DeniedPermission {
 	tool := firstNonEmptyString(call.Name, call.ToolName)
 	if tool == "" {
 		if isShellToolName(call.Title) {
@@ -362,8 +378,9 @@ func NewDeniedPermission(call ToolCallPermission) DeniedPermission {
 		title = cmd
 	}
 	return DeniedPermission{
-		Tool:  tool,
-		Title: title,
+		Tool:   tool,
+		Title:  title,
+		Reason: strings.TrimSpace(reason),
 	}
 }
 
@@ -394,6 +411,9 @@ func FormatDeniedPermissions(denied []DeniedPermission) string {
 		if title != "" && !strings.EqualFold(title, tool) {
 			label = tool + ": " + title
 		}
+		if reason := truncateRunes(strings.TrimSpace(d.Reason), 120); reason != "" {
+			label += " [" + reason + "]"
+		}
 		if !seen[label] {
 			seen[label] = true
 			parts = append(parts, label)
@@ -423,21 +443,140 @@ func ReadOnlyRecoveryPrompt(deniedSummary string) string {
 		"or concisely explain what cannot be done in read-only mode."
 }
 
-// ChoosePermission выбирает вариант ответа на session/request_permission
-// с учётом режима readOnly (/chat, /plan) и метаданных вызываемого инструмента.
-func ChoosePermission(readOnly bool, call ToolCallPermission, options []PermOption) (string, bool) {
+// ControlledDeniedRecoveryPrompt формирует инструкцию восстановления после того,
+// как отказ в доступе оборвал ход агента без текстового ответа.
+func ControlledDeniedRecoveryPrompt(deniedSummary string, interactive bool) string {
+	if !interactive {
+		return ReadOnlyRecoveryPrompt(deniedSummary)
+	}
+	return "Your previous tool call (" + deniedSummary + ") was denied by policy or user decision. " +
+		"Do NOT retry that denied command or path modification. " +
+		"Continue answering the user's request directly in the user's language or concisely explain what cannot be modified."
+}
+
+// BuildPermissionRequest преобразует метаданные ACP-запроса разрешения в единый ports.PermissionRequest.
+func BuildPermissionRequest(call ToolCallPermission, workDir string) ports.PermissionRequest {
+	tool := firstNonEmptyString(call.Name, call.ToolName)
+	if tool == "" && isShellToolName(call.Title) {
+		tool = strings.TrimSpace(call.Title)
+	}
+	kind := strings.ToLower(strings.TrimSpace(call.Kind))
+	var cmd string
+	if isShellExecutionCall(call) {
+		cmd = extractShellCommand(call)
+		if kind == "" {
+			kind = "execute"
+		}
+	}
+
+	paths := extractPermissionPaths(call)
+	if len(paths) == 0 && (tools.IsWriteOrEditToolName(tool) || kind == "edit" || kind == "delete") {
+		titleTrimmed := strings.TrimSpace(call.Title)
+		if titleTrimmed != "" && !strings.ContainsAny(titleTrimmed, " \t\n") && (strings.Contains(titleTrimmed, "/") || strings.Contains(titleTrimmed, ".")) {
+			paths = append(paths, titleTrimmed)
+		}
+	}
+
+	raw := mergePermissionInputs(call.RawInput, call.Args, call.Meta)
+	title := strings.TrimSpace(call.Title)
+	if cmd != "" {
+		title = cmd
+	} else if title == "" && len(paths) > 0 {
+		title = paths[0]
+	} else if title == "" {
+		title = tool
+	}
+
+	return ports.PermissionRequest{
+		ToolName: tool,
+		Kind:     kind,
+		Title:    title,
+		Command:  cmd,
+		Paths:    paths,
+		WorkDir:  workDir,
+		RawInput: raw,
+	}
+}
+
+func mergePermissionInputs(maps ...map[string]any) map[string]any {
+	var out map[string]any
+	for _, m := range maps {
+		if len(m) == 0 {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]any, len(m))
+		}
+		for k, v := range m {
+			if _, exists := out[k]; !exists {
+				out[k] = v
+			}
+		}
+	}
+	return out
+}
+
+func extractPermissionPaths(call ToolCallPermission) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+
+	pathKeys := []string{"path", "file_path", "filePath", "TargetFile", "target_file", "target", "AbsolutePath", "absolute_path"}
+	if p := firstStringRecursive(0, pathKeys, call.RawInput, call.Args, call.Meta); p != "" {
+		add(p)
+	}
+	for _, src := range []map[string]any{call.RawInput, call.Args, call.Meta} {
+		if src == nil {
+			continue
+		}
+		for _, k := range pathKeys {
+			if s, ok := src[k].(string); ok {
+				add(s)
+			}
+		}
+		for _, k := range []string{"paths", "files"} {
+			switch val := src[k].(type) {
+			case []string:
+				for _, item := range val {
+					add(item)
+				}
+			case []any:
+				for _, item := range val {
+					if s, ok := item.(string); ok {
+						add(s)
+					} else if m, ok := item.(map[string]any); ok {
+						if s := firstString(m, pathKeys...); s != "" {
+							add(s)
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, loc := range call.Locations {
+		add(loc.Path)
+	}
+	return out
+}
+
+var (
+	rejectPermissionPrefer = []string{"reject_once", "reject_always", "reject", "deny_once", "deny_always", "deny"}
+	allowOnceOnlyPrefer    = []string{"allow_once", "allow"}
+)
+
+func selectPermissionOption(options []PermOption, prefer []string, allowFallbackReject bool) (string, bool) {
 	if len(options) == 0 {
 		return "", false
-	}
-	allowedInReadOnly := IsAllowedInReadOnly(call)
-	var prefer []string
-	switch {
-	case readOnly && !allowedInReadOnly:
-		prefer = []string{"reject_once", "reject_always", "reject", "deny_once", "deny_always", "deny"}
-	case readOnly:
-		prefer = []string{"allow_once", "allow_always", "allow"}
-	default:
-		prefer = []string{"allow_always", "allow_once", "allow"}
 	}
 	for _, kind := range prefer {
 		for _, opt := range options {
@@ -446,7 +585,7 @@ func ChoosePermission(readOnly bool, call ToolCallPermission, options []PermOpti
 			}
 		}
 	}
-	if readOnly && !allowedInReadOnly {
+	if allowFallbackReject {
 		for _, opt := range options {
 			if opt.OptionID == "" {
 				continue
@@ -458,6 +597,77 @@ func ChoosePermission(readOnly bool, call ToolCallPermission, options []PermOpti
 		}
 	}
 	return "", false
+}
+
+// ResolvePermission вычисляет ответ на session/request_permission с учётом
+// флага readOnly, политики SCRIPTS_DIR, жёстких предохранителей и PermissionHandler.
+// В контролируемом режиме (/chat, /plan) одобрения всегда возвращают allow_once (никогда allow_always).
+func ResolvePermission(ctx context.Context, readOnly bool, scriptsDir, workDir string, handler ports.PermissionHandler, call ToolCallPermission, options []PermOption) (optionID string, ok bool, allowed bool, denyReason string) {
+	if !readOnly {
+		id, chosen := ChoosePermission(false, call, options)
+		return id, chosen, true, ""
+	}
+
+	req := BuildPermissionRequest(call, workDir)
+
+	if handler == nil {
+		if guard := tools.CheckWriteGuardrail(req, nil); guard.Blocked {
+			id, chosen := selectPermissionOption(options, rejectPermissionPrefer, true)
+			return id, chosen, false, guard.Reason
+		}
+		if sc := tools.CheckScriptsDirOperation(req, scriptsDir); sc.Kind != tools.ScriptsDirOpNone {
+			id, chosen := selectPermissionOption(options, rejectPermissionPrefer, true)
+			return id, chosen, false, "SCRIPTS_DIR operation blocked in deny mode"
+		}
+		if !IsAllowedInReadOnly(call) {
+			id, chosen := selectPermissionOption(options, rejectPermissionPrefer, true)
+			return id, chosen, false, ""
+		}
+		id, chosen := ChoosePermission(true, call, options)
+		return id, chosen, true, ""
+	}
+
+	// Безопасные read-only инструменты (кроме shell и записей/запуска SCRIPTS_DIR) пропускаются сразу.
+	if (ReadOnlyToolKind(call.Kind) || IsBotOrInteractiveTool(call)) &&
+		!tools.CheckWriteGuardrail(req, nil).Blocked &&
+		tools.CheckScriptsDirOperation(req, scriptsDir).Kind == tools.ScriptsDirOpNone {
+		id, chosen := selectPermissionOption(options, allowOnceOnlyPrefer, false)
+		return id, chosen, true, ""
+	}
+
+	decision, reason := handler.DecidePermission(ctx, req)
+	if ctx.Err() != nil {
+		id, chosen := selectPermissionOption(options, rejectPermissionPrefer, true)
+		return id, chosen, false, "cancelled"
+	}
+	if decision == ports.PermissionDeny {
+		id, chosen := selectPermissionOption(options, rejectPermissionPrefer, true)
+		return id, chosen, false, reason
+	}
+
+	// Никогда не передаём allow_always в ACP CLI при контролируемом режиме:
+	// агент обязан продолжать отправлять session/request_permission для предохранителей и SCRIPTS_DIR.
+	id, chosen := selectPermissionOption(options, allowOnceOnlyPrefer, false)
+	return id, chosen, true, ""
+}
+
+// ChoosePermission выбирает вариант ответа на session/request_permission
+// с учётом режима readOnly (/chat, /plan) и метаданных вызываемого инструмента.
+func ChoosePermission(readOnly bool, call ToolCallPermission, options []PermOption) (string, bool) {
+	if len(options) == 0 {
+		return "", false
+	}
+	allowedInReadOnly := IsAllowedInReadOnly(call)
+	var prefer []string
+	switch {
+	case readOnly && !allowedInReadOnly:
+		prefer = rejectPermissionPrefer
+	case readOnly:
+		prefer = []string{"allow_once", "allow_always", "allow"}
+	default:
+		prefer = []string{"allow_always", "allow_once", "allow"}
+	}
+	return selectPermissionOption(options, prefer, readOnly && !allowedInReadOnly)
 }
 
 // WaitProcess дожидается завершения runDone и readDone, а затем завершения дочернего процесса

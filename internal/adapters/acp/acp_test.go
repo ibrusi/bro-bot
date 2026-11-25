@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"bro-bot/internal/mcp"
 	"bro-bot/internal/ports"
+	"bro-bot/internal/tools"
 )
 
 type fakeBotHandler struct {
@@ -493,5 +496,114 @@ func TestToolCallRegistryAndTranslateUsageAndActiveUpdate(t *testing.T) {
 	usedOnly, ok := TranslateUpdate("s1", []byte(`{"update":{"sessionUpdate":"usage_update","used":1234,"size":100000}}`), 4)
 	if !ok || usedOnly.StepUpdate == nil || usedOnly.StepUpdate.Usage == nil || usedOnly.StepUpdate.Usage.TotalTokens != 1234 {
 		t.Fatalf("expected used fallback usage, got %+v ok=%v", usedOnly, ok)
+	}
+}
+
+type fakeACPPermHandler struct {
+	decision ports.PermissionDecision
+	reason   string
+	calls    []ports.PermissionRequest
+}
+
+func (f *fakeACPPermHandler) DecidePermission(_ context.Context, req ports.PermissionRequest) (ports.PermissionDecision, string) {
+	f.calls = append(f.calls, req)
+	return f.decision, f.reason
+}
+
+func TestResolvePermissionControlledModes(t *testing.T) {
+	base := t.TempDir()
+	scriptsDir := filepath.Join(base, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPy := filepath.Join(scriptsDir, "load.py")
+	opts := []PermOption{
+		{OptionID: "allow_always_id", Kind: "allow_always"},
+		{OptionID: "allow_once_id", Kind: "allow_once"},
+		{OptionID: "reject_once_id", Kind: "reject_once"},
+	}
+
+	// 1. Strict deny (handler == nil): blocks SCRIPTS_DIR exec and python3 writing /etc,
+	// while allowing read-only diagnostics and analytical python3 reading SCRIPTS_DIR.
+	id, ok, allowed, reason := ResolvePermission(context.Background(), true, scriptsDir, base, nil, ToolCallPermission{
+		ToolName: "run_command",
+		Kind:     "execute",
+		RawInput: map[string]any{"command": "python3 " + scriptPy},
+	}, opts)
+	if !ok || allowed || id != "reject_once_id" || reason == "" {
+		t.Fatalf("deny mode SCRIPTS_DIR exec = (%q, %v, %v, %q), want rejected", id, ok, allowed, reason)
+	}
+
+	id, ok, allowed, reason = ResolvePermission(context.Background(), true, scriptsDir, base, nil, ToolCallPermission{
+		ToolName: "run_command",
+		Kind:     "execute",
+		RawInput: map[string]any{"command": `python3 -c "open('/etc/cron.d/evil', 'w').write('x')"`},
+	}, opts)
+	if !ok || allowed || id != "reject_once_id" || reason == "" {
+		t.Fatalf("deny mode python3 writing /etc = (%q, %v, %v, %q), want blocked", id, ok, allowed, reason)
+	}
+
+	id, ok, allowed, _ = ResolvePermission(context.Background(), true, scriptsDir, base, nil, ToolCallPermission{
+		ToolName: "run_command",
+		Kind:     "execute",
+		RawInput: map[string]any{"command": `python3 -c "print(open('` + scriptPy + `').read())"`},
+	}, opts)
+	if !ok || !allowed || id != "allow_once_id" {
+		t.Fatalf("deny mode analytical python3 read SCRIPTS_DIR = (%q, %v, %v), want allow_once", id, ok, allowed)
+	}
+
+	for _, cmd := range []string{"systemctl status bro-bot", "cat /etc/os-release"} {
+		id, ok, allowed, _ = ResolvePermission(context.Background(), true, scriptsDir, base, nil, ToolCallPermission{
+			ToolName: "run_command",
+			Kind:     "execute",
+			RawInput: map[string]any{"command": cmd},
+		}, opts)
+		if !ok || !allowed || id != "allow_once_id" {
+			t.Fatalf("deny mode %q = (%q, %v, %v), want allow_once", cmd, id, ok, allowed)
+		}
+	}
+
+	// 2. Handler returns PermissionAllowAlways -> ACP MUST STILL receive allow_once (never allow_always).
+	hAllow := &fakeACPPermHandler{decision: ports.PermissionAllowAlways}
+	id, ok, allowed, _ = ResolvePermission(context.Background(), true, scriptsDir, base, hAllow, ToolCallPermission{
+		ToolName: "write_file",
+		Kind:     "edit",
+		Locations: []struct {
+			Path string `json:"path"`
+		}{{Path: "/tmp/moex/data.csv"}},
+	}, opts)
+	if !ok || !allowed || id != "allow_once_id" {
+		t.Fatalf("interactive PermissionAllowAlways = (%q, %v, %v), want allow_once_id", id, ok, allowed)
+	}
+	if len(hAllow.calls) != 1 || len(hAllow.calls[0].Paths) != 1 || hAllow.calls[0].Paths[0] != "/tmp/moex/data.csv" {
+		t.Fatalf("expected Locations path forwarded to PermissionHandler, got %+v", hAllow.calls)
+	}
+
+	// 3. Handler returns PermissionDeny -> reject_once and non-empty reason.
+	hDeny := &fakeACPPermHandler{decision: ports.PermissionDeny, reason: "user rejected"}
+	id, ok, allowed, reason = ResolvePermission(context.Background(), true, scriptsDir, base, hDeny, ToolCallPermission{
+		ToolName: "run_command",
+		Kind:     "execute",
+		RawInput: map[string]any{"command": "bash " + filepath.Join(scriptsDir, "run.sh")},
+	}, opts)
+	if !ok || allowed || id != "reject_once_id" || reason != "user rejected" {
+		t.Fatalf("interactive PermissionDeny = (%q, %v, %v, %q)", id, ok, allowed, reason)
+	}
+
+	// 4. DeniedPermission formatting with reason & ControlledDeniedRecoveryPrompt.
+	d := NewDeniedPermissionWithReason(ToolCallPermission{ToolName: "write_file", Title: "/etc/hosts"}, tools.CheckWriteGuardrail(ports.PermissionRequest{
+		ToolName: "write_file",
+		Kind:     "edit",
+		Paths:    []string{"/etc/hosts"},
+	}, nil).Reason)
+	formatted := FormatDeniedPermissions([]DeniedPermission{d})
+	if !strings.Contains(formatted, "/etc/hosts") || !strings.Contains(formatted, "forbidden") {
+		t.Fatalf("unexpected FormatDeniedPermissions: %q", formatted)
+	}
+	if p := ControlledDeniedRecoveryPrompt(formatted, true); !strings.Contains(p, "user decision") {
+		t.Fatalf("unexpected ControlledDeniedRecoveryPrompt(true): %q", p)
+	}
+	if p := ControlledDeniedRecoveryPrompt(formatted, false); !strings.Contains(p, "strictly read-only") {
+		t.Fatalf("unexpected ControlledDeniedRecoveryPrompt(false): %q", p)
 	}
 }
