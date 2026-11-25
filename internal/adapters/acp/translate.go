@@ -150,6 +150,45 @@ func ParseUsage(raw json.RawMessage) *StreamUsage {
 	return res.Meta.Usage.toStreamUsage()
 }
 
+// MergeUsage суммирует метрики токенов нескольких ходов ACP в рамках одного шага.
+func MergeUsage(a, b *StreamUsage) *StreamUsage {
+	if a == nil && b == nil {
+		return nil
+	}
+	if a == nil {
+		cp := *b
+		return &cp
+	}
+	if b == nil {
+		cp := *a
+		return &cp
+	}
+	return &StreamUsage{
+		InputTokens:     a.InputTokens + b.InputTokens,
+		OutputTokens:    a.OutputTokens + b.OutputTokens,
+		ThinkingTokens:  a.ThinkingTokens + b.ThinkingTokens,
+		CacheReadTokens: a.CacheReadTokens + b.CacheReadTokens,
+		TotalTokens:     a.TotalTokens + b.TotalTokens,
+	}
+}
+
+// ParsePromptStopReason разбирает stopReason ответа session/prompt.
+// Третье возвращаемое значение true означает отмену запроса (`stopReason == "cancelled"`).
+func ParsePromptStopReason(raw json.RawMessage) (status, errText string, cancelled bool) {
+	var promptRes struct {
+		StopReason string `json:"stopReason"`
+	}
+	_ = json.Unmarshal(raw, &promptRes)
+	switch promptRes.StopReason {
+	case "", "end_turn", "end":
+		return "SUCCESS", "", false
+	case "cancelled":
+		return "ERROR", "cancelled", true
+	default:
+		return "ERROR", promptRes.StopReason, false
+	}
+}
+
 // contentText достаёт текст из блока ACP или из массива фрагментов tool content.
 func contentText(raw json.RawMessage) string {
 	raw = bytesTrim(raw)

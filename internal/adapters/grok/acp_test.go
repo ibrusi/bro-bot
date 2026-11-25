@@ -318,6 +318,9 @@ func TestGrokPermissionsAllowBotMCPInReadOnlyAndPropagatesToken(t *testing.T) {
 	if id, ok := acp.ChoosePermission(true, acp.ToolCallPermission{Kind: "execute", Title: "bash"}, opts); !ok || id != "no" {
 		t.Errorf("expected execute tool to be rejected in readOnly mode, got (%q, %v)", id, ok)
 	}
+	if id, ok := acp.ChoosePermission(true, acp.ToolCallPermission{Kind: "execute", Title: "bash", RawInput: map[string]any{"command": "git status -sb"}}, opts); !ok || id != "yes" {
+		t.Errorf("expected safe read-only bash tool to be permitted in readOnly mode, got (%q, %v)", id, ok)
+	}
 
 	srv := acp.BroBotStdioServer("tok-abc")
 	var hasTokenEnv, hasTokenArg bool
@@ -333,5 +336,98 @@ func TestGrokPermissionsAllowBotMCPInReadOnlyAndPropagatesToken(t *testing.T) {
 	}
 	if !hasTokenEnv || !hasTokenArg {
 		t.Errorf("expected channel token in mcpServer Env and Args: %+v", srv)
+	}
+}
+
+func TestGrokACPReadOnlyShellWhitelistAndRecovery(t *testing.T) {
+	dir := t.TempDir()
+	permFile := filepath.Join(dir, "perm")
+	promptsFile := filepath.Join(dir, "prompts")
+	script := filepath.Join(dir, "grok-ro")
+	scriptBody := "#!/usr/bin/env python3\n" + `
+import json, os, sys
+perm = os.environ.get("PERM_FILE", "")
+prompts_file = os.environ.get("PROMPTS_FILE", "")
+perms = []
+prompts = []
+turn = 0
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    msg = json.loads(line)
+    m, mid, p = msg.get("method"), msg.get("id"), msg.get("params") or {}
+    if m == "initialize":
+        send({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"authMethods":[{"id":"cached_token"}],"agentCapabilities":{"loadSession":True,"sessionCapabilities":{"resume":{}}}}})
+    elif m == "authenticate":
+        send({"jsonrpc":"2.0","id":mid,"result":{}})
+    elif m == "session/new":
+        send({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"grok-ro-1"}})
+    elif m == "session/prompt":
+        turn += 1
+        prompts.append("".join(c.get("text", "") for c in (p.get("prompt") or [])))
+        if turn == 1:
+            for req_id, tc in [
+                (10, {"kind":"execute","title":"bash","rawInput":{"command":"git status -sb"}}),
+                (11, {"kind":"execute","title":"bash","rawInput":{"command":"rm -rf /tmp/x"}}),
+            ]:
+                send({"jsonrpc":"2.0","id":req_id,"method":"session/request_permission","params":{"toolCall":tc,"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]}})
+                reply = json.loads(sys.stdin.readline())
+                perms.append(((reply.get("result") or {}).get("outcome") or {}).get("optionId", ""))
+            send({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn"}})
+        else:
+            send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"grok-ro-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Blocked rm in read-only mode."}}}})
+            send({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn"}})
+    elif m == "session/close":
+        if perm:
+            open(perm, "w").write("\n".join(perms))
+        if prompts_file:
+            open(prompts_file, "w").write("\n---\n".join(prompts))
+        send({"jsonrpc":"2.0","id":mid,"result":{}})
+        break
+    elif mid is not None:
+        send({"jsonrpc":"2.0","id":mid,"result":{}})
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PERM_FILE", permFile)
+	t.Setenv("PROMPTS_FILE", promptsFile)
+	prev := grokBin
+	grokBin = script
+	t.Cleanup(func() { grokBin = prev })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	proc, err := NewAdapter().ExecuteTask(ctx, ports.ExecuteArgs{
+		Prompt:   "Check status and remove file",
+		WorkDir:  dir,
+		ReadOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proc.Close()
+	out, err := io.ReadAll(proc.Stdout())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waitErr := proc.Wait(); waitErr != nil {
+		t.Fatalf("Wait: %v\n%s", waitErr, out)
+	}
+	text := string(out)
+	if !strings.Contains(text, `"status":"SUCCESS"`) || !strings.Contains(text, "Blocked rm in read-only mode.") || !strings.Contains(text, `"num_turns":2`) {
+		t.Fatalf("expected recovery SUCCESS with num_turns=2, got:\n%s", text)
+	}
+	permData, _ := os.ReadFile(permFile)
+	if got := strings.TrimSpace(string(permData)); got != "yes\nno" {
+		t.Errorf("permissions = %q, want yes\\nno", got)
+	}
+	pData, _ := os.ReadFile(promptsFile)
+	if !strings.Contains(string(pData), "bash: rm -rf /tmp/x") {
+		t.Errorf("expected recovery prompt to include actual blocked command, got:\n%s", pData)
 	}
 }

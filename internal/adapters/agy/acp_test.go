@@ -303,6 +303,231 @@ while True:
 		if !strings.Contains(string(out), `"status":"ERROR"`) {
 			t.Fatalf("expected ReadOnly empty answer after read_file to fail as ERROR, got:\n%s", out)
 		}
+		if !strings.Contains(string(out), `"agy returned an empty answer"`) {
+			t.Fatalf("expected default empty answer error when nothing was denied, got:\n%s", out)
+		}
+	})
+}
+
+func TestAgyACPReadOnlyShellWhitelistAndRecovery(t *testing.T) {
+	t.Run("ReadOnly allows safe read-only run_command and returns answer", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		dir := t.TempDir()
+		permFile := filepath.Join(dir, "perm")
+		t.Setenv("PERM_FILE", permFile)
+
+		safeScript := filepath.Join(dir, "agy-safe-cmd")
+		scriptBody := `#!/usr/bin/env python3
+import json, os, sys
+perm_file = os.environ["PERM_FILE"]
+perms = []
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    msg = json.loads(line)
+    m, mid = msg.get("method"), msg.get("id")
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
+    elif m == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "s-safe"}})
+    elif m == "session/prompt":
+        send({"jsonrpc": "2.0", "id": 10, "method": "session/request_permission", "params": {
+            "toolCall": {"name": "run_command", "kind": "execute", "title": "ls -la && git status -sb", "rawInput": {"CommandLine": "ls -la && git status -sb"}},
+            "options": [{"optionId": "allow", "kind": "allow_once"}, {"optionId": "deny", "kind": "reject_once"}]
+        }})
+        r = json.loads(sys.stdin.readline())
+        perms.append(((r.get("result") or {}).get("outcome") or {}).get("optionId", ""))
+        send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s-safe", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Repo OK"}}}})
+        send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+    elif m == "session/close":
+        open(perm_file, "w").write("\n".join(perms))
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        break
+`
+		if err := os.WriteFile(safeScript, []byte(scriptBody), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		prev := agyBin
+		agyBin = safeScript
+		t.Cleanup(func() { agyBin = prev })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		proc, err := NewAgyACPAdapter().ExecuteTask(ctx, ports.ExecuteArgs{
+			Prompt:   "Inspect repo",
+			WorkDir:  dir,
+			ReadOnly: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer proc.Close()
+		out, _ := io.ReadAll(proc.Stdout())
+		if waitErr := proc.Wait(); waitErr != nil {
+			t.Fatalf("Wait: %v\n%s", waitErr, out)
+		}
+		if !strings.Contains(string(out), `"status":"SUCCESS"`) || !strings.Contains(string(out), "Repo OK") {
+			t.Fatalf("expected SUCCESS with Repo OK, got:\n%s", out)
+		}
+		permData, _ := os.ReadFile(permFile)
+		if got := strings.TrimSpace(string(permData)); got != "allow" {
+			t.Errorf("permissions = %q, want allow", got)
+		}
+	})
+
+	t.Run("ReadOnly denied command triggering empty turn sends single recovery prompt and sums usage", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		dir := t.TempDir()
+		promptsFile := filepath.Join(dir, "prompts")
+		t.Setenv("PROMPTS_FILE", promptsFile)
+
+		recScript := filepath.Join(dir, "agy-recover")
+		scriptBody := `#!/usr/bin/env python3
+import json, os, sys
+prompts_file = os.environ["PROMPTS_FILE"]
+prompts = []
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+turn = 0
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    msg = json.loads(line)
+    m, mid, p = msg.get("method"), msg.get("id"), msg.get("params") or {}
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
+    elif m == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "s-rec"}})
+    elif m == "session/prompt":
+        turn += 1
+        txt = "".join(c.get("text", "") for c in (p.get("prompt") or []))
+        prompts.append(txt)
+        if turn == 1:
+            send({"jsonrpc": "2.0", "id": 10, "method": "session/request_permission", "params": {
+                "toolCall": {"name": "run_command", "kind": "execute", "title": "rm -rf /"},
+                "options": [{"optionId": "allow", "kind": "allow_once"}, {"optionId": "deny", "kind": "reject_once"}]
+            }})
+            r = json.loads(sys.stdin.readline())
+            assert ((r.get("result") or {}).get("outcome") or {}).get("optionId") == "deny"
+            send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn", "usage": {"inputTokens": 100, "outputTokens": 10, "totalTokens": 110}}})
+        else:
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s-rec", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Cannot run rm in read-only mode."}}}})
+            send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn", "usage": {"inputTokens": 50, "outputTokens": 20, "totalTokens": 70}}})
+    elif m == "session/close":
+        open(prompts_file, "w").write("\n---\n".join(prompts))
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        break
+`
+		if err := os.WriteFile(recScript, []byte(scriptBody), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		prev := agyBin
+		agyBin = recScript
+		t.Cleanup(func() { agyBin = prev })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		proc, err := NewAgyACPAdapter().ExecuteTask(ctx, ports.ExecuteArgs{
+			Prompt:   "Delete files",
+			WorkDir:  dir,
+			ReadOnly: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer proc.Close()
+		out, _ := io.ReadAll(proc.Stdout())
+		if waitErr := proc.Wait(); waitErr != nil {
+			t.Fatalf("Wait: %v\n%s", waitErr, out)
+		}
+		text := string(out)
+		for _, want := range []string{
+			`"status":"SUCCESS"`,
+			`Cannot run rm in read-only mode.`,
+			`"num_turns":2`,
+			`"input_tokens":150`,
+			`"output_tokens":30`,
+			`"total_tokens":180`,
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("output missing %s:\n%s", want, text)
+			}
+		}
+		pData, _ := os.ReadFile(promptsFile)
+		if !strings.Contains(string(pData), "run_command: rm -rf /") {
+			t.Errorf("expected recovery prompt to mention blocked run_command, got:\n%s", pData)
+		}
+	})
+
+	t.Run("ReadOnly denied command with still-empty recovery returns descriptive blocked error", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		dir := t.TempDir()
+		emptyRecScript := filepath.Join(dir, "agy-empty-rec")
+		scriptBody := `#!/usr/bin/env python3
+import json, sys
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+turn = 0
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    msg = json.loads(line)
+    m, mid = msg.get("method"), msg.get("id")
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
+    elif m == "session/new":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "s-empty-rec"}})
+    elif m == "session/prompt":
+        turn += 1
+        if turn == 1:
+            send({"jsonrpc": "2.0", "id": 10, "method": "session/request_permission", "params": {
+                "toolCall": {"name": "run_command", "kind": "execute", "title": "rm -rf /"},
+                "options": [{"optionId": "allow", "kind": "allow_once"}, {"optionId": "deny", "kind": "reject_once"}]
+            }})
+            _ = sys.stdin.readline()
+        send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+    elif m == "session/close":
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        break
+`
+		if err := os.WriteFile(emptyRecScript, []byte(scriptBody), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		prev := agyBin
+		agyBin = emptyRecScript
+		t.Cleanup(func() { agyBin = prev })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		proc, err := NewAgyACPAdapter().ExecuteTask(ctx, ports.ExecuteArgs{
+			Prompt:   "Delete files",
+			WorkDir:  dir,
+			ReadOnly: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer proc.Close()
+		out, _ := io.ReadAll(proc.Stdout())
+		_ = proc.Wait()
+		text := string(out)
+		if !strings.Contains(text, `"status":"ERROR"`) {
+			t.Fatalf("expected ERROR status, got:\n%s", text)
+		}
+		if !strings.Contains(text, "read-only mode blocked") || !strings.Contains(text, "run_command") {
+			t.Errorf("expected descriptive blocked error, got:\n%s", text)
+		}
+		if strings.Contains(text, "agy returned an empty answer") {
+			t.Errorf("did not expect generic empty answer error after denial:\n%s", text)
+		}
 	})
 }
 
