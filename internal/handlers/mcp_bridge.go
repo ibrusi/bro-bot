@@ -54,6 +54,7 @@ type agentChannel interface {
 	ReportProgress(status string)
 	AskQuestions(items []utils.ParsedQuestion) error
 	TaskContext(taskID int) (string, error)
+	QuerySQLite(ctx context.Context, path, query string, maxRows int) (string, error)
 }
 
 // agentChannels связывает процессы и токены запущенных агентов с их каналами к пользователю.
@@ -280,6 +281,31 @@ func executeChannelTool(ctx context.Context, ch agentChannel, toolName string, a
 		out, err := formatProjectsListForAgent()
 		if err != nil {
 			return botToolError(err.Error())
+		}
+		return ports.BotToolResult{Text: out}
+
+	case mcp.ToolSQLiteQuery:
+		dbPath := stringArg(args, "path")
+		if dbPath == "" {
+			dbPath = stringArg(args, "db_path")
+		}
+		if dbPath == "" {
+			return botToolError("the path argument is required")
+		}
+		query := stringArg(args, "query")
+		if query == "" {
+			query = stringArg(args, "sql")
+		}
+		if query == "" {
+			return botToolError("the query argument is required")
+		}
+		maxRows := intArg(args, "max_rows")
+		if maxRows <= 0 {
+			maxRows = intArg(args, "limit")
+		}
+		out, err := ch.QuerySQLite(ctx, dbPath, query, maxRows)
+		if err != nil {
+			return botToolError("sqlite query failed: " + err.Error())
 		}
 		return ports.BotToolResult{Text: out}
 
@@ -512,6 +538,10 @@ func (c *taskChannel) TaskContext(taskID int) (string, error) {
 	return formatTaskContextJSON(target.Snapshot())
 }
 
+func (c *taskChannel) QuerySQLite(ctx context.Context, path, query string, maxRows int) (string, error) {
+	return tools.NewExecutor(c.workDir).QuerySQLite(ctx, path, query, maxRows)
+}
+
 // chatChannel — канал агента, отвечающего в разговоре.
 type chatChannel struct {
 	m            ports.Messenger
@@ -622,6 +652,10 @@ func (c *chatChannel) TaskContext(taskID int) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+func (c *chatChannel) QuerySQLite(ctx context.Context, path, query string, maxRows int) (string, error) {
+	return tools.NewExecutor(c.workDir).QuerySQLite(ctx, path, query, maxRows)
 }
 
 func sendBridgeFile(ctx context.Context, m ports.Messenger, chat ports.ChatID, workDir, relPath, caption, fallbackCaption string, registerTaskID int) error {

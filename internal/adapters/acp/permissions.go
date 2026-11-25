@@ -417,8 +417,9 @@ func truncateRunes(s string, limit int) string {
 // как отказ в доступе в read-only режиме оборвал ход агента без текстового ответа.
 func ReadOnlyRecoveryPrompt(deniedSummary string) string {
 	return "Your previous tool call (" + deniedSummary + ") was denied because this session is strictly read-only. " +
-		"Do NOT retry that command or call any write/edit/mutating tools. " +
-		"Answer the user's request directly in the user's language using only already gathered information, read_file, or safe read-only commands, " +
+		"Do NOT retry that command or call any write/edit/mutating tools or .sh scripts. " +
+		"Answer the user's request directly in the user's language using already gathered information, read_file, sqlite_query, " +
+		"or allowed read-only analysis commands (python3, read-only sqlite3, HTTP GET via curl/wget to stdout or /tmp), " +
 		"or concisely explain what cannot be done in read-only mode."
 }
 

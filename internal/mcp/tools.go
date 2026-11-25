@@ -21,6 +21,7 @@ const (
 	ToolGetTaskContext = "get_task_context"
 	ToolListTasks      = "list_tasks"
 	ToolListProjects   = "list_projects"
+	ToolSQLiteQuery    = "sqlite_query"
 
 	// ChannelTokenEnv — одноразовый криптографический токен шага, передаваемый
 	// дочернему процессу агента как резервный идентификатор канала к PID-дереву.
@@ -255,6 +256,30 @@ func BridgeToolDefinitions() []Tool {
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			Name: ToolSQLiteQuery,
+			Description: "Read-only tool to execute a single SELECT/WITH/EXPLAIN/VALUES or read-only PRAGMA SQL query " +
+				"against a SQLite database file inside the current project's workspace (opened strictly with mode=ro and " +
+				"PRAGMA query_only=ON; safe for live WAL databases). Works without requiring the sqlite3 CLI.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Relative path to the SQLite database file inside the project workspace (e.g. 'data/db/app.db').",
+					},
+					"query": map[string]interface{}{
+						"type":        "string",
+						"description": "Single read-only SQL statement (SELECT, WITH, EXPLAIN, VALUES, or read-only PRAGMA).",
+					},
+					"max_rows": map[string]interface{}{
+						"type":        "integer",
+						"description": "Optional maximum number of rows to return (1-1000, default 200).",
+					},
+				},
+				"required": []string{"path", "query"},
 			},
 		},
 	}

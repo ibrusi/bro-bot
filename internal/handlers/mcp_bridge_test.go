@@ -26,6 +26,7 @@ type fakeChannel struct {
 	options   [][]string
 	batches   [][]utils.ParsedQuestion
 	taskIDs   []int
+	sqlCalls  []string
 	err       error
 }
 
@@ -61,6 +62,14 @@ func (f *fakeChannel) AskQuestions(items []utils.ParsedQuestion) error {
 func (f *fakeChannel) TaskContext(taskID int) (string, error) {
 	f.taskIDs = append(f.taskIDs, taskID)
 	return `{"id":1}`, f.err
+}
+
+func (f *fakeChannel) QuerySQLite(_ context.Context, path, query string, maxRows int) (string, error) {
+	f.sqlCalls = append(f.sqlCalls, path+":"+query)
+	if f.err != nil {
+		return "", f.err
+	}
+	return `{"database":"` + path + `","columns":["ok"],"rows":[[1]],"row_count":1,"truncated":false}`, nil
 }
 
 // processTree — PPID по PID для подмены /proc в тестах.
@@ -310,5 +319,26 @@ func TestBotToolsContractsForSendFileListTasksReportProgressAndContext(t *testin
 	}
 	if len(ch.taskIDs) != 1 || ch.taskIDs[0] != 42 {
 		t.Errorf("taskIDs = %v, want [42]", ch.taskIDs)
+	}
+
+	// 5. sqlite_query передаёт path/query/max_rows и валидирует обязательные поля.
+	res = channels.handle(ctx, 200, call(mcp.ToolSQLiteQuery, map[string]interface{}{
+		"path":     "data/db/test.db",
+		"query":    "SELECT 1 AS ok",
+		"max_rows": float64(10),
+	}))
+	if res.IsError || !strings.Contains(res.Text, `"row_count":1`) {
+		t.Fatalf("sqlite_query failed: err=%v text=%s", res.IsError, res.Text)
+	}
+	if len(ch.sqlCalls) != 1 || ch.sqlCalls[0] != "data/db/test.db:SELECT 1 AS ok" {
+		t.Errorf("sqlCalls = %v", ch.sqlCalls)
+	}
+	for _, badArgs := range []map[string]interface{}{
+		{"query": "SELECT 1"},
+		{"path": "data/db/test.db"},
+	} {
+		if badRes := channels.handle(ctx, 200, call(mcp.ToolSQLiteQuery, badArgs)); !badRes.IsError {
+			t.Errorf("sqlite_query with %v should fail, got %+v", badArgs, badRes)
+		}
 	}
 }

@@ -87,6 +87,9 @@ func TestMCPServer_ToolsList(t *testing.T) {
 	if !names["report_progress"] {
 		t.Errorf("missing tool report_progress")
 	}
+	if !names["sqlite_query"] {
+		t.Errorf("missing tool sqlite_query")
+	}
 }
 
 // callTool выполняет tools/call и возвращает текст и признак ошибки результата.

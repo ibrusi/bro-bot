@@ -86,13 +86,13 @@ func TestToolServerHTTPFlowAndSecurity(t *testing.T) {
 		t.Fatalf("notification status = %d, want 202", noteResp.StatusCode)
 	}
 
-	// tools/list -> все 7 инструментов бота
+	// tools/list -> все 8 инструментов бота
 	listResp := post("Bearer secret-tok-123", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	listBody, _ := io.ReadAll(listResp.Body)
 	listResp.Body.Close()
 	for _, want := range []string{
 		mcp.ToolSendMessage, mcp.ToolAskUser, mcp.ToolReportProgress,
-		mcp.ToolSendFile, mcp.ToolGetTaskContext, mcp.ToolListTasks, mcp.ToolListProjects,
+		mcp.ToolSendFile, mcp.ToolGetTaskContext, mcp.ToolListTasks, mcp.ToolListProjects, mcp.ToolSQLiteQuery,
 	} {
 		if !strings.Contains(string(listBody), want) {
 			t.Errorf("tools/list missing %q: %s", want, listBody)
@@ -222,6 +222,61 @@ func TestChoosePermissionAgyAndGrokReadOnlyMatrix(t *testing.T) {
 			readOnly: true,
 			call:     ToolCallPermission{Kind: "execute", Title: "bash"},
 			want:     "reject_once",
+		},
+		{
+			name:     "agy call_mcp_tool sqlite_query in ReadOnly allowed",
+			readOnly: true,
+			call: ToolCallPermission{
+				Kind:     "execute",
+				Name:     "call_mcp_tool",
+				Title:    "MCP Tool sqlite_query",
+				RawInput: map[string]any{"ServerName": "bro_bot", "ToolName": "sqlite_query"},
+			},
+			want: "allow_once",
+		},
+		{
+			name:     "agy safe read-only python3 run_command in ReadOnly allowed",
+			readOnly: true,
+			call: ToolCallPermission{
+				Kind:     "execute",
+				Name:     "run_command",
+				Title:    "python3 -c 'print(1)'",
+				RawInput: map[string]any{"CommandLine": "python3 -c 'print(1)'"},
+			},
+			want: "allow_once",
+		},
+		{
+			name:     "agy safe read-only sqlite3 and curl in ReadOnly allowed",
+			readOnly: true,
+			call: ToolCallPermission{
+				Kind:     "execute",
+				Name:     "run_command",
+				Title:    "curl",
+				RawInput: map[string]any{"CommandLine": `curl -fsSL "https://api.example.com/candles" | python3 -`},
+			},
+			want: "allow_once",
+		},
+		{
+			name:     "agy mutating deploy script and curl POST in ReadOnly rejected",
+			readOnly: true,
+			call: ToolCallPermission{
+				Kind:     "execute",
+				Name:     "run_command",
+				Title:    "./scripts/deploy-release.sh",
+				RawInput: map[string]any{"CommandLine": "./scripts/deploy-release.sh"},
+			},
+			want: "reject_once",
+		},
+		{
+			name:     "agy curl POST in ReadOnly rejected",
+			readOnly: true,
+			call: ToolCallPermission{
+				Kind:     "execute",
+				Name:     "run_command",
+				Title:    "curl POST",
+				RawInput: map[string]any{"CommandLine": `curl -X POST "https://api.example.com/order"`},
+			},
+			want: "reject_once",
 		},
 		{
 			name:     "task mode allows write/execute always",
